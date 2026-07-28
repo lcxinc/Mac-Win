@@ -1,0 +1,31 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+
+# SwiftPM/Xcode build output
+.build/
+MacWinManager/.build/
+MacWinManager/dist/
+DerivedData/
+
+# Downloaded installers, managed Wine engines, source mirrors, and build trees
+# are large local compatibility-test assets.
+Downloads/
+refs/
+refs/prefixes/
+tmp/
+.tmp-winetest-*/
+
+# Local measurements and superseded icon iterations
+macwin_EXP_VOLTAGES.CSV
+MacWinManager/Sources/MacWinManagerApp/Resources/Icons/MacWinAppIconArtwork*.png
+!MacWinManager/Sources/MacWinManagerApp/Resources/Icons/MacWinAppIconArtwork-v12.png
+
+# One-off copied runtime payloads from local compatibility experiments
+*.dll
+*.ini
+
+# Local logs and exported diagnostics
+*.log
+*.log.exit
+*.xcresult/
