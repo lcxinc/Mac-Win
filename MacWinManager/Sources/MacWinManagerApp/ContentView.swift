@@ -2205,6 +2205,13 @@ struct RuntimeProcessSummarySection: View {
                     .buttonStyle(.borderless)
                     .disabled(!report.entries.contains { $0.isWineVirtualDesktop || $0.isWineDeviceService })
                     Button(role: .destructive) {
+                        store.terminateDetachedWineSystemProcesses()
+                    } label: {
+                        Label(store.text(.stopDetachedWineSystemProcesses), systemImage: "eraser.fill")
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(report.detachedWineSystemEntries.isEmpty)
+                    Button(role: .destructive) {
                         store.terminateAllRuntimeProcesses()
                     } label: {
                         Label(store.text(.stopAllRuntimeProcesses), systemImage: "stop.circle")
@@ -2219,6 +2226,12 @@ struct RuntimeProcessSummarySection: View {
                         value: "\(report.auditedProcessCount)",
                         systemImage: "terminal.fill",
                         tint: .blue
+                    )
+                    SoftwarePlanMetric(
+                        title: store.text(.detachedWineSystemProcesses),
+                        value: "\(report.detachedWineSystemEntries.count)",
+                        systemImage: "link.badge.plus",
+                        tint: report.detachedWineSystemEntries.isEmpty ? .green : .red
                     )
                     SoftwarePlanMetric(
                         title: store.text(.staleRuntimeProcesses),
@@ -2339,6 +2352,12 @@ struct RuntimeProcessEntryRow: View {
                     Text(entry.staleRenderingFlags.prefix(6).joined(separator: " · "))
                         .font(.caption)
                         .foregroundStyle(.red)
+                        .lineLimit(1)
+                }
+                if let prefixName = entry.winePrefixDisplayName {
+                    Text("\(store.language == .zhHans ? "容器" : "Bottle") \(prefixName) · PPID \(entry.parentProcessIdentifier.map(String.init) ?? "-")")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(entry.isDetachedWineSystemProcess ? .orange : .secondary)
                         .lineLimit(1)
                 }
                 Text(entry.commandPreview)

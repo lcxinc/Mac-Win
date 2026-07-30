@@ -1426,6 +1426,27 @@ final class MacWinStore: ObservableObject {
         }
     }
 
+    func terminateDetachedWineSystemProcesses() {
+        let report = runtimeProcessAuditService.makeReport()
+        guard !report.detachedWineSystemEntries.isEmpty else {
+            runtimeProcessAuditReport = report
+            statusMessage = text(.noRuntimeProcessesToStop)
+            lastError = nil
+            return
+        }
+
+        let result = runtimeProcessTerminator.terminateDetachedWineSystemProcesses(in: report)
+        refreshRunningItems()
+        runtimeProcessAuditReport = runtimeProcessAuditService.makeReport()
+        if result.failedCount == 0 {
+            statusMessage = text(.terminatedDetachedWineSystemProcesses, result.stoppedCount)
+            lastError = nil
+        } else {
+            statusMessage = text(.runtimeProcesses)
+            lastError = text(.terminatedRuntimeProcessesPartial, result.stoppedCount, result.failedCount)
+        }
+    }
+
     private func orderedUnique(_ values: [String]) -> [String] {
         var seen = Set<String>()
         var result: [String] = []

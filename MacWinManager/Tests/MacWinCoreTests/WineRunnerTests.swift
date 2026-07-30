@@ -2516,6 +2516,7 @@ struct WineRunnerTests {
         #expect(result.exitCode == 0)
         let log = try String(contentsOf: result.logURL, encoding: .utf8)
         #expect(log.contains("exe=hello"))
+        #expect(log.contains("runtimePreflightCleanupRequested=0"))
         #expect(log.contains("exitCode=0"))
     }
 

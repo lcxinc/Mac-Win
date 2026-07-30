@@ -16,6 +16,22 @@ public struct RuntimeProcessAuditReport: Codable, Equatable, Sendable {
         entries.filter(\.isUninterruptible).map(\.processIdentifier).sorted()
     }
 
+    public var detachedWineSystemEntries: [RuntimeProcessEntry] {
+        safelyDetachedWineSystemEntries(from: entries)
+    }
+
+    public var detachedWinePrefixPaths: [String] {
+        Array(Set(detachedWineSystemEntries.compactMap(\.winePrefixPath))).sorted()
+    }
+
+    public func entries(inWinePrefix prefixPath: String) -> [RuntimeProcessEntry] {
+        let normalizedPrefix = URL(fileURLWithPath: prefixPath).standardizedFileURL.path
+        return entries.filter {
+            guard let entryPrefix = $0.winePrefixPath else { return false }
+            return URL(fileURLWithPath: entryPrefix).standardizedFileURL.path == normalizedPrefix
+        }
+    }
+
     public init(
         observedProcessCount: Int,
         auditedProcessCount: Int,
@@ -36,9 +52,11 @@ public struct RuntimeProcessAuditReport: Codable, Equatable, Sendable {
             "id",
             "severity",
             "pid",
+            "parent_pid",
             "process_state",
             "kind",
             "executable_name",
+            "wine_prefix",
             "stale_flags",
             "affected_pids",
             "title",
@@ -51,6 +69,8 @@ public struct RuntimeProcessAuditReport: Codable, Equatable, Sendable {
                 "finding",
                 finding.id,
                 finding.severity,
+                "",
+                "",
                 "",
                 "",
                 "",
@@ -69,9 +89,11 @@ public struct RuntimeProcessAuditReport: Codable, Equatable, Sendable {
                 "",
                 entry.staleRenderingFlags.isEmpty ? "info" : "warning",
                 String(entry.processIdentifier),
+                entry.parentProcessIdentifier.map(String.init) ?? "",
                 entry.processState ?? "",
                 entry.kind.rawValue,
                 entry.executableName,
+                entry.winePrefixPath.map(sanitizedPathPreview) ?? "",
                 entry.staleRenderingFlags.joined(separator: ";"),
                 "",
                 "",
@@ -91,28 +113,45 @@ public struct RuntimeProcessAuditReport: Codable, Equatable, Sendable {
         }
         return value
     }
+
+    private static func sanitizedPathPreview(_ path: String) -> String {
+        path.replacingOccurrences(
+            of: #"/Users/[^/\s]+"#,
+            with: #"/Users/<user>"#,
+            options: .regularExpression
+        )
+    }
 }
 
 public struct RuntimeProcessEntry: Codable, Equatable, Sendable {
     public var processIdentifier: Int32
+    public var parentProcessIdentifier: Int32?
     public var processState: String?
     public var kind: RuntimeProcessKind
     public var executableName: String
+    public var workingDirectory: String?
+    public var winePrefixPath: String?
     public var staleRenderingFlags: [String]
     public var commandPreview: String
 
     public init(
         processIdentifier: Int32,
+        parentProcessIdentifier: Int32? = nil,
         processState: String? = nil,
         kind: RuntimeProcessKind,
         executableName: String,
+        workingDirectory: String? = nil,
+        winePrefixPath: String? = nil,
         staleRenderingFlags: [String],
         commandPreview: String
     ) {
         self.processIdentifier = processIdentifier
+        self.parentProcessIdentifier = parentProcessIdentifier
         self.processState = processState
         self.kind = kind
         self.executableName = executableName
+        self.workingDirectory = workingDirectory
+        self.winePrefixPath = winePrefixPath
         self.staleRenderingFlags = staleRenderingFlags
         self.commandPreview = commandPreview
     }
@@ -130,6 +169,26 @@ public struct RuntimeProcessEntry: Codable, Equatable, Sendable {
     public var isWineDeviceService: Bool {
         commandPreview.lowercased().contains("winedevice.exe")
     }
+
+    public var isDetachedWineSystemProcess: Bool {
+        guard parentProcessIdentifier == 1, winePrefixPath != nil else { return false }
+        return Self.detachedWineSystemExecutableNames.contains(executableName.lowercased())
+    }
+
+    public var winePrefixDisplayName: String? {
+        guard let winePrefixPath else { return nil }
+        return URL(fileURLWithPath: winePrefixPath).lastPathComponent
+    }
+
+    private static let detachedWineSystemExecutableNames: Set<String> = [
+        "conhost.exe",
+        "explorer.exe",
+        "plugplay.exe",
+        "rpcss.exe",
+        "services.exe",
+        "svchost.exe",
+        "winedevice.exe"
+    ]
 }
 
 public struct RuntimeProcessFinding: Codable, Equatable, Sendable {
@@ -170,15 +229,22 @@ public struct RuntimeProcessTerminationReport: Codable, Equatable, Sendable {
 
 public struct RuntimeProcessTerminator: Sendable {
     public var terminateProcess: @Sendable (Int32) -> Bool
+    private var usesDefaultTermination: Bool
 
     public init(terminateProcess: (@Sendable (Int32) -> Bool)? = nil) {
         self.terminateProcess = terminateProcess ?? Self.defaultTerminateProcess
+        self.usesDefaultTermination = terminateProcess == nil
     }
 
     public func terminate(entries: [RuntimeProcessEntry]) -> RuntimeProcessTerminationReport {
+        let processIdentifiers = Array(Set(entries.map(\.processIdentifier))).sorted()
+        if usesDefaultTermination, processIdentifiers.count > 1 {
+            return Self.defaultTerminateProcesses(processIdentifiers)
+        }
+
         var stopped: [Int32] = []
         var failed: [Int32] = []
-        for pid in entries.map(\.processIdentifier).sorted() {
+        for pid in processIdentifiers {
             if terminateProcess(pid) {
                 stopped.append(pid)
             } else {
@@ -186,7 +252,7 @@ public struct RuntimeProcessTerminator: Sendable {
             }
         }
         return RuntimeProcessTerminationReport(
-            requestedCount: entries.count,
+            requestedCount: processIdentifiers.count,
             stoppedProcessIdentifiers: stopped,
             failedProcessIdentifiers: failed
         )
@@ -200,6 +266,22 @@ public struct RuntimeProcessTerminator: Sendable {
         terminate(entries: report.entries.filter { !$0.isUninterruptible })
     }
 
+    public func terminateDetachedWineSystemProcesses(in report: RuntimeProcessAuditReport) -> RuntimeProcessTerminationReport {
+        terminate(entries: report.detachedWineSystemEntries.filter { !$0.isUninterruptible })
+    }
+
+    public func terminateDetachedWineSystemProcesses(
+        in report: RuntimeProcessAuditReport,
+        winePrefixPath: String
+    ) -> RuntimeProcessTerminationReport {
+        let normalizedPrefix = URL(fileURLWithPath: winePrefixPath).standardizedFileURL.path
+        return terminate(entries: report.detachedWineSystemEntries.filter {
+            guard let prefixPath = $0.winePrefixPath else { return false }
+            return URL(fileURLWithPath: prefixPath).standardizedFileURL.path == normalizedPrefix
+                && !$0.isUninterruptible
+        })
+    }
+
     private static func defaultTerminateProcess(_ pid: Int32) -> Bool {
         if kill(pid, SIGTERM) == 0 || errno == ESRCH {
             waitForProcessExit(pid, timeout: 1.5)
@@ -209,6 +291,49 @@ public struct RuntimeProcessTerminator: Sendable {
             return kill(pid, SIGKILL) == 0 || errno == ESRCH
         }
         return false
+    }
+
+    private static func defaultTerminateProcesses(
+        _ processIdentifiers: [Int32]
+    ) -> RuntimeProcessTerminationReport {
+        var pending: Set<Int32> = []
+        var stopped: Set<Int32> = []
+        var failed: Set<Int32> = []
+
+        for pid in processIdentifiers {
+            if kill(pid, SIGTERM) == 0 {
+                pending.insert(pid)
+            } else if errno == ESRCH {
+                stopped.insert(pid)
+            } else {
+                failed.insert(pid)
+            }
+        }
+
+        let deadline = Date().addingTimeInterval(1.5)
+        while !pending.isEmpty, Date() < deadline {
+            for pid in Array(pending) where !isProcessAlive(pid) {
+                pending.remove(pid)
+                stopped.insert(pid)
+            }
+            if !pending.isEmpty {
+                Thread.sleep(forTimeInterval: 0.1)
+            }
+        }
+
+        for pid in pending {
+            if kill(pid, SIGKILL) == 0 || errno == ESRCH {
+                stopped.insert(pid)
+            } else {
+                failed.insert(pid)
+            }
+        }
+
+        return RuntimeProcessTerminationReport(
+            requestedCount: processIdentifiers.count,
+            stoppedProcessIdentifiers: stopped.sorted(),
+            failedProcessIdentifiers: failed.sorted()
+        )
     }
 
     private static func waitForProcessExit(_ pid: Int32, timeout: TimeInterval) {
@@ -225,22 +350,45 @@ public struct RuntimeProcessTerminator: Sendable {
 
 public struct RuntimeProcessAuditService: Sendable {
     public var processListProvider: @Sendable () -> String
+    public var processWorkingDirectoryProvider: @Sendable (Int32) -> String?
 
-    public init(processListProvider: (@Sendable () -> String)? = nil) {
+    public init(
+        processListProvider: (@Sendable () -> String)? = nil,
+        processWorkingDirectoryProvider: (@Sendable (Int32) -> String?)? = nil
+    ) {
         self.processListProvider = processListProvider ?? RuntimeProcessAuditService.hostProcessList
+        self.processWorkingDirectoryProvider = processWorkingDirectoryProvider
+            ?? RuntimeProcessAuditService.hostProcessWorkingDirectory
     }
 
     public func makeReport() -> RuntimeProcessAuditReport {
-        Self.report(from: processListProvider())
+        Self.report(
+            from: processListProvider(),
+            processWorkingDirectoryProvider: processWorkingDirectoryProvider
+        )
     }
 
     public func firstRunningMatch(forExecutable executable: String, displayName: String? = nil) -> RuntimeProcessEntry? {
-        Self.firstRunningMatch(in: processListProvider(), executable: executable, displayName: displayName)
+        Self.firstRunningMatch(
+            in: processListProvider(),
+            executable: executable,
+            displayName: displayName,
+            processWorkingDirectoryProvider: processWorkingDirectoryProvider
+        )
     }
 
     public static func report(from processListText: String) -> RuntimeProcessAuditReport {
+        report(from: processListText, processWorkingDirectoryProvider: { _ in nil })
+    }
+
+    public static func report(
+        from processListText: String,
+        processWorkingDirectoryProvider: @Sendable (Int32) -> String?
+    ) -> RuntimeProcessAuditReport {
         let parsedProcesses = parseProcesses(processListText)
-        let entries = parsedProcesses.compactMap(auditedEntry).sorted {
+        let entries = parsedProcesses.compactMap {
+            auditedEntry($0, processWorkingDirectoryProvider: processWorkingDirectoryProvider)
+        }.sorted {
             if $0.kind.rawValue != $1.kind.rawValue {
                 return $0.kind.rawValue < $1.kind.rawValue
             }
@@ -249,6 +397,9 @@ public struct RuntimeProcessAuditService: Sendable {
         let staleEntries = entries.filter { !$0.staleRenderingFlags.isEmpty }
         var findings: [RuntimeProcessFinding] = []
         if let finding = staleRenderingFinding(entries: staleEntries) {
+            findings.append(finding)
+        }
+        if let finding = detachedWineSystemProcessFinding(entries: entries) {
             findings.append(finding)
         }
         if let finding = lenovoCEFForcedGPUChildFinding(entries: entries) {
@@ -276,16 +427,34 @@ public struct RuntimeProcessAuditService: Sendable {
     }
 
     public static func firstRunningMatch(in processListText: String, executable: String, displayName: String? = nil) -> RuntimeProcessEntry? {
+        firstRunningMatch(
+            in: processListText,
+            executable: executable,
+            displayName: displayName,
+            processWorkingDirectoryProvider: { _ in nil }
+        )
+    }
+
+    public static func firstRunningMatch(
+        in processListText: String,
+        executable: String,
+        displayName: String? = nil,
+        processWorkingDirectoryProvider: @Sendable (Int32) -> String?
+    ) -> RuntimeProcessEntry? {
         let needles = executableNeedles(for: executable, displayName: displayName)
         guard !needles.isEmpty else { return nil }
         return parseProcesses(processListText)
             .compactMap { process -> RuntimeProcessEntry? in
                 guard command(process.command, matchesAny: needles) else { return nil }
+                let workingDirectory = processWorkingDirectoryProvider(process.processIdentifier)
                 return RuntimeProcessEntry(
                     processIdentifier: process.processIdentifier,
+                    parentProcessIdentifier: process.parentProcessIdentifier,
                     processState: process.state,
                     kind: kind(for: process.command) ?? .windowsExecutable,
                     executableName: executableName(in: process.command),
+                    workingDirectory: workingDirectory,
+                    winePrefixPath: winePrefixPath(from: workingDirectory),
                     staleRenderingFlags: staleRenderingFlags(in: process.command),
                     commandPreview: commandPreview(process.command)
                 )
@@ -303,6 +472,23 @@ public struct RuntimeProcessAuditService: Sendable {
             detail: "Several Windows/Wine processes are active at the same time. This often happens after repeated launcher clicks or crashed helper processes. Stop duplicate apps from MacWin Manager or quit stale Wine processes before testing a new launch.",
             affectedProcessIdentifiers: entries.map(\.processIdentifier).sorted(),
             flags: ["process-count-\(entries.count)"]
+        )
+    }
+
+    private static func detachedWineSystemProcessFinding(entries: [RuntimeProcessEntry]) -> RuntimeProcessFinding? {
+        let affectedEntries = safelyDetachedWineSystemEntries(from: entries)
+        guard affectedEntries.count >= 3 else { return nil }
+        let prefixes = Set(affectedEntries.compactMap(\.winePrefixPath))
+        return RuntimeProcessFinding(
+            id: "detached-wine-system-processes",
+            severity: "high",
+            title: "Detached Wine system process groups are still running",
+            detail: "Wine system services were adopted by launchd after their server exited. They are grouped by Wine prefix so MacWin can stop only the affected container without terminating unrelated Windows apps.",
+            affectedProcessIdentifiers: affectedEntries.map(\.processIdentifier).sorted(),
+            flags: [
+                "detached-system-process-count-\(affectedEntries.count)",
+                "wine-prefix-count-\(prefixes.count)"
+            ]
         )
     }
 
@@ -428,15 +614,25 @@ public struct RuntimeProcessAuditService: Sendable {
         text.components(separatedBy: .newlines).compactMap { line in
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { return nil }
-            let parts = trimmed.split(maxSplits: 2, whereSeparator: { $0 == " " || $0 == "\t" })
+            let parts = trimmed.split(maxSplits: 3, whereSeparator: { $0 == " " || $0 == "\t" })
             guard parts.count >= 2, let pid = Int32(parts[0]) else { return nil }
-            if parts.count == 3, isProcessStateToken(parts[1]) {
-                return ParsedProcess(processIdentifier: pid, state: String(parts[1]), command: String(parts[2]))
+            var fieldIndex = 1
+            var parentProcessIdentifier: Int32?
+            if parts.count >= 3, let parentPID = Int32(parts[fieldIndex]) {
+                parentProcessIdentifier = parentPID
+                fieldIndex += 1
             }
+            var state: String?
+            if parts.indices.contains(fieldIndex), isProcessStateToken(parts[fieldIndex]) {
+                state = String(parts[fieldIndex])
+                fieldIndex += 1
+            }
+            guard parts.indices.contains(fieldIndex) else { return nil }
             return ParsedProcess(
                 processIdentifier: pid,
-                state: nil,
-                command: parts.dropFirst().map(String.init).joined(separator: " ")
+                parentProcessIdentifier: parentProcessIdentifier,
+                state: state,
+                command: parts[fieldIndex...].map(String.init).joined(separator: " ")
             )
         }
     }
@@ -447,18 +643,36 @@ public struct RuntimeProcessAuditService: Sendable {
         return "RSDTZIUWX".contains(first) && token.allSatisfy(allowedCharacters.contains)
     }
 
-    private static func auditedEntry(_ process: ParsedProcess) -> RuntimeProcessEntry? {
+    private static func auditedEntry(
+        _ process: ParsedProcess,
+        processWorkingDirectoryProvider: @Sendable (Int32) -> String?
+    ) -> RuntimeProcessEntry? {
         let command = process.command
         guard !isHostScannerCommand(command) else { return nil }
         guard let kind = kind(for: command) else { return nil }
+        let workingDirectory = processWorkingDirectoryProvider(process.processIdentifier)
         return RuntimeProcessEntry(
             processIdentifier: process.processIdentifier,
+            parentProcessIdentifier: process.parentProcessIdentifier,
             processState: process.state,
             kind: kind,
             executableName: executableName(in: command),
+            workingDirectory: workingDirectory,
+            winePrefixPath: winePrefixPath(from: workingDirectory),
             staleRenderingFlags: staleRenderingFlags(in: command),
             commandPreview: commandPreview(command)
         )
+    }
+
+    private static func winePrefixPath(from workingDirectory: String?) -> String? {
+        guard let workingDirectory, !workingDirectory.isEmpty else { return nil }
+        let standardizedPath = URL(fileURLWithPath: workingDirectory).standardizedFileURL.path
+        let lowercasedPath = standardizedPath.lowercased()
+        if lowercasedPath.hasSuffix("/drive_c") {
+            return String(standardizedPath.dropLast("/drive_c".count))
+        }
+        guard let driveRange = lowercasedPath.range(of: "/drive_c/") else { return nil }
+        return String(standardizedPath[..<driveRange.lowerBound])
     }
 
     private static func kind(for command: String) -> RuntimeProcessKind? {
@@ -626,6 +840,7 @@ public struct RuntimeProcessAuditService: Sendable {
 
     private struct ParsedProcess {
         var processIdentifier: Int32
+        var parentProcessIdentifier: Int32?
         var state: String?
         var command: String
     }
@@ -638,7 +853,7 @@ public struct RuntimeProcessAuditService: Sendable {
         let outputRead = DispatchSemaphore(value: 0)
         let output = ProcessOutputBuffer()
         process.executableURL = URL(fileURLWithPath: "/bin/ps")
-        process.arguments = ["axww", "-o", "pid=,state=,command="]
+        process.arguments = ["axww", "-o", "pid=,ppid=,state=,command="]
         process.standardOutput = pipe
         process.standardError = Pipe()
         process.terminationHandler = { _ in exited.signal() }
@@ -660,6 +875,42 @@ public struct RuntimeProcessAuditService: Sendable {
         } catch {
             return ""
         }
+    }
+
+    private static func hostProcessWorkingDirectory(_ processIdentifier: Int32) -> String? {
+        var info = proc_vnodepathinfo()
+        let size = proc_pidinfo(
+            processIdentifier,
+            PROC_PIDVNODEPATHINFO,
+            0,
+            &info,
+            Int32(MemoryLayout<proc_vnodepathinfo>.size)
+        )
+        guard size == Int32(MemoryLayout<proc_vnodepathinfo>.size) else { return nil }
+
+        return withUnsafePointer(to: &info.pvi_cdir.vip_path) { pathPointer in
+            pathPointer.withMemoryRebound(to: CChar.self, capacity: Int(MAXPATHLEN)) { cString in
+                let path = String(cString: cString)
+                return path.isEmpty ? nil : path
+            }
+        }
+    }
+}
+
+private func safelyDetachedWineSystemEntries(
+    from entries: [RuntimeProcessEntry]
+) -> [RuntimeProcessEntry] {
+    let candidates = entries.filter(\.isDetachedWineSystemProcess)
+    let groupedEntries = Dictionary(grouping: entries.compactMap { entry -> (String, RuntimeProcessEntry)? in
+        guard let prefixPath = entry.winePrefixPath else { return nil }
+        return (URL(fileURLWithPath: prefixPath).standardizedFileURL.path, entry)
+    }, by: \.0)
+
+    return candidates.filter { candidate in
+        guard let prefixPath = candidate.winePrefixPath else { return false }
+        let normalizedPrefix = URL(fileURLWithPath: prefixPath).standardizedFileURL.path
+        let prefixEntries = groupedEntries[normalizedPrefix, default: []].map(\.1)
+        return prefixEntries.allSatisfy(\.isDetachedWineSystemProcess)
     }
 }
 

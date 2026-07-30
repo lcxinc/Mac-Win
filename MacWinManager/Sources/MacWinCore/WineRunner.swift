@@ -408,6 +408,10 @@ public struct WineRunner {
             startedAt: startedAt,
             detached: false
         ))
+        let preflightCleanup = terminateDetachedRuntimeProcesses(
+            inWinePrefix: paths.bottleDirectory(id: request.bottle.id).path
+        )
+        try writeRuntimePreflightCleanupReport(preflightCleanup, to: handle)
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/arch")
@@ -3283,6 +3287,29 @@ public struct WineRunner {
             stoppedProcessIdentifiers: stopped.sorted(),
             failedProcessIdentifiers: failed.sorted()
         )
+    }
+
+    private func terminateDetachedRuntimeProcesses(
+        inWinePrefix prefixPath: String
+    ) -> RuntimeProcessTerminationReport {
+        let report = RuntimeProcessAuditService().makeReport()
+        return RuntimeProcessTerminator().terminateDetachedWineSystemProcesses(
+            in: report,
+            winePrefixPath: prefixPath
+        )
+    }
+
+    private func writeRuntimePreflightCleanupReport(
+        _ cleanup: RuntimeProcessTerminationReport,
+        to handle: FileHandle
+    ) throws {
+        try handle.write(contentsOf: Data("runtimePreflightCleanupRequested=\(cleanup.requestedCount)\n".utf8))
+        if !cleanup.stoppedProcessIdentifiers.isEmpty {
+            try handle.write(contentsOf: Data("runtimePreflightCleanupStopped=\(cleanup.stoppedProcessIdentifiers.map(String.init).joined(separator: ","))\n".utf8))
+        }
+        if !cleanup.failedProcessIdentifiers.isEmpty {
+            try handle.write(contentsOf: Data("runtimePreflightCleanupFailed=\(cleanup.failedProcessIdentifiers.map(String.init).joined(separator: ","))\n".utf8))
+        }
     }
 
     private func writeRuntimeCleanupReport(

@@ -271,6 +271,7 @@ enum TextKey {
     case runtimeProcesses
     case runtimeProcessesSummary
     case runningWindowsProcesses
+    case detachedWineSystemProcesses
     case staleRuntimeProcesses
     case runtimeFindings
     case noRuntimeProcesses
@@ -281,9 +282,11 @@ enum TextKey {
     case stopRuntimeProcess
     case stopAllRuntimeProcesses
     case stopWineVirtualDesktops
+    case stopDetachedWineSystemProcesses
     case noRuntimeProcessesToStop
     case terminatedRuntimeProcesses
     case terminatedWineVirtualDesktops
+    case terminatedDetachedWineSystemProcesses
     case terminatedRuntimeProcessesPartial
     case testAssets
     case testAssetsReady
@@ -1502,6 +1505,7 @@ enum AppText {
         case .runtimeProcesses: "运行中进程"
         case .runtimeProcessesSummary: "观察 %d 个进程 · 已审计 %d · 旧参数 %d"
         case .runningWindowsProcesses: "Windows/Wine 进程"
+        case .detachedWineSystemProcesses: "孤立系统进程"
         case .staleRuntimeProcesses: "旧参数进程"
         case .runtimeFindings: "运行时发现"
         case .noRuntimeProcesses: "暂无运行中的 Windows/Wine 进程"
@@ -1512,9 +1516,11 @@ enum AppText {
         case .stopRuntimeProcess: "停止进程"
         case .stopAllRuntimeProcesses: "全部停止"
         case .stopWineVirtualDesktops: "停止桌面残留"
+        case .stopDetachedWineSystemProcesses: "清理容器残留"
         case .noRuntimeProcessesToStop: "暂无需要停止的 Windows/Wine 进程"
         case .terminatedRuntimeProcesses: "已停止 %d 个运行时进程"
         case .terminatedWineVirtualDesktops: "已停止 %d 个 Wine 桌面残留"
+        case .terminatedDetachedWineSystemProcesses: "已清理 %d 个孤立 Wine 系统进程"
         case .terminatedRuntimeProcessesPartial: "已停止 %d 个运行时进程，%d 个停止失败"
         case .testAssets: "测试资产"
         case .testAssetsReady: "测试集合完整：%d/%d"
@@ -2036,6 +2042,7 @@ enum AppText {
         case .runtimeProcesses: "Runtime Processes"
         case .runtimeProcessesSummary: "%d observed · %d audited · %d stale flags"
         case .runningWindowsProcesses: "Windows/Wine Processes"
+        case .detachedWineSystemProcesses: "Detached System Processes"
         case .staleRuntimeProcesses: "Stale Flag Processes"
         case .runtimeFindings: "Runtime Findings"
         case .noRuntimeProcesses: "No running Windows/Wine processes observed"
@@ -2046,9 +2053,11 @@ enum AppText {
         case .stopRuntimeProcess: "Stop Process"
         case .stopAllRuntimeProcesses: "Stop All"
         case .stopWineVirtualDesktops: "Stop Desktop Leftovers"
+        case .stopDetachedWineSystemProcesses: "Clean Container Leftovers"
         case .noRuntimeProcessesToStop: "No Windows/Wine processes need stopping"
         case .terminatedRuntimeProcesses: "Stopped %d runtime processes"
         case .terminatedWineVirtualDesktops: "Stopped %d Wine desktop leftovers"
+        case .terminatedDetachedWineSystemProcesses: "Cleaned %d detached Wine system processes"
         case .terminatedRuntimeProcessesPartial: "Stopped %d runtime processes; %d failed"
         case .testAssets: "Test Assets"
         case .testAssetsReady: "Test suite ready: %d/%d"

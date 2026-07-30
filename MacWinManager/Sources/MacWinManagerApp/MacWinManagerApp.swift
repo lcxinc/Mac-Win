@@ -361,6 +361,10 @@ enum MacWinCommandLineTool {
             runRuntimeProcessTermination(mode: .wineVirtualDesktops)
             exit(0)
         }
+        if arguments.contains("--stop-detached-runtime-processes") {
+            runRuntimeProcessTermination(mode: .detachedWineSystemProcesses)
+            exit(0)
+        }
         if arguments.contains("--stop-all-runtime-processes") {
             runRuntimeProcessTermination(mode: .all)
             exit(0)
@@ -412,6 +416,7 @@ enum MacWinCommandLineTool {
           --export-runtime-processes
           --export-support-triage
           --stop-wine-virtual-desktops
+          --stop-detached-runtime-processes
           --stop-all-runtime-processes
           --export-foundation-status
           --export-foundation-readiness
@@ -1283,6 +1288,7 @@ enum MacWinCommandLineTool {
 
     private enum RuntimeProcessTerminationMode {
         case wineVirtualDesktops
+        case detachedWineSystemProcesses
         case all
     }
 
@@ -1293,6 +1299,8 @@ enum MacWinCommandLineTool {
         switch mode {
         case .wineVirtualDesktops:
             result = terminator.terminateWineVirtualDesktopProcesses(in: report)
+        case .detachedWineSystemProcesses:
+            result = terminator.terminateDetachedWineSystemProcesses(in: report)
         case .all:
             result = terminator.terminateAllRuntimeProcesses(in: report)
         }

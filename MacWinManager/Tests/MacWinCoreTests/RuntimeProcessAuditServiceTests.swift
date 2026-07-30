@@ -37,14 +37,115 @@ struct RuntimeProcessAuditServiceTests {
         #expect(report.entries.first { $0.processIdentifier == 104 }?.commandPreview.contains("/Users/alice") == false)
 
         let csv = RuntimeProcessAuditReport.csv(report: report)
-        #expect(csv.contains("row_type,id,severity,pid,process_state,kind,executable_name,stale_flags,affected_pids,title,detail,command_preview"))
+        #expect(csv.contains("row_type,id,severity,pid,parent_pid,process_state,kind,executable_name,wine_prefix,stale_flags,affected_pids,title,detail,command_preview"))
         #expect(csv.contains("finding,stale-runtime-rendering-flags,high"))
         #expect(csv.contains("101;102"))
-        #expect(csv.contains("process,,warning,101,,hoYoPlay,HYP.exe"))
-        #expect(csv.contains("process,,info,103,,steam,Steam.exe"))
+        #expect(csv.contains("process,,warning,101,,,hoYoPlay,HYP.exe"))
+        #expect(csv.contains("process,,info,103,,,steam,Steam.exe"))
         #expect(csv.contains("/Users/<user>"))
         #expect(!csv.contains("/Users/alice"))
         #expect(!csv.contains(#"C:\users\alice"#))
+    }
+
+    @Test("Process audit groups detached Wine system processes by prefix")
+    func processAuditGroupsDetachedWineSystemProcessesByPrefix() {
+        let prefix = "/Users/alice/Library/Application Support/MacWin/Bottles/game"
+        let workingDirectories: [Int32: String] = [
+            701: "\(prefix)/drive_c/windows/system32",
+            702: "\(prefix)/drive_c/windows/system32",
+            703: "\(prefix)/drive_c/windows/system32",
+            705: "\(prefix)/drive_c/windows/system32",
+            704: "/Users/alice/Library/Application Support/MacWin/Bottles/other/drive_c/Program Files/Example"
+        ]
+        let report = RuntimeProcessAuditService.report(
+            from: """
+              701 1 Ss C:\\windows\\system32\\services.exe
+              702 1 Ss C:\\windows\\system32\\svchost.exe -k netsvcs
+              703 1 Ss C:\\windows\\system32\\explorer.exe /desktop
+              704 55 Ss C:\\Program Files\\Example\\Example.exe
+              705 1 Ss C:\\windows\\system32\\conhost.exe --unix
+            """,
+            processWorkingDirectoryProvider: { workingDirectories[$0] }
+        )
+
+        #expect(report.detachedWineSystemEntries.map(\.processIdentifier) == [701, 702, 703, 705])
+        #expect(report.detachedWinePrefixPaths == [prefix])
+        #expect(report.entries(inWinePrefix: prefix).map(\.processIdentifier) == [701, 702, 703, 705])
+        #expect(report.entries.first { $0.processIdentifier == 701 }?.parentProcessIdentifier == 1)
+        #expect(report.entries.first { $0.processIdentifier == 701 }?.winePrefixDisplayName == "game")
+        #expect(report.entries.first { $0.processIdentifier == 704 }?.isDetachedWineSystemProcess == false)
+
+        let finding = report.findings.first { $0.id == "detached-wine-system-processes" }
+        #expect(finding?.severity == "high")
+        #expect(finding?.affectedProcessIdentifiers == [701, 702, 703, 705])
+        #expect(finding?.flags == ["detached-system-process-count-4", "wine-prefix-count-1"])
+
+        let csv = RuntimeProcessAuditReport.csv(report: report)
+        #expect(csv.contains("/Users/<user>/Library/Application Support/MacWin/Bottles/game"))
+        #expect(!csv.contains("/Users/alice"))
+    }
+
+    @Test("Detached Wine process detection requires launchd parent and a drive C working directory")
+    func detachedWineProcessDetectionAvoidsFalsePositives() {
+        let report = RuntimeProcessAuditService.report(
+            from: """
+              711 44 Ss C:\\windows\\system32\\services.exe
+              712 1 Ss C:\\windows\\system32\\svchost.exe
+              713 1 Ss C:\\Program Files\\Example\\Example.exe
+              714 1 Ss C:\\windows\\system32\\rpcss.exe
+            """,
+            processWorkingDirectoryProvider: { pid in
+                switch pid {
+                case 711:
+                    "/Users/alice/Library/Application Support/MacWin/Bottles/game/drive_c/windows/system32"
+                case 712:
+                    "/private/tmp/not-a-wine-prefix"
+                case 713, 714:
+                    "/Users/alice/Library/Application Support/MacWin/Bottles/game/drive_c/Program Files/Example"
+                default:
+                    nil
+                }
+            }
+        )
+
+        #expect(report.detachedWineSystemEntries.isEmpty)
+        #expect(report.findings.allSatisfy { $0.id != "detached-wine-system-processes" })
+    }
+
+    @Test("Runtime terminator targets detached system processes in one exact Wine prefix")
+    func runtimeTerminatorTargetsOneDetachedWinePrefix() {
+        let firstPrefix = "/Users/alice/Library/Application Support/MacWin/Bottles/first"
+        let secondPrefix = "/Users/alice/Library/Application Support/MacWin/Bottles/second"
+        let workingDirectories: [Int32: String] = [
+            721: "\(firstPrefix)/drive_c/windows/system32",
+            722: "\(firstPrefix)/drive_c/windows/system32",
+            723: "\(secondPrefix)/drive_c/Program Files/Example",
+            724: "\(secondPrefix)/drive_c/windows/system32"
+        ]
+        let report = RuntimeProcessAuditService.report(
+            from: """
+              721 1 Ss C:\\windows\\system32\\services.exe
+              722 1 Ss C:\\windows\\system32\\winedevice.exe
+              723 1 Ss C:\\Program Files\\Example\\Example.exe
+              724 1 Ss C:\\windows\\system32\\rpcss.exe
+            """,
+            processWorkingDirectoryProvider: { workingDirectories[$0] }
+        )
+        let recorder = RuntimeTerminatorTestRecorder()
+        let terminator = RuntimeProcessTerminator { pid in
+            recorder.append(pid)
+            return true
+        }
+
+        let result = terminator.terminateDetachedWineSystemProcesses(
+            in: report,
+            winePrefixPath: firstPrefix + "/"
+        )
+
+        #expect(recorder.values == [721, 722])
+        #expect(result.requestedCount == 2)
+        #expect(result.stoppedProcessIdentifiers == [721, 722])
+        #expect(result.failedProcessIdentifiers.isEmpty)
     }
 
     @Test("Process audit ignores unrelated host processes")
@@ -86,7 +187,7 @@ struct RuntimeProcessAuditServiceTests {
         #expect(termination.requestedCount == 1)
 
         let csv = RuntimeProcessAuditReport.csv(report: report)
-        #expect(csv.contains("process,,info,70066,U,wineHost,wineserver"))
+        #expect(csv.contains("process,,info,70066,,U,wineHost,wineserver"))
     }
 
     @Test("Process audit ignores source control scanners that mention Windows files")
