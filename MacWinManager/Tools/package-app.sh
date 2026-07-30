@@ -58,7 +58,7 @@ plist = {
     "CFBundleName": "MacWin Manager",
     "CFBundlePackageType": "APPL",
     "CFBundleShortVersionString": "0.1.0",
-    "CFBundleVersion": "13",
+    "CFBundleVersion": "14",
     "LSApplicationCategoryType": "public.app-category.utilities",
     "LSMinimumSystemVersion": "14.0",
     "NSHighResolutionCapable": True,

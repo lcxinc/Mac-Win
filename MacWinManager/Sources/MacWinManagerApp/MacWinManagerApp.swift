@@ -89,6 +89,7 @@ final class MacWinAppDelegate: NSObject, NSApplicationDelegate {
             _ = MacWinWindowChrome.configure(window)
             window.makeKeyAndOrderFront(nil)
             application.activate(ignoringOtherApps: true)
+            self.scheduleBootstrap()
         }
     }
 
@@ -98,6 +99,7 @@ final class MacWinAppDelegate: NSObject, NSApplicationDelegate {
             _ = MacWinWindowChrome.configure(existingWindow)
             existingWindow.makeKeyAndOrderFront(nil)
             application.activate(ignoringOtherApps: true)
+            scheduleBootstrap()
             return
         }
         guard fallbackWindowController == nil else { return }
@@ -125,6 +127,14 @@ final class MacWinAppDelegate: NSObject, NSApplicationDelegate {
         controller.showWindow(nil)
         window.makeKeyAndOrderFront(nil)
         application.activate(ignoringOtherApps: true)
+        scheduleBootstrap()
+    }
+
+    private func scheduleBootstrap() {
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(250))
+            await MacWinStore.shared.bootstrapIfNeeded()
+        }
     }
 
     private func managedMainWindow(in application: NSApplication) -> NSWindow? {
@@ -1415,7 +1425,7 @@ private struct MacWinRootView: View {
                 // Let AppKit create and paint the native window before the
                 // compatibility catalog and bottle scans occupy the main actor.
                 try? await Task.sleep(for: .milliseconds(800))
-                await store.bootstrap()
+                await store.bootstrapIfNeeded()
                 await store.drainQueuedExternalExecutableOpens()
                 store.startExternalExecutableOpenQueueWatcher()
             }

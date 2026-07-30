@@ -599,7 +599,7 @@ struct AppLauncherView: View {
     @State private var isInstallerDropTargeted = false
 
     private let iconColumns = [
-        GridItem(.adaptive(minimum: 118, maximum: 148), spacing: 24, alignment: .top)
+        GridItem(.adaptive(minimum: 118, maximum: 142), spacing: 22, alignment: .top)
     ]
 
     var body: some View {
@@ -650,25 +650,10 @@ struct AppLauncherView: View {
 
     private func appHeader(for bottle: BottleManifest) -> some View {
         HStack(alignment: .center, spacing: 14) {
-            HStack(spacing: 1) {
-                Image(systemName: "chevron.left")
-                    .font(.system(size: 18, weight: .semibold))
-                    .frame(width: 34, height: 30)
-                    .foregroundStyle(.secondary)
-                Divider()
-                    .frame(height: 20)
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 18, weight: .semibold))
-                    .frame(width: 34, height: 30)
-                    .foregroundStyle(.secondary.opacity(0.45))
-            }
-            .background(.thinMaterial, in: Capsule())
-
-            Label(store.text(.applications), systemImage: "square.grid.2x2")
-                .font(.system(size: 34, weight: .bold))
-                .labelStyle(.titleAndIcon)
+            Text(store.text(.applications))
+                .font(.system(size: 28, weight: .semibold))
             Text(store.text(.appLauncherSubtitle))
-                .font(.title3)
+                .font(.callout)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
             Spacer()
@@ -683,20 +668,17 @@ struct AppLauncherView: View {
     }
 
     private var categoryBar: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 10) {
-                ForEach(AppLauncherCategory.allCases) { category in
-                    AppCategoryChip(
-                        title: category.title(in: store),
-                        isSelected: selectedCategory == category
-                    ) {
-                        selectedCategory = category
-                    }
-                }
+        Picker("", selection: $selectedCategory) {
+            ForEach(AppLauncherCategory.allCases) { category in
+                Text(category.title(in: store))
+                    .tag(category)
             }
-            .padding(.horizontal, 28)
-            .padding(.bottom, 18)
         }
+        .labelsHidden()
+        .pickerStyle(.segmented)
+        .controlSize(.large)
+        .padding(.horizontal, 28)
+        .padding(.bottom, 18)
     }
 
     private var activeBottle: BottleManifest? {
@@ -920,27 +902,6 @@ private struct AppLauncherItem: Identifiable {
     var category: AppLauncherCategory
     var action: DesktopShortcutAction
     var tint: Color
-}
-
-private struct AppCategoryChip: View {
-    var title: String
-    var isSelected: Bool
-    var action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Text(title)
-                .font(.system(size: 14, weight: .semibold))
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-                .frame(minWidth: 88)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 7)
-                .foregroundStyle(isSelected ? Color.white : Color.secondary)
-                .background(isSelected ? Color.accentColor : Color.primary.opacity(0.05), in: Capsule())
-        }
-        .buttonStyle(.plain)
-    }
 }
 
 private struct AppLauncherButton: View {

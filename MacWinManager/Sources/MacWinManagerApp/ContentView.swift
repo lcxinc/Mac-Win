@@ -139,7 +139,7 @@ enum MacWinWindowChrome {
     private static let windowCornerRadius: CGFloat = 12
     private static let initiallySizedWindows = NSHashTable<NSWindow>.weakObjects()
     static let sidebarWidth: CGFloat = 216
-    static let titlebarHeight: CGFloat = 52
+    static let titlebarHeight: CGFloat = 48
 
     static func configure(_ window: NSWindow?) -> CGFloat {
         guard let window else { return 84 }
@@ -291,7 +291,7 @@ struct UnifiedTitleBar: View {
                         .frame(width: leadingInset)
                         .allowsHitTesting(false)
 
-                    MacWinAppIconImage(size: 27)
+                    MacWinAppIconImage(size: 25)
                         .allowsHitTesting(false)
 
                     Spacer(minLength: 8)
@@ -858,10 +858,13 @@ struct RecipeRow: View {
 
     var body: some View {
         HStack(spacing: 14) {
-            Image(systemName: iconName)
-                .font(.title2)
-                .frame(width: 36, height: 36)
-                .foregroundStyle(.tint)
+            LauncherIconView(
+                title: recipe.name,
+                iconPath: nil,
+                systemImage: iconName,
+                tint: iconTint,
+                size: 44
+            )
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
                     Text(recipe.name)
@@ -914,6 +917,17 @@ struct RecipeRow: View {
         case "Developer Tools": "curlybraces.square"
         case "Media": "play.rectangle"
         default: "gamecontroller"
+        }
+    }
+
+    private var iconTint: Color {
+        switch recipe.category {
+        case "Diagnostics": .mint
+        case "Game Tests": .blue
+        case "Utilities": .orange
+        case "Developer Tools": .indigo
+        case "Media": .pink
+        default: .green
         }
     }
 

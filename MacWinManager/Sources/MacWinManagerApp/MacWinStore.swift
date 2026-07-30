@@ -171,6 +171,7 @@ final class MacWinStore: ObservableObject {
     private let supportBundleService: SupportBundleService
     private let testSessionArchiveService: TestSessionArchiveService
     private var didCompleteInitialBootstrap = false
+    private var isBootstrapping = false
     private var suppressFoundationStatusSnapshot = false
     private var softwareActionRecipeIdsInFlight = Set<String>()
     private var launchKeysInFlight = Set<String>()
@@ -264,6 +265,13 @@ final class MacWinStore: ObservableObject {
         } catch {
             fail(error)
         }
+    }
+
+    func bootstrapIfNeeded() async {
+        guard !didCompleteInitialBootstrap, !isBootstrapping else { return }
+        isBootstrapping = true
+        defer { isBootstrapping = false }
+        await bootstrap()
     }
 
     func bootstrap() async {
