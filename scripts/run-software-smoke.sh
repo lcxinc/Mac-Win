@@ -4382,11 +4382,15 @@ repair_winrt_activation_registry() {
     "Windows.Foundation.Collections.PropertySet|wintypes.dll"
     "Windows.Storage.Streams.Buffer|wintypes.dll"
     "Windows.Storage.Streams.DataWriter|wintypes.dll"
+    "Windows.System.Threading.ThreadPool|threadpoolwinrt.dll"
+    "Windows.System.Threading.ThreadPoolTimer|threadpoolwinrt.dll"
     "Windows.UI.ViewManagement.AccessibilitySettings|windows.ui.dll"
     "Windows.UI.ViewManagement.UISettings|windows.ui.dll"
     "Windows.UI.ViewManagement.UIViewSettings|windows.ui.dll"
     "Windows.UI.ViewManagement.InputPane|windows.ui.dll"
     "Windows.UI.Core.CoreWindow|windows.ui.dll"
+    "Windows.UI.Internal.Input.InputSite|windows.ui.dll"
+    "Windows.UI.Internal.Input.ActivationConfigurationInputObject|windows.ui.dll"
   )
 
   started="$(date +%s)"
@@ -4409,9 +4413,17 @@ repair_winrt_activation_registry() {
     echo
     echo "== verification =="
     "${WINE_CMD[@]}" reg query 'HKLM\Software\Microsoft\WindowsRuntime\ActivatableClassId\Windows.Foundation.Metadata.ApiInformation'
+    "${WINE_CMD[@]}" reg query 'HKLM\Software\Microsoft\WindowsRuntime\ActivatableClassId\Windows.System.Threading.ThreadPool'
+    "${WINE_CMD[@]}" reg query 'HKLM\Software\Microsoft\WindowsRuntime\ActivatableClassId\Windows.System.Threading.ThreadPoolTimer'
     "${WINE_CMD[@]}" reg query 'HKLM\Software\Microsoft\WindowsRuntime\ActivatableClassId\Windows.UI.ViewManagement.UISettings'
+    "${WINE_CMD[@]}" reg query 'HKLM\Software\Microsoft\WindowsRuntime\ActivatableClassId\Windows.UI.Internal.Input.InputSite'
+    "${WINE_CMD[@]}" reg query 'HKLM\Software\Microsoft\WindowsRuntime\ActivatableClassId\Windows.UI.Internal.Input.ActivationConfigurationInputObject'
     "${WINE_CMD[@]}" reg query 'HKLM\Software\Wow6432Node\Microsoft\WindowsRuntime\ActivatableClassId\Windows.Foundation.Metadata.ApiInformation'
+    "${WINE_CMD[@]}" reg query 'HKLM\Software\Wow6432Node\Microsoft\WindowsRuntime\ActivatableClassId\Windows.System.Threading.ThreadPool'
+    "${WINE_CMD[@]}" reg query 'HKLM\Software\Wow6432Node\Microsoft\WindowsRuntime\ActivatableClassId\Windows.System.Threading.ThreadPoolTimer'
     "${WINE_CMD[@]}" reg query 'HKLM\Software\Wow6432Node\Microsoft\WindowsRuntime\ActivatableClassId\Windows.UI.ViewManagement.UISettings'
+    "${WINE_CMD[@]}" reg query 'HKLM\Software\Wow6432Node\Microsoft\WindowsRuntime\ActivatableClassId\Windows.UI.Internal.Input.InputSite'
+    "${WINE_CMD[@]}" reg query 'HKLM\Software\Wow6432Node\Microsoft\WindowsRuntime\ActivatableClassId\Windows.UI.Internal.Input.ActivationConfigurationInputObject'
   } > "$log" 2>&1
   exit_code=$?
   ended="$(date +%s)"
@@ -9069,6 +9081,7 @@ repair_engine_dlls() {
     "wevtsvc wevtsvc.dll" \
     "webservices webservices.dll" \
     "wmvcore wmvcore.dll" \
+    "threadpoolwinrt threadpoolwinrt.dll" \
 	    "windows.ui windows.ui.dll" \
 	    "windowscodecs windowscodecs.dll" \
 	    "windowscodecsext windowscodecsext.dll" \

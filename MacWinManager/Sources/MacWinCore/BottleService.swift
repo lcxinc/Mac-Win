@@ -1492,6 +1492,7 @@ public struct BottleService {
             repaired = Self.registryTextWithFontRepairs(repaired)
             repaired = Self.registryTextWithCOMProxyRepairs(repaired)
             repaired = Self.registryTextWithTaskSchedulerRepairs(repaired)
+            repaired = Self.registryTextWithWinRTActivationRepairs(repaired)
             repaired = Self.registryTextWithCommonShellFolderRepairs(repaired)
             if repaired != original {
                 try repaired.write(to: systemRegistry, atomically: true, encoding: .utf8)
@@ -2063,6 +2064,39 @@ public struct BottleService {
             inprocSection: Self.activeScriptStatsProxyWow64InprocSection,
             modulePath: "C:\\windows\\syswow64\\actxprxy.dll"
         )
+        return repaired
+    }
+
+    public static func registryTextWithWinRTActivationRepairs(_ text: String) -> String {
+        var repaired = text
+        for (className, dllName) in Self.winRTActivationClasses {
+            let nativeSection = "Software\\\\Microsoft\\\\WindowsRuntime\\\\ActivatableClassId\\\\\(className)"
+            let wow64Section = "Software\\\\Wow6432Node\\\\Microsoft\\\\WindowsRuntime\\\\ActivatableClassId\\\\\(className)"
+            repaired = Self.registryText(
+                repaired,
+                settingString: nil,
+                value: className,
+                inSection: nativeSection
+            )
+            repaired = Self.registryText(
+                repaired,
+                settingString: "DllPath",
+                value: "C:\\windows\\system32\\\(dllName)",
+                inSection: nativeSection
+            )
+            repaired = Self.registryText(
+                repaired,
+                settingString: nil,
+                value: className,
+                inSection: wow64Section
+            )
+            repaired = Self.registryText(
+                repaired,
+                settingString: "DllPath",
+                value: "C:\\windows\\syswow64\\\(dllName)",
+                inSection: wow64Section
+            )
+        }
         return repaired
     }
 
@@ -2903,9 +2937,27 @@ public struct BottleService {
         ("wevtapi", "wevtapi.dll"),
         ("wevtsvc", "wevtsvc.dll"),
         ("webservices", "webservices.dll"),
+        ("threadpoolwinrt", "threadpoolwinrt.dll"),
         ("windows.ui", "windows.ui.dll"),
         ("wintab32", "wintab32.dll"),
         ("wlanapi", "wlanapi.dll")
+    ]
+
+    private static let winRTActivationClasses: [(className: String, dllName: String)] = [
+        ("Windows.Foundation.Metadata.ApiInformation", "wintypes.dll"),
+        ("Windows.Foundation.PropertyValue", "wintypes.dll"),
+        ("Windows.Foundation.Collections.PropertySet", "wintypes.dll"),
+        ("Windows.Storage.Streams.Buffer", "wintypes.dll"),
+        ("Windows.Storage.Streams.DataWriter", "wintypes.dll"),
+        ("Windows.System.Threading.ThreadPool", "threadpoolwinrt.dll"),
+        ("Windows.System.Threading.ThreadPoolTimer", "threadpoolwinrt.dll"),
+        ("Windows.UI.ViewManagement.AccessibilitySettings", "windows.ui.dll"),
+        ("Windows.UI.ViewManagement.UISettings", "windows.ui.dll"),
+        ("Windows.UI.ViewManagement.UIViewSettings", "windows.ui.dll"),
+        ("Windows.UI.ViewManagement.InputPane", "windows.ui.dll"),
+        ("Windows.UI.Core.CoreWindow", "windows.ui.dll"),
+        ("Windows.UI.Internal.Input.InputSite", "windows.ui.dll"),
+        ("Windows.UI.Internal.Input.ActivationConfigurationInputObject", "windows.ui.dll")
     ]
 
     private static let webViewRenderingCacheDirectoryNames: Set<String> = [

@@ -460,6 +460,37 @@ struct BottleServiceTests {
         #expect(!repaired.contains("{00000000-0000-0000-0000-000000000000}"))
     }
 
+    @Test("Registry repair adds native and WoW64 WinRT activation classes")
+    func registryRepairAddsWinRTActivationClasses() throws {
+        let registry = """
+        WINE REGISTRY Version 2
+
+        [Software\\\\Microsoft\\\\WindowsRuntime\\\\ActivatableClassId\\\\Windows.UI.Internal.Input.InputSite] 1781633413
+        "DllPath"="broken.dll"
+
+        """
+
+        let repaired = BottleService.registryTextWithWinRTActivationRepairs(registry)
+
+        #expect(repaired.contains(#"[Software\\Microsoft\\WindowsRuntime\\ActivatableClassId\\Windows.UI.Internal.Input.InputSite]"#))
+        #expect(repaired.contains(#"@="Windows.UI.Internal.Input.InputSite""#))
+        #expect(repaired.contains(#""DllPath"="C:\\windows\\system32\\windows.ui.dll""#))
+        #expect(repaired.contains(#"[Software\\Wow6432Node\\Microsoft\\WindowsRuntime\\ActivatableClassId\\Windows.UI.Internal.Input.InputSite]"#))
+        #expect(repaired.contains(#""DllPath"="C:\\windows\\syswow64\\windows.ui.dll""#))
+        #expect(repaired.contains(#"[Software\\Microsoft\\WindowsRuntime\\ActivatableClassId\\Windows.UI.Internal.Input.ActivationConfigurationInputObject]"#))
+        #expect(repaired.contains(#"@="Windows.UI.Internal.Input.ActivationConfigurationInputObject""#))
+        #expect(repaired.contains(#"[Software\\Wow6432Node\\Microsoft\\WindowsRuntime\\ActivatableClassId\\Windows.UI.Internal.Input.ActivationConfigurationInputObject]"#))
+        #expect(repaired.contains(#"[Software\\Microsoft\\WindowsRuntime\\ActivatableClassId\\Windows.System.Threading.ThreadPool]"#))
+        #expect(repaired.contains(#"[Software\\Microsoft\\WindowsRuntime\\ActivatableClassId\\Windows.System.Threading.ThreadPoolTimer]"#))
+        #expect(repaired.contains(#""DllPath"="C:\\windows\\system32\\threadpoolwinrt.dll""#))
+        #expect(repaired.contains(#"[Software\\Wow6432Node\\Microsoft\\WindowsRuntime\\ActivatableClassId\\Windows.System.Threading.ThreadPoolTimer]"#))
+        #expect(repaired.contains(#""DllPath"="C:\\windows\\syswow64\\threadpoolwinrt.dll""#))
+        #expect(repaired.contains(#"[Software\\Microsoft\\WindowsRuntime\\ActivatableClassId\\Windows.Foundation.Metadata.ApiInformation]"#))
+        #expect(repaired.contains(#""DllPath"="C:\\windows\\system32\\wintypes.dll""#))
+        #expect(!repaired.contains("broken.dll"))
+        #expect(BottleService.registryTextWithWinRTActivationRepairs(repaired) == repaired)
+    }
+
     @Test("Registry repair adds common Windows font aliases")
     func registryRepairAddsCommonWindowsFontAliases() throws {
         let registry = """

@@ -163,6 +163,8 @@ struct EngineRegistryTests {
         "dlls/webservices/x86_64-windows/webservices.dll",
         "dlls/windows.ui/i386-windows/windows.ui.dll",
         "dlls/windows.ui/x86_64-windows/windows.ui.dll",
+        "dlls/threadpoolwinrt/i386-windows/threadpoolwinrt.dll",
+        "dlls/threadpoolwinrt/x86_64-windows/threadpoolwinrt.dll",
         "dlls/taskschd/i386-windows/taskschd.dll",
         "dlls/taskschd/x86_64-windows/taskschd.dll",
         "dlls/mstask/i386-windows/mstask.dll",
