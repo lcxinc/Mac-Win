@@ -630,15 +630,27 @@ struct BottleServiceTests {
         #expect(fontConfig.contains("HYWenHei-85W"))
         #expect(fontConfig.contains("OPPOSans"))
         #expect(fontConfig.contains("miHoYo"))
-        #expect(fontConfig.contains(#"<string>Arial</string>"#))
-        #expect(fontConfig.contains(#"<rejectfont>"#))
-        #expect(fontConfig.contains(#"<patelt name="family"><string>Arial</string></patelt>"#))
-        #expect(fontConfig.contains(#"<edit name="family" mode="prepend" binding="strong">"#))
+        #expect(fontConfig.contains(#"<family>Arial</family>"#))
+        #expect(fontConfig.contains("""
+            <family>Arial</family>
+                <prefer>
+                  <family>Arial</family>
+                  <family>Tahoma</family>
+                  <family>PingFang SC</family>
+            """))
+        #expect(fontConfig.contains("""
+            <family>Microsoft YaHei UI</family>
+                <prefer>
+                  <family>PingFang SC</family>
+            """))
+        #expect(!fontConfig.contains(#"<rejectfont>"#))
+        #expect(!fontConfig.contains(#"<patelt name="family"><string>Arial</string></patelt>"#))
+        #expect(!fontConfig.contains(#"<edit name="family" mode="prepend" binding="strong">"#))
         #expect(fontConfig.contains("<string>zh-cn</string>"))
     }
 
-    @Test("Font repair upgrades legacy Latin-only UI font links")
-    func fontRepairUpgradesLegacyLatinOnlyUIFontLinks() throws {
+    @Test("Font repair upgrades legacy CJK-overridden UI font links")
+    func fontRepairUpgradesLegacyCJKOverriddenUIFontLinks() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("MacWinBottleFontLinkTests-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -663,7 +675,12 @@ struct BottleServiceTests {
             withDestinationPath: oldSegoeTarget
         )
         let oldArialURL = fontsDirectory.appendingPathComponent("arialbd.ttf")
-        try Data("latin-only".utf8).write(to: oldArialURL)
+        try FileManager.default.createSymbolicLink(
+            atPath: oldArialURL.path,
+            withDestinationPath: "/System/Library/Fonts/STHeiti Medium.ttc"
+        )
+        let customArialURL = fontsDirectory.appendingPathComponent("arial.ttf")
+        try Data("user-installed-arial".utf8).write(to: customArialURL)
 
         try service.repairBottleCompatibility(bottle)
 
@@ -672,16 +689,16 @@ struct BottleServiceTests {
         )
         #expect(repairedTarget != oldSegoeTarget)
         #expect(
-            repairedTarget.hasSuffix("/PingFang.ttc")
-                || repairedTarget == "/System/Library/Fonts/STHeiti Medium.ttc"
-                || repairedTarget == "/System/Library/Fonts/Hiragino Sans GB.ttc"
+            repairedTarget == "/System/Library/Fonts/Supplemental/Tahoma.ttf"
+                || repairedTarget == "/System/Library/Fonts/Supplemental/Arial.ttf"
         )
         let repairedArialTarget = try FileManager.default.destinationOfSymbolicLink(atPath: oldArialURL.path)
         #expect(
-            repairedArialTarget.hasSuffix("/PingFang.ttc")
-                || repairedArialTarget == "/System/Library/Fonts/STHeiti Medium.ttc"
-                || repairedArialTarget == "/System/Library/Fonts/Hiragino Sans GB.ttc"
+            repairedArialTarget == "/System/Library/Fonts/Supplemental/Arial Bold.ttf"
+                || repairedArialTarget == "/Library/Fonts/Arial Bold.ttf"
         )
+        #expect((try? FileManager.default.destinationOfSymbolicLink(atPath: customArialURL.path)) == nil)
+        #expect(try String(contentsOf: customArialURL, encoding: .utf8) == "user-installed-arial")
     }
 
     @Test("Compatibility repair registers detected app launchers")

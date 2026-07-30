@@ -1272,6 +1272,32 @@ struct ApplicationCompatibilityProfileTests {
         #expect(updated.envOverrides["MACWIN_LAUNCH_CWD"] == "executable-dir")
     }
 
+    @Test("DBeaver uses a Java SWT profile with modern TrueType hinting")
+    func dbeaverUsesDedicatedSWTProfile() {
+        let launcher = LauncherManifest(
+            id: "dbeaver-database",
+            appId: "industrial-tools",
+            bottleId: "bottle",
+            displayName: "DBeaver Community",
+            exePath: "C:\\macwin-portable\\dbeaver-database\\dbeaver\\dbeaver.exe"
+        )
+
+        let profile = ApplicationCompatibilityProfile.matched(
+            recipeId: launcher.appId,
+            launcherId: launcher.id,
+            displayName: launcher.displayName,
+            exePath: launcher.exePath
+        )
+        #expect(profile == .dbeaverSWT)
+        let updated = try! #require(profile).applied(to: launcher)
+        #expect(updated.envOverrides["MACWIN_COMPAT_PROFILE"] == "dbeaver-swt")
+        #expect(updated.envOverrides["MACWIN_DBEAVER_SWT_REPAIR"] == "1")
+        #expect(updated.envOverrides["FREETYPE_PROPERTIES"]?.contains("interpreter-version=40") == true)
+        #expect(updated.envOverrides["WINE_D3D_CONFIG"] == "renderer=gl,csmt=0x0")
+        #expect(updated.envOverrides["MACWIN_LAUNCH_CWD"] == "executable-dir")
+        #expect(updated.envOverrides["ROSETTA_X87_PATH"] == "")
+    }
+
     @Test("Clearing a profile removes managed values and disables automatic matching")
     func clearingProfileRemovesManagedValuesAndDisablesAutomaticMatching() {
         let launcher = LauncherManifest(

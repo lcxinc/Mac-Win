@@ -2430,7 +2430,9 @@ public struct BottleService {
     }
 
     public static func fontConfigText(fontDirectories: [String]) -> String {
-        let fallbackFamilies = [
+        let latinFallbackFamilies = [
+            "Tahoma",
+            "Arial",
             "PingFang SC",
             "Hiragino Sans GB",
             "Heiti SC",
@@ -2442,7 +2444,33 @@ public struct BottleService {
             "SimHei",
             "SimSun",
             "Arial Unicode MS",
-            "Segoe UI",
+            "sans-serif"
+        ]
+        let arialFallbackFamilies = [
+            "Arial",
+            "Tahoma",
+            "PingFang SC",
+            "Hiragino Sans GB",
+            "Heiti SC",
+            "Noto Sans SC",
+            "Noto Sans CJK SC",
+            "Source Han Sans SC",
+            "SimHei",
+            "SimSun",
+            "Arial Unicode MS",
+            "sans-serif"
+        ]
+        let cjkFallbackFamilies = [
+            "PingFang SC",
+            "Hiragino Sans GB",
+            "Heiti SC",
+            "Noto Sans SC",
+            "Noto Sans CJK SC",
+            "Source Han Sans SC",
+            "SimHei",
+            "SimSun",
+            "Arial Unicode MS",
+            "Tahoma",
             "Arial",
             "sans-serif"
         ]
@@ -2474,13 +2502,24 @@ public struct BottleService {
             "Genshin Impact",
             "miHoYo"
         ]
-        let forcedCJKFamilies = [
-            "Arial",
-            "Arial Bold",
-            "Tahoma",
-            "Segoe UI",
-            "Segoe UI Bold",
-            "Segoe UI Semibold"
+        let cjkAliasFamilies: Set<String> = [
+            "Microsoft YaHei UI",
+            "Microsoft YaHei",
+            "MiSans",
+            "HarmonyOS Sans",
+            "HarmonyOS Sans SC",
+            "OPPOSans",
+            "Source Han Sans",
+            "Source Han Sans CN",
+            "Source Han Sans SC",
+            "HYWenHei",
+            "HYWenHei-85W",
+            "HYWenHei 85W",
+            "HYWenHei 85W Regular",
+            "HYWenHei-Genshin",
+            "Genshin Impact DRIP FONT",
+            "Genshin Impact",
+            "miHoYo"
         ]
 
         var lines = [
@@ -2489,30 +2528,21 @@ public struct BottleService {
             "<fontconfig>"
         ]
         lines.append(contentsOf: fontDirectories.map { "  <dir>\(Self.xmlEscaped($0))</dir>" })
-        lines.append("  <selectfont>")
-        lines.append("    <rejectfont>")
-        lines.append("      <pattern>")
-        lines.append("        <patelt name=\"family\"><string>Arial</string></patelt>")
-        lines.append("      </pattern>")
-        lines.append("    </rejectfont>")
-        lines.append("  </selectfont>")
         for family in aliasFamilies {
+            let fallbackFamilies: [String]
+            if cjkAliasFamilies.contains(family) {
+                fallbackFamilies = cjkFallbackFamilies
+            } else if family == "Arial" {
+                fallbackFamilies = arialFallbackFamilies
+            } else {
+                fallbackFamilies = latinFallbackFamilies
+            }
             lines.append("  <alias>")
             lines.append("    <family>\(Self.xmlEscaped(family))</family>")
             lines.append("    <prefer>")
             lines.append(contentsOf: fallbackFamilies.map { "      <family>\(Self.xmlEscaped($0))</family>" })
             lines.append("    </prefer>")
             lines.append("  </alias>")
-        }
-        for family in forcedCJKFamilies {
-            lines.append("  <match target=\"pattern\">")
-            lines.append("    <test name=\"family\" compare=\"eq\">")
-            lines.append("      <string>\(Self.xmlEscaped(family))</string>")
-            lines.append("    </test>")
-            lines.append("    <edit name=\"family\" mode=\"prepend\" binding=\"strong\">")
-            lines.append("      <string>PingFang SC</string>")
-            lines.append("    </edit>")
-            lines.append("  </match>")
         }
         lines.append("  <match target=\"pattern\">")
         lines.append("    <edit name=\"lang\" mode=\"append\">")
@@ -3120,15 +3150,13 @@ public struct BottleService {
         WindowsFontLink(fileName: "pingfang.ttc", sourceCandidates: [], discoveryFileNames: ["PingFang.ttc"]),
         WindowsFontLink(
             fileName: "arial.ttf",
-            sourceCandidates: ["/System/Library/Fonts/STHeiti Medium.ttc", "/System/Library/Fonts/Hiragino Sans GB.ttc"],
-            discoveryFileNames: ["PingFang.ttc"],
-            replaceExisting: true
+            sourceCandidates: ["/System/Library/Fonts/Supplemental/Arial.ttf", "/Library/Fonts/Arial.ttf"],
+            discoveryFileNames: ["Arial.ttf"]
         ),
         WindowsFontLink(
             fileName: "arialbd.ttf",
-            sourceCandidates: ["/System/Library/Fonts/STHeiti Medium.ttc", "/System/Library/Fonts/Hiragino Sans GB.ttc"],
-            discoveryFileNames: ["PingFang.ttc"],
-            replaceExisting: true
+            sourceCandidates: ["/System/Library/Fonts/Supplemental/Arial Bold.ttf", "/Library/Fonts/Arial Bold.ttf"],
+            discoveryFileNames: ["Arial Bold.ttf"]
         ),
         WindowsFontLink(fileName: "ariali.ttf", sourceCandidates: ["/System/Library/Fonts/Supplemental/Arial Italic.ttf", "/Library/Fonts/Arial Italic.ttf"]),
         WindowsFontLink(fileName: "arialbi.ttf", sourceCandidates: ["/System/Library/Fonts/Supplemental/Arial Bold Italic.ttf", "/Library/Fonts/Arial Bold Italic.ttf"]),
@@ -3139,16 +3167,16 @@ public struct BottleService {
         WindowsFontLink(fileName: "couri.ttf", sourceCandidates: ["/System/Library/Fonts/Supplemental/Courier New Italic.ttf", "/Library/Fonts/Courier New Italic.ttf"]),
         WindowsFontLink(fileName: "courbi.ttf", sourceCandidates: ["/System/Library/Fonts/Supplemental/Courier New Bold Italic.ttf", "/Library/Fonts/Courier New Bold Italic.ttf"]),
         WindowsFontLink(fileName: "micross.ttf", sourceCandidates: ["/System/Library/Fonts/Supplemental/Microsoft Sans Serif.ttf", "/Library/Fonts/Microsoft Sans Serif.ttf"]),
-        WindowsFontLink(fileName: "segoeui.ttf", sourceCandidates: ["/System/Library/Fonts/STHeiti Medium.ttc", "/System/Library/Fonts/Hiragino Sans GB.ttc", "/System/Library/Fonts/Helvetica.ttc"], discoveryFileNames: ["PingFang.ttc"]),
-        WindowsFontLink(fileName: "segoeuib.ttf", sourceCandidates: ["/System/Library/Fonts/STHeiti Medium.ttc", "/System/Library/Fonts/Hiragino Sans GB.ttc", "/System/Library/Fonts/Supplemental/Arial Bold.ttf"], discoveryFileNames: ["PingFang.ttc"]),
-        WindowsFontLink(fileName: "segoeuii.ttf", sourceCandidates: ["/System/Library/Fonts/STHeiti Medium.ttc", "/System/Library/Fonts/Hiragino Sans GB.ttc", "/System/Library/Fonts/Supplemental/Arial Italic.ttf"], discoveryFileNames: ["PingFang.ttc"]),
-        WindowsFontLink(fileName: "segoeuiz.ttf", sourceCandidates: ["/System/Library/Fonts/STHeiti Medium.ttc", "/System/Library/Fonts/Hiragino Sans GB.ttc", "/System/Library/Fonts/Supplemental/Arial Bold Italic.ttf"], discoveryFileNames: ["PingFang.ttc"]),
-        WindowsFontLink(fileName: "segoeuil.ttf", sourceCandidates: ["/System/Library/Fonts/STHeiti Light.ttc", "/System/Library/Fonts/Hiragino Sans GB.ttc"], discoveryFileNames: ["PingFang.ttc"]),
-        WindowsFontLink(fileName: "seguisb.ttf", sourceCandidates: ["/System/Library/Fonts/STHeiti Medium.ttc", "/System/Library/Fonts/Hiragino Sans GB.ttc"], discoveryFileNames: ["PingFang.ttc"]),
+        WindowsFontLink(fileName: "segoeui.ttf", sourceCandidates: ["/System/Library/Fonts/Supplemental/Tahoma.ttf", "/System/Library/Fonts/Supplemental/Arial.ttf", "/System/Library/Fonts/Helvetica.ttc"]),
+        WindowsFontLink(fileName: "segoeuib.ttf", sourceCandidates: ["/System/Library/Fonts/Supplemental/Tahoma Bold.ttf", "/System/Library/Fonts/Supplemental/Arial Bold.ttf"]),
+        WindowsFontLink(fileName: "segoeuii.ttf", sourceCandidates: ["/System/Library/Fonts/Supplemental/Arial Italic.ttf"]),
+        WindowsFontLink(fileName: "segoeuiz.ttf", sourceCandidates: ["/System/Library/Fonts/Supplemental/Arial Bold Italic.ttf"]),
+        WindowsFontLink(fileName: "segoeuil.ttf", sourceCandidates: ["/System/Library/Fonts/HelveticaNeue.ttc", "/System/Library/Fonts/Helvetica.ttc", "/System/Library/Fonts/Supplemental/Arial.ttf"]),
+        WindowsFontLink(fileName: "seguisb.ttf", sourceCandidates: ["/System/Library/Fonts/Supplemental/Tahoma Bold.ttf", "/System/Library/Fonts/Supplemental/Arial Bold.ttf"]),
         WindowsFontLink(fileName: "seguisym.ttf", sourceCandidates: ["/System/Library/Fonts/Apple Symbols.ttf", "/System/Library/Fonts/STHeiti Medium.ttc", "/System/Library/Fonts/Hiragino Sans GB.ttc"], discoveryFileNames: ["PingFang.ttc"]),
         WindowsFontLink(fileName: "segfluent.ttf", sourceCandidates: ["/System/Library/Fonts/Apple Symbols.ttf", "/System/Library/Fonts/STHeiti Medium.ttc", "/System/Library/Fonts/Hiragino Sans GB.ttc"], discoveryFileNames: ["PingFang.ttc"]),
-        WindowsFontLink(fileName: "tahoma.ttf", sourceCandidates: ["/System/Library/Fonts/STHeiti Medium.ttc", "/System/Library/Fonts/Hiragino Sans GB.ttc", "/System/Library/Fonts/Supplemental/Arial.ttf"], discoveryFileNames: ["PingFang.ttc"]),
-        WindowsFontLink(fileName: "tahomabd.ttf", sourceCandidates: ["/System/Library/Fonts/STHeiti Medium.ttc", "/System/Library/Fonts/Hiragino Sans GB.ttc", "/System/Library/Fonts/Supplemental/Arial Bold.ttf"], discoveryFileNames: ["PingFang.ttc"]),
+        WindowsFontLink(fileName: "tahoma.ttf", sourceCandidates: ["/System/Library/Fonts/Supplemental/Tahoma.ttf", "/System/Library/Fonts/Supplemental/Arial.ttf"]),
+        WindowsFontLink(fileName: "tahomabd.ttf", sourceCandidates: ["/System/Library/Fonts/Supplemental/Tahoma Bold.ttf", "/System/Library/Fonts/Supplemental/Arial Bold.ttf"]),
         WindowsFontLink(fileName: "times.ttf", sourceCandidates: ["/System/Library/Fonts/Supplemental/Times New Roman.ttf", "/Library/Fonts/Times New Roman.ttf"]),
         WindowsFontLink(fileName: "timesbd.ttf", sourceCandidates: ["/System/Library/Fonts/Supplemental/Times New Roman Bold.ttf", "/Library/Fonts/Times New Roman Bold.ttf"]),
         WindowsFontLink(fileName: "timesi.ttf", sourceCandidates: ["/System/Library/Fonts/Supplemental/Times New Roman Italic.ttf", "/Library/Fonts/Times New Roman Italic.ttf"]),

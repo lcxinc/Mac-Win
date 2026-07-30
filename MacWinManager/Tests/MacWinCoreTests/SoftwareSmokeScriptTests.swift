@@ -3,6 +3,26 @@ import Testing
 
 @Suite("Software smoke script")
 struct SoftwareSmokeScriptTests {
+    @Test("DBeaver smoke preserves Latin UI fonts and uses CJK glyph fallback")
+    func dbeaverSmokePreservesLatinUIFontFiles() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        #expect(script.contains("replace_windows_font_alias ARIAL.TTF"))
+        #expect(script.contains("replace_windows_font_alias ARIALBD.TTF"))
+        #expect(!script.contains("for target in ARIAL.TTF ARIALBD.TTF"))
+        #expect(!script.contains("<rejectfont>"))
+        #expect(!script.contains(#"<patelt name="family"><string>Arial</string></patelt>"#))
+        #expect(script.contains("MACWIN_COMPAT_PROFILE=dbeaver-swt"))
+        #expect(script.contains(#"FREETYPE_PROPERTIES="truetype:interpreter-version=40 cff:no-stem-darkening=0""#))
+        #expect(script.contains("run_dbeaver_jdbc_workload"))
+    }
+
     @Test("ONLYOFFICE smoke uses a complete install and repairs renderer fonts before PDF export")
     func onlyOfficeSmokeRepairsRendererFontsBeforePDFExport() throws {
         let repositoryRoot = URL(fileURLWithPath: #filePath)

@@ -532,6 +532,7 @@ enum TextKey {
     case cefSoftwareRendererProfile
     case chromiumBrowserProfile
     case curaSlicerProfile
+    case dbeaverSWTProfile
     case kritaOpenGLProfile
     case geogebraLegacyElectron32Profile
     case gmshOpenGLProfile
@@ -662,6 +663,8 @@ enum AppText {
             return text(.chromiumBrowserProfile, language: language)
         case .curaSlicer:
             return text(.curaSlicerProfile, language: language)
+        case .dbeaverSWT:
+            return text(.dbeaverSWTProfile, language: language)
         case .kritaOpenGL:
             return text(.kritaOpenGLProfile, language: language)
         case .geogebraLegacyElectron32:
@@ -1773,6 +1776,7 @@ enum AppText {
         case .kiCadEDAProfile: "KiCad 中文界面与 OpenGL 修复"
         case .libreCADQtProfile: "LibreCAD 中文界面与 CAD 画布修复"
         case .jabRefJavaFXD3DProfile: "JabRef JavaFX D3D 文字与窗口修复"
+        case .dbeaverSWTProfile: "DBeaver Java/SWT 字体与窗口修复"
         case .jaspQtWebEngineQrcProfile: "JASP QtWebEngine/qrc 修复"
         case .meshLabSoftwareOpenGLProfile: "MeshLab 软件 OpenGL 视口"
         case .openPLCEditorProfile: "OpenPLC Electron 画面与时区修复"
@@ -2310,6 +2314,7 @@ enum AppText {
         case .kiCadEDAProfile: "KiCad CJK UI and OpenGL Repair"
         case .libreCADQtProfile: "LibreCAD CJK UI and CAD Canvas Repair"
         case .jabRefJavaFXD3DProfile: "JabRef JavaFX D3D Text and Window Repair"
+        case .dbeaverSWTProfile: "DBeaver Java/SWT Font and Window Repair"
         case .jaspQtWebEngineQrcProfile: "JASP QtWebEngine/qrc Repair"
         case .meshLabSoftwareOpenGLProfile: "MeshLab Software OpenGL Viewport"
         case .openPLCEditorProfile: "OpenPLC Electron Compositor and Timezone Repair"

@@ -305,6 +305,8 @@ public struct CompatibilityRepairAuditService: @unchecked Sendable {
                 return .bambuStudioSoftwareOpenGL
             case ApplicationCompatibilityProfile.blenderSoftwareOpenGL.rawValue:
                 return .blenderSoftwareOpenGL
+            case ApplicationCompatibilityProfile.dbeaverSWT.rawValue:
+                return .dbeaverSWT
             case ApplicationCompatibilityProfile.browserGecko.rawValue:
                 return .browserGecko
             case ApplicationCompatibilityProfile.steamClient.rawValue:

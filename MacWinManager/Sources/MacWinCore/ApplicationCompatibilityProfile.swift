@@ -7,6 +7,7 @@ public enum ApplicationCompatibilityProfile: String, Codable, CaseIterable, Send
     case cefSoftwareRenderer = "cef-software-renderer"
     case chromiumBrowser = "chromium-browser"
     case curaSlicer = "cura-slicer"
+    case dbeaverSWT = "dbeaver-swt"
     case freeCADOpenGL = "freecad-opengl"
     case kiCadEDA = "kicad-eda"
     case libreCADQt = "librecad-qt"
@@ -343,6 +344,8 @@ public enum ApplicationCompatibilityProfile: String, Codable, CaseIterable, Send
             Self.chromiumBrowserArguments
         case .curaSlicer:
             []
+        case .dbeaverSWT:
+            []
         case .freeCADOpenGL:
             []
         case .kiCadEDA:
@@ -564,6 +567,27 @@ public enum ApplicationCompatibilityProfile: String, Codable, CaseIterable, Send
                 "QT_SCALE_FACTOR": "1",
                 "WINEDEBUG": "-all",
                 "WINE_D3D_CONFIG": "renderer=gl,csmt=0x0"
+            ]
+        case .dbeaverSWT:
+            [
+                "FREETYPE_PROPERTIES": "truetype:interpreter-version=40 cff:no-stem-darkening=0",
+                "LANG": "zh_CN.UTF-8",
+                "LANGUAGE": "zh_CN:zh:en_US:en",
+                "LC_ALL": "zh_CN.UTF-8",
+                "LC_CTYPE": "zh_CN.UTF-8",
+                "MACWIN_ACTIVATE_WINE_APP": "1",
+                "MACWIN_APP_MODE_INPUT_REPAIR": "1",
+                "MACWIN_COMPAT_PROFILE": rawValue,
+                "MACWIN_DBEAVER_SWT_REPAIR": "1",
+                "MACWIN_FONTCONFIG_REPAIR": "1",
+                "MACWIN_FONT_FALLBACK_REPAIR": "1",
+                "MACWIN_FORCE_MOUSE_FOCUS": "1",
+                "MACWIN_LAUNCH_CWD": "executable-dir",
+                "MACWIN_TEXT_RENDERING_REPAIR": "1",
+                "ROSETTA_X87_PATH": "",
+                "WINEDEBUG": "-all",
+                "WINE_D3D_CONFIG": "renderer=gl,csmt=0x0",
+                "WINEDLLOVERRIDES": "winemenubuilder.exe=d"
             ]
         case .freeCADOpenGL:
             [
@@ -1360,6 +1384,16 @@ public enum ApplicationCompatibilityProfile: String, Codable, CaseIterable, Send
         }
 
         if tokens.contains(where: { token in
+            token.contains("dbeaver-database")
+                || token.contains("\\dbeaver\\dbeaver.exe")
+                || token.contains("/dbeaver/dbeaver.exe")
+                || token.hasSuffix("\\dbeaver.exe")
+                || token.hasSuffix("/dbeaver.exe")
+        }) {
+            return .dbeaverSWT
+        }
+
+        if tokens.contains(where: { token in
             token.contains("krita-paint")
                 || token.contains("krita-opengl")
                 || token.contains("krita.exe")
@@ -1745,6 +1779,8 @@ public enum ApplicationCompatibilityProfile: String, Codable, CaseIterable, Send
                 return .chromiumBrowser
             case curaSlicer.rawValue:
                 return .curaSlicer
+            case dbeaverSWT.rawValue:
+                return .dbeaverSWT
             case freeCADOpenGL.rawValue:
                 return .freeCADOpenGL
             case kiCadEDA.rawValue:

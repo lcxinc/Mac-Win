@@ -10700,6 +10700,7 @@ xml_escape() {
 write_smoke_fontconfig() {
   local cache_dir="$PREFIX/fontconfig-cache"
   local windows_fonts="$PREFIX/drive_c/windows/Fonts"
+  local -a font_fallbacks
   mkdir -p "$cache_dir" "$windows_fonts"
   {
     echo '<?xml version="1.0"?>'
@@ -10717,34 +10718,26 @@ write_smoke_fontconfig() {
       printf '  <dir>%s</dir>\n' "$(printf '%s' "$dir" | xml_escape)"
     done
     printf '  <cachedir>%s</cachedir>\n' "$(printf '%s' "$cache_dir" | xml_escape)"
-    cat <<'XML'
-  <selectfont>
-    <rejectfont>
-      <pattern>
-        <patelt name="family"><string>Arial</string></patelt>
-      </pattern>
-    </rejectfont>
-  </selectfont>
-XML
     for family in sans-serif system-ui "-apple-system" BlinkMacSystemFont "Segoe UI" "Microsoft YaHei UI" "Microsoft YaHei" Arial Tahoma "Noto Sans" "Source Han Sans" "HYWenHei"; do
       printf '  <alias>\n'
       printf '    <family>%s</family>\n' "$(printf '%s' "$family" | xml_escape)"
       printf '    <prefer>\n'
-      for fallback in "PingFang SC" "Hiragino Sans GB" "Heiti SC" "Microsoft YaHei UI" "Microsoft YaHei" "Noto Sans SC" "Noto Sans CJK SC" "Source Han Sans SC" SimHei SimSun "Arial Unicode MS" "Segoe UI" Arial sans-serif; do
+      case "$family" in
+        "Microsoft YaHei UI"|"Microsoft YaHei"|"Noto Sans"|"Source Han Sans"|"HYWenHei")
+          font_fallbacks=("PingFang SC" "Hiragino Sans GB" "Heiti SC" "Noto Sans SC" "Noto Sans CJK SC" "Source Han Sans SC" SimHei SimSun "Arial Unicode MS" Tahoma Arial sans-serif)
+          ;;
+        Arial)
+          font_fallbacks=(Arial Tahoma "PingFang SC" "Hiragino Sans GB" "Heiti SC" "Noto Sans SC" "Noto Sans CJK SC" "Source Han Sans SC" SimHei SimSun "Arial Unicode MS" sans-serif)
+          ;;
+        *)
+          font_fallbacks=(Tahoma Arial "PingFang SC" "Hiragino Sans GB" "Heiti SC" "Noto Sans SC" "Noto Sans CJK SC" "Source Han Sans SC" SimHei SimSun "Arial Unicode MS" sans-serif)
+          ;;
+      esac
+      for fallback in "${font_fallbacks[@]}"; do
         printf '      <family>%s</family>\n' "$(printf '%s' "$fallback" | xml_escape)"
       done
       printf '    </prefer>\n'
       printf '  </alias>\n'
-    done
-    for family in Arial "Arial Bold" Tahoma "Segoe UI" "Segoe UI Bold" "Segoe UI Semibold"; do
-      printf '  <match target="pattern">\n'
-      printf '    <test name="family" compare="eq">\n'
-      printf '      <string>%s</string>\n' "$(printf '%s' "$family" | xml_escape)"
-      printf '    </test>\n'
-      printf '    <edit name="family" mode="prepend" binding="strong">\n'
-      printf '      <string>PingFang SC</string>\n'
-      printf '    </edit>\n'
-      printf '  </match>\n'
     done
     cat <<'XML'
   <match target="pattern">
@@ -10775,6 +10768,23 @@ copy_windows_font_alias() {
   return 1
 }
 
+replace_windows_font_alias() {
+  local target="$1"
+  shift
+  local fonts_dir="$PREFIX/drive_c/windows/Fonts"
+  local source
+  for source in "$@"; do
+    [ -f "$source" ] || continue
+    if [ ! -L "$fonts_dir/$target" ] && [ -f "$fonts_dir/$target" ]; then
+      return 0
+    fi
+    rm -f "$fonts_dir/$target"
+    cp -f "$source" "$fonts_dir/$target" || return 1
+    return 0
+  done
+  return 1
+}
+
 register_windows_font_file() {
   local display_name="$1"
   local file_name="$2"
@@ -10786,28 +10796,12 @@ register_windows_font_file() {
 
 repair_javafx_windows_fonts() {
   local fonts_dir="$PREFIX/drive_c/windows/Fonts"
-  local cjk_ui_font
   mkdir -p "$fonts_dir"
 
-  copy_windows_font_alias ARIAL.TTF "/System/Library/Fonts/Supplemental/Arial.ttf" "/System/Library/Fonts/ArialHB.ttc" || true
-  copy_windows_font_alias ARIALBD.TTF "/System/Library/Fonts/Supplemental/Arial Bold.ttf" "/System/Library/Fonts/Supplemental/Arial Black.ttf" || true
+  replace_windows_font_alias ARIAL.TTF "/System/Library/Fonts/Supplemental/Arial.ttf" "/System/Library/Fonts/ArialHB.ttc" || true
+  replace_windows_font_alias ARIALBD.TTF "/System/Library/Fonts/Supplemental/Arial Bold.ttf" "/System/Library/Fonts/Supplemental/Arial Black.ttf" || true
   copy_windows_font_alias ARIALI.TTF "/System/Library/Fonts/Supplemental/Arial Italic.ttf" "/System/Library/Fonts/Supplemental/Arial.ttf" || true
   copy_windows_font_alias ARIALBI.TTF "/System/Library/Fonts/Supplemental/Arial Bold Italic.ttf" "/System/Library/Fonts/Supplemental/Arial Bold.ttf" || true
-
-  cjk_ui_font="$(find /System/Library/AssetsV2/com_apple_MobileAsset_Font8 -name PingFang.ttc -print -quit 2>/dev/null || true)"
-  if [ -z "$cjk_ui_font" ]; then
-    for cjk_ui_font in "/System/Library/Fonts/STHeiti Medium.ttc" "/System/Library/Fonts/Hiragino Sans GB.ttc"; do
-      [ -f "$cjk_ui_font" ] && break
-    done
-  fi
-  if [ -f "$cjk_ui_font" ]; then
-    for target in ARIAL.TTF ARIALBD.TTF; do
-      if [ ! -L "$fonts_dir/$target" ] || [ "$(readlink "$fonts_dir/$target" 2>/dev/null || true)" != "$cjk_ui_font" ]; then
-        rm -f "$fonts_dir/$target"
-        ln -s "$cjk_ui_font" "$fonts_dir/$target"
-      fi
-    done
-  fi
 
   copy_windows_font_alias COUR.TTF "/System/Library/Fonts/Supplemental/Courier New.ttf" "/System/Library/Fonts/Courier.ttc" || true
   copy_windows_font_alias COURBD.TTF "/System/Library/Fonts/Supplemental/Courier New Bold.ttf" "/System/Library/Fonts/Courier.ttc" || true
@@ -14612,6 +14606,26 @@ for item in "${installers[@]}"; do
   fi
   if [ "$id" = "projectlibre-pm" ] || [ "$id" = "freeplane-mindmap" ] || [ "$id" = "ugs-cnc" ] || [ "$id" = "openjump-gis" ]; then
     launch_env+=(JAVA_TOOL_OPTIONS="-Dsun.java2d.d3d=false -Dsun.java2d.opengl=false")
+  fi
+  if [ "$id" = "dbeaver-database" ]; then
+    launch_env+=(
+      FREETYPE_PROPERTIES="truetype:interpreter-version=40 cff:no-stem-darkening=0"
+      LANG=zh_CN.UTF-8
+      LANGUAGE=zh_CN:zh:en_US:en
+      LC_ALL=zh_CN.UTF-8
+      LC_CTYPE=zh_CN.UTF-8
+      MACWIN_ACTIVATE_WINE_APP=1
+      MACWIN_APP_MODE_INPUT_REPAIR=1
+      MACWIN_COMPAT_PROFILE=dbeaver-swt
+      MACWIN_DBEAVER_SWT_REPAIR=1
+      MACWIN_FONTCONFIG_REPAIR=1
+      MACWIN_FONT_FALLBACK_REPAIR=1
+      MACWIN_FORCE_MOUSE_FOCUS=1
+      MACWIN_LAUNCH_CWD=executable-dir
+      MACWIN_TEXT_RENDERING_REPAIR=1
+      WINE_D3D_CONFIG=renderer=gl,csmt=0x0
+      'WINEDLLOVERRIDES=winemenubuilder.exe=d'
+    )
   fi
   if [ "$id" = "sweethome3d-design" ]; then
     launch_env+=(
