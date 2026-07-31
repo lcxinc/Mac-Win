@@ -911,4 +911,41 @@ struct SoftwareSmokeScriptTests {
         // Tuple subclass so indexed/iterable access matches os.uname_result:
         #expect(script.contains("class _MacWinUnameResult(tuple):"))
     }
+
+    @Test("SQLiteBrowser CJK probe data matches the workload row assertions")
+    func sqlitebrowserCjkProbeMatchesWorkloadAssertions() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        // The sqlitebrowser probe fixture (C source) embeds CJK category text
+        // as UTF-8 hex escapes, and run_sqlitebrowser_core_workload asserts
+        // the same text appears in the result. A mismatch (e.g. a probe using
+        // the wrong escape) makes the workload fail with no useful diagnostic.
+        // Decode the probe's escapes and confirm they match the assertion text.
+        let probeURL = repositoryRoot.appendingPathComponent("scripts/fixtures/sqlitebrowser-probe.c")
+        let probe = try String(contentsOf: probeURL, encoding: .utf8)
+
+        func decodeHex(_ hex: String) -> String? {
+            var bytes = [UInt8]()
+            var idx = hex.startIndex
+            while idx < hex.endIndex {
+                let next = hex.index(idx, offsetBy: 2)
+                guard next <= hex.endIndex, let b = UInt8(hex[idx..<next], radix: 16) else { return nil }
+                bytes.append(b)
+                idx = next
+            }
+            return String(bytes: bytes, encoding: .utf8)
+        }
+        let regex = try NSRegularExpression(pattern: #"((?:\\x[0-9A-Fa-f]{2})+)"#)
+        let decoded = regex.matches(in: probe, range: NSRange(probe.startIndex..<probe.endIndex, in: probe))
+            .compactMap { m -> String? in
+                guard let r = Range(m.range(at: 1), in: probe) else { return nil }
+                return decodeHex(probe[r].replacingOccurrences(of: "\\x", with: ""))
+            }
+        // The probe must embed both CJK categories the workload asserts.
+        #expect(decoded.contains("中文数据"), "probe must embed 中文数据 (asserted by run_sqlitebrowser_core_workload)")
+        #expect(decoded.contains("工程软件"), "probe must embed 工程软件 (asserted by run_sqlitebrowser_core_workload)")
+    }
 }
