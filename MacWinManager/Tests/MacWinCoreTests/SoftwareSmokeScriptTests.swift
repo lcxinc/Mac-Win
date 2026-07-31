@@ -379,4 +379,59 @@ struct SoftwareSmokeScriptTests {
             #expect(script.contains("\(className)|\(dll)"), "WinRT class \(className) must map to \(dll)")
         }
     }
+
+    @Test(".NET Framework registry Release DWORD and Version string stay in sync")
+    func dotnetFrameworkReleaseAndVersionStayInSync() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        // Apps detect the installed .NET Framework either by the Release DWORD
+        // (authoritative) or by the Version string under NDP\v4\Full. Microsoft's
+        // mapping (learn.microsoft.com/dotnet/framework/install/how-to-determine-
+        // which-versions-are-installed) pins Release 533320 to 4.8.1, so the
+        // Version string must report a 4.8.x build, not a 4.7 one. A mismatch
+        // makes version-gated .NET apps read two different versions from the
+        // same key.
+        //   Release 533320 -> 4.8.1 ; 528040 -> 4.8 ; 461814 -> 4.7.2 ; ...
+        let releaseToMinor: [(release: String, minor: String)] = [
+            ("533320", "4.8"),
+            ("528040", "4.8"),
+            ("461814", "4.7"),
+            ("461308", "4.7"),
+            ("460805", "4.7"),
+            ("460798", "4.7")
+        ]
+
+        // The repair function writes the same Release DWORD on both x64 and
+        // Wow6432Node paths; capture it and the matching Version string.
+        let releaseRegex = try NSRegularExpression(pattern: #"/v Release /t REG_DWORD /d (\d+) /f"#)
+        let versionRegex = try NSRegularExpression(pattern: #"/v Version /t REG_SZ /d (\d+\.\d+\.\d+) /f"#)
+        let full = NSRange(script.startIndex..<script.endIndex, in: script)
+        func firstCapture(_ regex: NSRegularExpression) -> String? {
+            guard let m = regex.firstMatch(in: script, range: full),
+                  m.numberOfRanges > 1,
+                  let r = Range(m.range(at: 1), in: script) else { return nil }
+            return String(script[r])
+        }
+        let releaseDword = try #require(firstCapture(releaseRegex))
+        let versionString = try #require(firstCapture(versionRegex))
+
+        let expectedMinor = releaseToMinor.first { $0.release == releaseDword }?.minor
+        #expect(expectedMinor != nil, "Release DWORD \(releaseDword) is not a known .NET release")
+        #expect(versionString.hasPrefix(expectedMinor ?? "0.0"), ".NET Version \(versionString) must match Release \(releaseDword) (expected \(expectedMinor ?? "?").x)")
+
+        // The Release and Version must be mirrored on both x64 and Wow6432Node
+        // paths with identical values.
+        let x64Release = #"HKLM\Software\Microsoft\NET Framework Setup\NDP\v4\Full"#
+        let wowRelease = #"HKLM\Software\Wow6432Node\Microsoft\NET Framework Setup\NDP\v4\Full"#
+        #expect(script.contains(#"\#(x64Release)' /v Release /t REG_DWORD /d \#(releaseDword) /f"#))
+        #expect(script.contains(#"\#(wowRelease)' /v Release /t REG_DWORD /d \#(releaseDword) /f"#))
+        #expect(script.contains(#"\#(x64Release)' /v Version /t REG_SZ /d \#(versionString) /f"#))
+        #expect(script.contains(#"\#(wowRelease)' /v Version /t REG_SZ /d \#(versionString) /f"#))
+    }
 }

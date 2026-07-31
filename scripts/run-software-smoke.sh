@@ -9296,7 +9296,7 @@ repair_dotnet_framework_registry() {
     "${WINE_CMD[@]}" reg add 'HKLM\Software\Microsoft\NET Framework Setup\NDP\v4\Full' /v Release /t REG_DWORD /d 533320 /f
     "${WINE_CMD[@]}" reg add 'HKLM\Software\Microsoft\NET Framework Setup\NDP\v4\Full' /v Servicing /t REG_DWORD /d 0 /f
     "${WINE_CMD[@]}" reg add 'HKLM\Software\Microsoft\NET Framework Setup\NDP\v4\Full' /v TargetVersion /t REG_SZ /d 4.0.0 /f
-    "${WINE_CMD[@]}" reg add 'HKLM\Software\Microsoft\NET Framework Setup\NDP\v4\Full' /v Version /t REG_SZ /d 4.7.03190 /f
+    "${WINE_CMD[@]}" reg add 'HKLM\Software\Microsoft\NET Framework Setup\NDP\v4\Full' /v Version /t REG_SZ /d 4.8.09085 /f
     "${WINE_CMD[@]}" reg add 'HKLM\Software\Wow6432Node\Microsoft\.NETFramework' /v InstallRoot /t REG_SZ /d 'C:\windows\Microsoft.NET\Framework\' /f
     "${WINE_CMD[@]}" reg add 'HKLM\Software\Wow6432Node\Microsoft\.NETFramework\policy\v2.0' /v 50727 /t REG_SZ /d 50727-50727 /f
     "${WINE_CMD[@]}" reg add 'HKLM\Software\Wow6432Node\Microsoft\.NETFramework\policy\v4.0' /v 30319 /t REG_SZ /d 30319-30319 /f
@@ -9304,7 +9304,7 @@ repair_dotnet_framework_registry() {
     "${WINE_CMD[@]}" reg add 'HKLM\Software\Wow6432Node\Microsoft\NET Framework Setup\NDP\v4\Full' /v Release /t REG_DWORD /d 533320 /f
     "${WINE_CMD[@]}" reg add 'HKLM\Software\Wow6432Node\Microsoft\NET Framework Setup\NDP\v4\Full' /v Servicing /t REG_DWORD /d 0 /f
     "${WINE_CMD[@]}" reg add 'HKLM\Software\Wow6432Node\Microsoft\NET Framework Setup\NDP\v4\Full' /v TargetVersion /t REG_SZ /d 4.0.0 /f
-    "${WINE_CMD[@]}" reg add 'HKLM\Software\Wow6432Node\Microsoft\NET Framework Setup\NDP\v4\Full' /v Version /t REG_SZ /d 4.7.03190 /f
+    "${WINE_CMD[@]}" reg add 'HKLM\Software\Wow6432Node\Microsoft\NET Framework Setup\NDP\v4\Full' /v Version /t REG_SZ /d 4.8.09085 /f
   } >> "$log" 2>&1 || exit_code=$?
 
   ended="$(date +%s)"
