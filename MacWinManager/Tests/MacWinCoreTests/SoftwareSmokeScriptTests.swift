@@ -302,4 +302,81 @@ struct SoftwareSmokeScriptTests {
         #expect(!script.contains(",DrDc"), "bare DrDc feature name must be EnableDrDc (chromium gpu_finch_features.cc kEnableDrDc)")
         #expect(script.contains(",EnableDrDc"), "EnableDrDc must be present in the disable-features lists")
     }
+
+    @Test("COM proxy registry uses authoritative interface method counts")
+    func comProxyRegistryUsesAuthoritativeInterfaceMethodCounts() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        // The NumMethods value on each COM Interface key must match the
+        // interface's real vtable size (IUnknown 3 + own methods), per Wine
+        // IDL (servprov.idl, oleidl.idl, dlls/combase/dcom.idl) and the MS-DCOM
+        // spec. A wrong count makes the standard marshaler read past the vtable
+        // and crash on cross-apartment calls.
+        //   IServiceProvider:  IUnknown(3) + QueryService(1)        = 4
+        //   IDropTarget:       IUnknown(3) + DragEnter/Leave/Over/Drop(4) = 7
+        //   IRemUnknown:       IUnknown(3) + RemQueryInterface/AddRef/Release(3) = 6
+        //   IRemUnknown2:      IRemUnknown(6) + RemQueryInterface2(1) = 7
+        //   IRemUnknownN:      IRemUnknown2(7) + 5 new methods       = 12
+        //   IRundown:          IRemUnknownN(12) + RundownOid(1)      = 13
+        let expected: [(iid: String, count: String)] = [
+            ("{6D5140C1-7436-11CE-8034-00AA006009FA}", "4"),   // IServiceProvider
+            ("{00000122-0000-0000-C000-000000000046}", "7"),   // IDropTarget
+            ("{00000131-0000-0000-C000-000000000046}", "6"),   // IRemUnknown
+            ("{00000142-0000-0000-C000-000000000046}", "7"),   // IRemUnknown2
+            ("{0000013C-0000-0000-C000-000000000046}", "12"),  // IRemUnknownN
+            ("{00000134-0000-0000-C000-000000000046}", "13")   // IRundown
+        ]
+        for (iid, count) in expected {
+            // The DCOM interfaces (IRemUnknown family) are registered via a
+            // "name|IID|count" loop entry; IServiceProvider and IDropTarget are
+            // registered explicitly. For all of them the IID must be declared
+            // (in a local var or loop entry) and the authoritative count must
+            // appear as a NumMethods value.
+            let iidDeclared = script.contains("\\Interface\\\(iid)")
+            let countValue = script.contains(#"/v NumMethods /t REG_SZ /d "\#(count)""#)
+                || script.contains("|\(iid)|\(count)")
+            #expect(iidDeclared, "Interface \(iid) must be declared")
+            #expect(countValue, "Interface \(iid) must register NumMethods=\(count)")
+        }
+    }
+
+    @Test("WinRT activation registry mirrors the authoritative class to DLL map")
+    func winrtActivationRegistryMirrorsAuthoritativeClassMap() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        // repair_winrt_activation_registry must register the same activatable
+        // class -> DLL pairs as BottleService.winrtActivatableClassValues,
+        // mapping each class to its owning WinRT implementation DLL.
+        let expected: [(className: String, dll: String)] = [
+            ("Windows.Foundation.Metadata.ApiInformation", "wintypes.dll"),
+            ("Windows.Foundation.PropertyValue", "wintypes.dll"),
+            ("Windows.Foundation.Collections.PropertySet", "wintypes.dll"),
+            ("Windows.Storage.Streams.Buffer", "wintypes.dll"),
+            ("Windows.Storage.Streams.DataWriter", "wintypes.dll"),
+            ("Windows.System.Threading.ThreadPool", "threadpoolwinrt.dll"),
+            ("Windows.System.Threading.ThreadPoolTimer", "threadpoolwinrt.dll"),
+            ("Windows.UI.ViewManagement.AccessibilitySettings", "windows.ui.dll"),
+            ("Windows.UI.ViewManagement.UISettings", "windows.ui.dll"),
+            ("Windows.UI.ViewManagement.UIViewSettings", "windows.ui.dll"),
+            ("Windows.UI.ViewManagement.InputPane", "windows.ui.dll"),
+            ("Windows.UI.Core.CoreWindow", "windows.ui.dll"),
+            ("Windows.UI.Internal.Input.InputSite", "windows.ui.dll"),
+            ("Windows.UI.Internal.Input.ActivationConfigurationInputObject", "windows.ui.dll")
+        ]
+        for (className, dll) in expected {
+            #expect(script.contains("\(className)|\(dll)"), "WinRT class \(className) must map to \(dll)")
+        }
+    }
 }
