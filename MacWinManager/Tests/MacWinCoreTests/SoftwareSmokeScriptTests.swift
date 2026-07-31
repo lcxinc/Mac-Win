@@ -647,4 +647,32 @@ struct SoftwareSmokeScriptTests {
         let unrepaired = launched.subtracting(repaired)
         #expect(unrepaired.isEmpty, "Gecko browser profiles launched but not repaired: \(unrepaired.sorted())")
     }
+
+    @Test("Chromium root DLL repair mirrors the BottleService DLL set")
+    func chromiumRootDllRepairMirrorsBottleServiceSet() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        // repair_chromium_root_dlls hoists the per-browser root DLLs from the
+        // versioned directory to the Application root so the browser loads the
+        // matching ELF/WER modules. The DLL set must match
+        // BottleService.chromiumRootDLLNames exactly, or a browser could load a
+        // stale or missing root DLL. Scope the check to the function's own DLL
+        // loop so a stray mention elsewhere cannot mask a removal.
+        let repairStart = try #require(script.range(of: "repair_chromium_root_dlls() {"))
+        let nextFn = try #require(script.range(of: "configure_jasp_qtwebengine_layout() {"))
+        let fnBody = String(script[repairStart.lowerBound..<nextFn.lowerBound])
+        let loopRegex = try NSRegularExpression(pattern: "for dll in [^\n]*")
+        let loopMatch = try #require(loopRegex.firstMatch(in: fnBody, range: NSRange(fnBody.startIndex..<fnBody.endIndex, in: fnBody)))
+        let loopRange = try #require(Range(loopMatch.range, in: fnBody))
+        let loopText = fnBody[loopRange]
+        for dll in ["chrome_elf.dll", "chrome_wer.dll", "msedge_elf.dll", "msedge_wer.dll", "vivaldi_elf.dll"] {
+            #expect(loopText.contains(dll), "Chromium root DLL \(dll) must be in the repair loop (matches BottleService.chromiumRootDLLNames)")
+        }
+    }
 }
