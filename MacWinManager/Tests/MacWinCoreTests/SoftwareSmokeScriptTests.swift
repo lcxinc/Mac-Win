@@ -281,4 +281,25 @@ struct SoftwareSmokeScriptTests {
             #expect(copyTargets.contains(file), "CJK font \(file) registered but not in copy list")
         }
     }
+
+    @Test("Chromium disable-features uses the real DrDc feature name")
+    func chromiumDisableFeaturesUsesRealDrDcFeatureName() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        // The Direct Rendering Display Compositor feature is declared in
+        // gpu/config/gpu_finch_features.cc as BASE_FEATURE(kEnableDrDc, ...),
+        // which derives the feature-name string "EnableDrDc". The bare name
+        // "DrDc" matches no feature, so --disable-features=DrDc silently fails
+        // to disable it. Every launch config lists features as a comma-
+        // separated list, so the bare wrong token appears as ",DrDc" while the
+        // correct one appears as ",EnableDrDc".
+        #expect(!script.contains(",DrDc"), "bare DrDc feature name must be EnableDrDc (chromium gpu_finch_features.cc kEnableDrDc)")
+        #expect(script.contains(",EnableDrDc"), "EnableDrDc must be present in the disable-features lists")
+    }
 }
