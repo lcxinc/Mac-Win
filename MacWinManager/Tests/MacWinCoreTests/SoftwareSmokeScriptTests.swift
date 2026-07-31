@@ -513,4 +513,61 @@ struct SoftwareSmokeScriptTests {
         #expect(fnBody.contains(#"Whisky-x86_64-game-build/dlls/$module/x86_64-windows/$dll"#))
         #expect(fnBody.contains(#"drive_c/windows/syswow64/$dll"#))
     }
+
+    @Test("Workload version assertions match the downloaded sample versions")
+    func workloadVersionAssertionsMatchDownloadedSamples() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+        let manifestURL = repositoryRoot.appendingPathComponent("scripts/download-software-samples.sh")
+        let manifest = try String(contentsOf: manifestURL, encoding: .utf8)
+
+        // Godot: the workload launches Godot_v<ver>-stable executables and the
+        // download manifest ships matching Godot_v<ver>-stable zips. The
+        // version pinned in the workload must equal the manifest version, or a
+        // smoke run would launch an editor that was never downloaded.
+        func capture(_ source: String, pattern: String) -> String? {
+            guard let regex = try? NSRegularExpression(pattern: pattern),
+                  let m = regex.firstMatch(in: source, range: NSRange(source.startIndex..<source.endIndex, in: source)),
+                  m.numberOfRanges > 1,
+                  let r = Range(m.range(at: 1), in: source) else { return nil }
+            return String(source[r])
+        }
+        func captureAll(_ source: String, pattern: String) -> [String] {
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+            return regex.matches(in: source, range: NSRange(source.startIndex..<source.endIndex, in: source))
+                .compactMap { m in
+                    guard m.numberOfRanges > 1, let r = Range(m.range(at: 1), in: source) else { return nil }
+                    return String(source[r])
+                }
+        }
+        let godotWorkloadVersion = try #require(capture(script, pattern: #"Godot_v([\d.]+)-stable_win64\.exe"#))
+        let godotManifestVersion = try #require(capture(manifest, pattern: #"Godot_v([\d.]+)-stable_win64\.exe\.zip"#))
+        #expect(godotWorkloadVersion == godotManifestVersion,
+                "Godot workload version \(godotWorkloadVersion) must match manifest \(godotManifestVersion)")
+
+        // LibreOffice: the workload asserts the Producer string embeds an
+        // internal version (e.g. 26.2.4.2) whose package version prefix must
+        // match the MSI version in the download manifest (26.2.4). A drift
+        // makes the PDF producer assertion fail against the installed build.
+        let loPackageVersion = try #require(capture(manifest, pattern: #"LibreOffice_(\d+\.\d+\.\d+)_Win_x86-64\.msi"#))
+        // The workload asserts a rg pattern like "LibreOffice 26\.2\.4\.2 (X86_64)";
+        // capture the leading 26.2.4 package prefix from that escaped form.
+        let loInternalVersion = try #require(capture(script, pattern: #"LibreOffice (\d+\\?\.\d+\\?\.\d+)"#))
+        let loInternalDigits = loInternalVersion.replacingOccurrences(of: "\\", with: "")
+        #expect(loInternalDigits == loPackageVersion,
+                "LibreOffice producer \(loInternalDigits) must match MSI package \(loPackageVersion)")
+
+        // DBeaver: the PostgreSQL JDBC driver version threaded through the
+        // workload (driver path, classpath, result assertion) must be
+        // self-consistent. Capture the digits-and-dots version immediately
+        // following each "postgresql/" path segment.
+        let driverVersions = captureAll(script, pattern: #"postgresql/(\d+\.\d+\.\d+)"#)
+        let distinctDriverVersions = Set(driverVersions)
+        #expect(distinctDriverVersions.count == 1, "DBeaver JDBC driver version must be consistent, found \(distinctDriverVersions)")
+    }
 }
