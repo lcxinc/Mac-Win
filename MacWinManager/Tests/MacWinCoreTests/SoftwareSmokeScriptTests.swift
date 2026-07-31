@@ -194,4 +194,49 @@ struct SoftwareSmokeScriptTests {
         #expect(script.contains("interactionProbe.steps=measurement-units,vehicle-information,map-tiles"))
         #expect(script.contains("accepted both first-run dialogs, and downloaded fresh map tiles"))
     }
+
+    @Test("WIC codec registry defines every BMP decoder pixel format")
+    func wicRegistryDefinesEveryBmpDecoderPixelFormat() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let regURL = repositoryRoot.appendingPathComponent("scripts/wic-codecs-minimal.reg")
+        let reg = try String(contentsOf: regURL, encoding: .utf8)
+
+        // Each BMP decoder Formats subkey is a section header whose path ends
+        // in "\Formats\{GUID}". Each registered pixel format appears under a
+        // Pixel Formats "\Instance\{GUID}" subkey. Extract the trailing GUID
+        // from the last {...} group on every section header.
+        func trailingGuids(inSectionHeaders containing: String, lines: [String]) -> Set<String> {
+            var guids = Set<String>()
+            for line in lines where line.hasPrefix("[") && line.contains(containing) {
+                guard let openBrace = line.lastIndex(of: "{"),
+                      let closeBrace = line.lastIndex(of: "}") else { continue }
+                guids.insert(String(line[openBrace...closeBrace]).uppercased())
+            }
+            return guids
+        }
+
+        let lines = reg.split(separator: "\n").map(String.init)
+        let bmpFormatGuids = trailingGuids(inSectionHeaders: "6B462062", lines: lines)
+            .filter { $0.contains("6FDDC324") } // Formats subkeys point at pixel-format GUIDs
+        let instanceGuids = trailingGuids(inSectionHeaders: "\\Instance\\", lines: lines)
+
+        // Every pixel format the BMP decoder advertises in its Formats list
+        // must be registered as a WIC pixel format instance, or Wine's
+        // CreateComponentInfo fails for that GUID and indexed/16/24-bit BMP
+        // decoding breaks.
+        let unregistered = bmpFormatGuids.subtracting(instanceGuids)
+        #expect(unregistered.isEmpty, "BMP decoder references unregistered pixel formats: \(unregistered.sorted())")
+
+        // The BMP decoder must advertise the common indexed and low-bpp formats.
+        let requiredSuffixes = ["901", "902", "903", "904", "909", "90A", "90C"]
+        for suffix in requiredSuffixes {
+            let guid = "{6FDDC324-4E03-4BFE-B185-3D77768DC\(suffix.uppercased())}"
+            #expect(bmpFormatGuids.contains(guid), "BMP decoder missing expected format \(guid)")
+            #expect(instanceGuids.contains(guid), "pixel format \(guid) not registered")
+        }
+    }
 }
