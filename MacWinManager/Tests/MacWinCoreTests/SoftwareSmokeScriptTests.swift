@@ -570,4 +570,48 @@ struct SoftwareSmokeScriptTests {
         let distinctDriverVersions = Set(driverVersions)
         #expect(distinctDriverVersions.count == 1, "DBeaver JDBC driver version must be consistent, found \(distinctDriverVersions)")
     }
+
+    @Test("Cura repair profile, slicer workload, and manifest share one version")
+    func curaVersionIsConsistentAcrossRepairWorkloadAndManifest() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+        let manifestURL = repositoryRoot.appendingPathComponent("scripts/download-software-samples.sh")
+        let manifest = try String(contentsOf: manifestURL, encoding: .utf8)
+
+        // repair_cura_smoke_profile and run_cura_slicing_workload pin the Cura
+        // install directory ("UltiMaker Cura <ver>") and profile directory
+        // ("cura/<minor>"). If Cura is upgraded without updating both, the
+        // repair no-ops (wrong app dir) and the workload fails to find
+        // CuraEngine. The pinned version must equal the MSI version shipped by
+        // the download manifest, and every install directory reference inside
+        // the smoke script must agree.
+        func capture(_ source: String, pattern: String) -> String? {
+            guard let regex = try? NSRegularExpression(pattern: pattern),
+                  let m = regex.firstMatch(in: source, range: NSRange(source.startIndex..<source.endIndex, in: source)),
+                  m.numberOfRanges > 1,
+                  let r = Range(m.range(at: 1), in: source) else { return nil }
+            return String(source[r])
+        }
+        let manifestCura = try #require(capture(manifest, pattern: #"UltiMaker-Cura-(\d+\.\d+\.\d+)-win64"#))
+        // Every "UltiMaker Cura <ver>" install-dir reference must match the
+        // manifest MSI version, so a Cura upgrade cannot leave the repair or
+        // workload pointing at a directory that no longer exists.
+        let regex = try NSRegularExpression(pattern: #"UltiMaker Cura (\d+\.\d+\.\d+)"#)
+        let curaVersions = regex.matches(in: script, range: NSRange(script.startIndex..<script.endIndex, in: script))
+            .compactMap { m -> String? in Range(m.range(at: 1), in: script).map { String(script[$0]) } }
+        let distinctCuraVersions = Set(curaVersions)
+        #expect(distinctCuraVersions == [manifestCura],
+                "Cura install dir version(s) \(distinctCuraVersions) must match manifest MSI \(manifestCura)")
+        // The profile directory uses the major.minor slice (5.13), derived
+        // from the full version (5.13.0).
+        let curaProfileMinor = try #require(capture(script, pattern: #"cura/(\d+\.\d+)"#))
+        let expectedMinor = manifestCura.split(separator: ".").prefix(2).joined(separator: ".")
+        #expect(curaProfileMinor == expectedMinor,
+                "Cura profile dir \(curaProfileMinor) must derive from MSI version \(expectedMinor)")
+    }
 }
