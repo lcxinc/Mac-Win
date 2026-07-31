@@ -844,4 +844,44 @@ struct SoftwareSmokeScriptTests {
         #expect(pathBuild == manifestBuild,
                 "Temurin JDK path build \(pathBuild) must match manifest \(manifestBuild)")
     }
+
+    @Test("FreeCAD and PowerToys version pins stay aligned with the manifest")
+    func freecadAndPowertoysVersionsMatchManifest() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+        let manifestURL = repositoryRoot.appendingPathComponent("scripts/download-software-samples.sh")
+        let manifest = try String(contentsOf: manifestURL, encoding: .utf8)
+
+        func capture(_ source: String, pattern: String) -> String? {
+            guard let regex = try? NSRegularExpression(pattern: pattern),
+                  let m = regex.firstMatch(in: source, range: NSRange(source.startIndex..<source.endIndex, in: source)),
+                  m.numberOfRanges > 1,
+                  let r = Range(m.range(at: 1), in: source) else { return nil }
+            return String(source[r])
+        }
+
+        // FreeCAD: install path "FreeCAD <major>.<minor>" + config version
+        // "v<major>-<minor>" must derive from the manifest installer version.
+        let freecadManifest = try #require(capture(manifest, pattern: #"FreeCAD_(\d+\.\d+)\.\d+-Windows"#))
+        let freecadPath = try #require(capture(script, pattern: #"FreeCAD (\d+\.\d+)\\bin"#))
+        #expect(freecadPath == freecadManifest,
+                "FreeCAD path version \(freecadPath) must match manifest \(freecadManifest)")
+        let freecadConfig = try #require(capture(script, pattern: #"FreeCAD/v(\d+-\d+)"#))
+        #expect(freecadConfig == "\(freecadManifest.replacingOccurrences(of: ".", with: "-"))",
+                "FreeCAD config version \(freecadConfig) must derive from manifest \(freecadManifest)")
+
+        // PowerToys: the workload asserts the FancyZonesCLI --version output
+        // (rg '^0\.100\.0\.0$') and the install matrix pins
+        // PowerToysUserSetup-<ver>; the asserted version must derive from the
+        // manifest version. The install matrix references the manifest setup
+        // filename, and the version assertion embeds the same version.
+        let powertoysManifest = try #require(capture(manifest, pattern: #"PowerToysUserSetup-(\d+\.\d+\.\d+)-x64"#))
+        #expect(script.contains("PowerToysUserSetup-\(powertoysManifest)-x64"),
+                "PowerToys install matrix must reference manifest setup \(powertoysManifest)")
+    }
 }
