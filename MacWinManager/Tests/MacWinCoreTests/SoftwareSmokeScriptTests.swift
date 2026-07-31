@@ -948,4 +948,28 @@ struct SoftwareSmokeScriptTests {
         #expect(decoded.contains("中文数据"), "probe must embed 中文数据 (asserted by run_sqlitebrowser_core_workload)")
         #expect(decoded.contains("工程软件"), "probe must embed 工程软件 (asserted by run_sqlitebrowser_core_workload)")
     }
+
+    @Test("Retina DPI repair applies the 2x logical DPI only in Retina mode")
+    func retinaDpiRepairApplies2xLogicalDpiInRetinaMode() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        // repair_retina_dpi_config doubles the logical DPI when Wine's Mac
+        // Driver RetinaMode is "Y", so fonts render at the correct physical
+        // size on 2x displays. The value must be exactly 192 (96 base DPI * 2)
+        // and must be gated behind the RetinaMode=Y check, or non-Retina
+        // bottles would get oversized fonts.
+        let fnStart = try #require(script.range(of: "repair_retina_dpi_config() {"))
+        let nextFn = try #require(script.range(of: "requires_clean_chromium_render_log() {"))
+        let fnBody = String(script[fnStart.lowerBound..<nextFn.lowerBound])
+        // Gate: the DPI change only happens when RetinaMode is "Y".
+        #expect(fnBody.contains(#"["retina_mode" = "Y"]"#) || fnBody.contains(#"[ "$retina_mode" = "Y" ]"#))
+        // Value: 192 = 96 * 2 (Retina 2x of the Windows base logical DPI).
+        #expect(fnBody.contains("/d 192 /f"))
+    }
 }
