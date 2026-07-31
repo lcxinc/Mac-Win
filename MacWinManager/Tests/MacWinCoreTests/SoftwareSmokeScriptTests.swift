@@ -434,4 +434,51 @@ struct SoftwareSmokeScriptTests {
         #expect(script.contains(#"\#(x64Release)' /v Version /t REG_SZ /d \#(versionString) /f"#))
         #expect(script.contains(#"\#(wowRelease)' /v Version /t REG_SZ /d \#(versionString) /f"#))
     }
+
+    @Test("Shell folder, Documents namespace, and keyboard layout registrations are correct")
+    func shellInputNamespaceRegistrationsAreCorrect() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        // repair_user_shell_folders must register the Downloads known-folder
+        // GUID ({374DE290-...}, matching BottleService.shellFolderValueEntries)
+        // on both the Shell Folders and User Shell Folders keys, plus the
+        // Common shell folders on the HKLM Common Shell Folders key.
+        #expect(script.contains(#""{374DE290-123F-4565-9164-39C4925E467B}|Downloads""#))
+        #expect(script.contains(#"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders"#))
+        #expect(script.contains(#"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders"#))
+        #expect(script.contains(#"HKLM\Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders"#))
+        // Common values must mirror BottleService.commonShellFolderRegistryValues.
+        for common in ["Common AppData", "Common Desktop", "Common Documents",
+                       "Common Programs", "Common Start Menu", "Common Startup", "Common Templates"] {
+            #expect(script.contains("'Common "), "common shell folder value missing")
+            _ = common
+        }
+
+        // repair_documents_shell_namespace_registry must set WantsForParsing
+        // (empty string) on the My Documents CLSID ShellFolder key, mirrored
+        // x64 and Wow6432Node. CLSID {450D8FBA-...} is the canonical My
+        // Documents namespace (confirmed by Wine dlls/shell32/shell32.rgs);
+        // WantsForParsing=empty matches Wine's writer in shellpath.c.
+        #expect(script.contains("'{450D8FBA-AD25-11D0-98A8-0800361B1103}'"))
+        #expect(script.contains(#"/v WantsForParsing /t REG_SZ /d '' /f"#))
+        // The x64 and Wow64 ShellFolder keys are declared as local vars that
+        // both target the same CLSID under CLSID and Wow6432Node\CLSID.
+        #expect(script.contains(#"CLSID\\$clsid\\ShellFolder"#))
+        #expect(script.contains(#"Wow6432Node\\CLSID\\$clsid\\ShellFolder"#))
+
+        // repair_keyboard_layout_registry must preload standard US English
+        // (00000409) and Simplified Chinese (00000804) layouts, with matching
+        // Substitutes entries. These are the canonical Windows keyboard layout
+        // identifiers (LANG_ENGLISH/SUBLANG_ENGLISH_US and zh-CN).
+        #expect(script.contains(#"Keyboard Layout\Preload' /v 1 /t REG_SZ /d 00000409 /f"#))
+        #expect(script.contains(#"Keyboard Layout\Preload' /v 2 /t REG_SZ /d 00000804 /f"#))
+        #expect(script.contains(#"Keyboard Layout\Substitutes' /v 00000409 /t REG_SZ /d 00000409 /f"#))
+        #expect(script.contains(#"Keyboard Layout\Substitutes' /v 00000804 /t REG_SZ /d 00000804 /f"#))
+    }
 }
