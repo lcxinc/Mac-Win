@@ -5508,7 +5508,7 @@ is_chromium_application_dir() {
 
 latest_chromium_version_dir() {
   local app_dir="$1"
-  find "$app_dir" -maxdepth 1 -type d -name '*.*.*' -print 2>/dev/null | sort -r | while IFS= read -r version_dir; do
+  find "$app_dir" -maxdepth 1 -type d -name '*.*.*' -print 2>/dev/null | sort -rV | while IFS= read -r version_dir; do
     if [ -f "$version_dir/chrome_elf.dll" ] \
       || [ -f "$version_dir/chrome_wer.dll" ] \
       || [ -f "$version_dir/msedge_elf.dll" ] \

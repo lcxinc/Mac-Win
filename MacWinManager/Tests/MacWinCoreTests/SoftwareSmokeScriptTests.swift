@@ -1045,4 +1045,26 @@ struct SoftwareSmokeScriptTests {
                     "PNG \(chunk.name) metadata reader pattern must match the chunk type bytes")
         }
     }
+
+    @Test("Chromium version directory selection uses version-aware sort")
+    func chromiumVersionDirSelectionUsesVersionSort() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        // latest_chromium_version_dir finds the highest Chromium version
+        // directory by sorting the per-version subdirectories. Lexical sort
+        // (sort -r) orders "99..." before "144..." and would pick a stale
+        // older version when multiple version dirs coexist after an update.
+        // The sort must be version-aware (sort -rV) so 144.x > 99.x.
+        let fnStart = try #require(script.range(of: "latest_chromium_version_dir() {"))
+        let nextFn = try #require(script.range(of: "repair_chromium_root_dlls() {"))
+        let fnBody = String(script[fnStart.lowerBound..<nextFn.lowerBound])
+        #expect(fnBody.contains("sort -rV"),
+                "version directory selection must use sort -rV (version-aware), not sort -r (lexical)")
+    }
 }
