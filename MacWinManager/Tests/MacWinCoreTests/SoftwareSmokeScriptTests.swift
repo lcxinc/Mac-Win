@@ -750,4 +750,34 @@ struct SoftwareSmokeScriptTests {
         #expect(distinctRVersions == [manifestR],
                 "R workload path version(s) \(distinctRVersions) must match manifest \(manifestR)")
     }
+
+    @Test("Every fixture referenced by a workload exists in scripts/fixtures")
+    func everyReferencedFixtureFileExists() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+        let fixturesDir = repositoryRoot.appendingPathComponent("scripts/fixtures")
+
+        // Each workload references a fixture under scripts/fixtures by name
+        // (e.g. $SCRIPT_DIR/fixtures/inkscape-smoke.svg). If a fixture is
+        // renamed or deleted, the workload returns a missing-file failure with
+        // no useful diagnostic. Assert every referenced fixture file exists.
+        let fixtureRegex = try NSRegularExpression(pattern: #"fixtures/([A-Za-z0-9._-]+\.(?:svg|bib|txt|cpp|c|js|java|py|R|html|qet|xml|json))"#)
+        let referenced = Set(fixtureRegex
+            .matches(in: script, range: NSRange(script.startIndex..<script.endIndex, in: script))
+            .compactMap { m -> String? in Range(m.range(at: 1), in: script).map { String(script[$0]) } })
+
+        var missing: [String] = []
+        for name in referenced {
+            let url = fixturesDir.appendingPathComponent(name)
+            if !FileManager.default.fileExists(atPath: url.path) {
+                missing.append(name)
+            }
+        }
+        #expect(missing.isEmpty, "workload fixtures missing from scripts/fixtures: \(missing.sorted())")
+    }
 }
