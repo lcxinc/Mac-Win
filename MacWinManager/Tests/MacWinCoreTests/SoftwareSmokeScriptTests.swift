@@ -675,4 +675,45 @@ struct SoftwareSmokeScriptTests {
             #expect(loopText.contains(dll), "Chromium root DLL \(dll) must be in the repair loop (matches BottleService.chromiumRootDLLNames)")
         }
     }
+
+    @Test("EnergyPlus version, app directory, and manifest stay aligned")
+    func energyplusVersionStaysAligned() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+        let manifestURL = repositoryRoot.appendingPathComponent("scripts/download-software-samples.sh")
+        let manifest = try String(contentsOf: manifestURL, encoding: .utf8)
+
+        // run_energyplus_simulation_workload hardcodes the install directory
+        // (EnergyPlusV<ver>) and a MACWIN_ENERGYPLUS_VERSION=<full> string that
+        // carries a git commit suffix. The app directory, the reported version,
+        // and the downloaded installer name must all derive from the same
+        // release, or the workload runs against a directory/commit that was
+        // never installed.
+        func capture(_ source: String, pattern: String) -> String? {
+            guard let regex = try? NSRegularExpression(pattern: pattern),
+                  let m = regex.firstMatch(in: source, range: NSRange(source.startIndex..<source.endIndex, in: source)),
+                  m.numberOfRanges > 1,
+                  let r = Range(m.range(at: 1), in: source) else { return nil }
+            return String(source[r])
+        }
+        // Manifest installer: EnergyPlus-26.1.0-6f2e40d102-Windows-x86_64.exe
+        let manifestVersion = try #require(capture(manifest, pattern: #"EnergyPlus-(\d+\.\d+\.\d+-[0-9a-f]+)-Windows"#))
+        // Reported version string in the workload.
+        let reportedVersion = try #require(capture(script, pattern: #"MACWIN_ENERGYPLUS_VERSION=(\d+\.\d+\.\d+-[0-9a-f]+)"#))
+        #expect(reportedVersion == manifestVersion,
+                "reported EnergyPlus version \(reportedVersion) must match manifest \(manifestVersion)")
+        // The app directory encodes the version as V<major>-<minor>-0 (e.g.
+        // EnergyPlusV26-1-0). Capture the full token and compare against the
+        // manifest major.minor.
+        let appDirVersion = try #require(capture(script, pattern: #"EnergyPlusV(\d+-\d+-\d+)"#))
+        let manifestMajorMinor = manifestVersion.split(separator: ".").prefix(2).map(String.init)
+        let expectedDirVersion = "\(manifestMajorMinor[0])-\(manifestMajorMinor[1])-0"
+        #expect(appDirVersion == expectedDirVersion,
+                "EnergyPlus app dir \(appDirVersion) must match manifest \(expectedDirVersion)")
+    }
 }
