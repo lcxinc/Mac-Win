@@ -972,4 +972,40 @@ struct SoftwareSmokeScriptTests {
         // Value: 192 = 96 * 2 (Retina 2x of the Windows base logical DPI).
         #expect(fnBody.contains("/d 192 /f"))
     }
+
+    @Test("OnlyOffice PDF export depends on the renderer font repair target")
+    func onlyofficePdfExportDependsOnRendererFontTarget() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        // run_onlyoffice_pdf_export_workload gates on the user font cache
+        // (data/fonts/AllFonts.js + font_selection.bin) being present, which
+        // repair_onlyoffice_renderer_fonts produces (it waits for OnlyOffice to
+        // generate AllFonts.js then installs it into the editor SDK dir). The
+        // font directory path the PDF export workload checks must be the same
+        // one the renderer repair reads from, or the export runs before its
+        // dependency is ready.
+        let pdfFn = try #require(script.range(of: "run_onlyoffice_pdf_export_workload() {"))
+        let rRuntimeFn = try #require(script.range(of: "repair_r_runtime_environment() {"))
+        let pdfBody = String(script[pdfFn.lowerBound..<rRuntimeFn.lowerBound])
+        let rendererFn = try #require(script.range(of: "repair_onlyoffice_renderer_fonts() {"))
+        let envFn = try #require(script.range(of: "repair_onlyoffice_environment() {"))
+        let rendererBody = String(script[rendererFn.lowerBound..<envFn.lowerBound])
+
+        // The user font cache directory path component both share. The PDF
+        // workload references it via $font_dir_unix/AllFonts.js and the
+        // renderer repair via a data/fonts/AllFonts.js glob; both must target
+        // the same data/fonts cache under the ONLYOFFICE app data dir.
+        #expect(pdfBody.contains("font_dir_unix/AllFonts.js"), "PDF export must check the AllFonts.js cache")
+        #expect(pdfBody.contains("DesktopEditors/data/fonts"), "PDF export font dir must sit under the app data fonts path")
+        #expect(rendererBody.contains("data/fonts/AllFonts.js"), "renderer repair must read the AllFonts.js cache")
+        // The PDF export must also gate on font_selection.bin (the binary font
+        // map the converter needs alongside AllFonts.js).
+        #expect(pdfBody.contains("font_selection.bin"), "PDF export must check font_selection.bin")
+    }
 }
