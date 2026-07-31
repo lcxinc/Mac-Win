@@ -83,6 +83,35 @@ struct SoftwareSmokeScriptTests {
         #expect(tzRegion.contains(#"skip_replaced_value_continuation = line.endswith("\\")"#))
     }
 
+    @Test("All registry section walkers match by bracket boundary, never first space")
+    func registrySectionWalkersNeverSplitOnFirstSpace() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        // Wine registry key paths contain spaces (Control Panel, Windows NT,
+        // Time Zones, MuseScore Studio, Mac Driver). Any section walker that
+        // strips the trailing timestamp by splitting on the first space
+        // captures only the first token and never matches, silently no-op'ing
+        // the repair and appending a duplicate section. This regression guard
+        // forbids that pattern anywhere in the script.
+        #expect(!script.contains(#"line.split(" ", 1)[0]"#))
+
+        // Every walker that lowers a bracketed header to a section name must do
+        // so by bracket boundary. The known registry walkers all use one of:
+        //   index("]") / find("]") then slice [1:idx] or [:idx+1]
+        let walkerAnchors: [String] = [
+            #"stripped[1:stripped.index("]")]"#,
+            "current = line[:bracket_end + 1]",
+            "header = line[:bracket_end + 1]"
+        ]
+        #expect(walkerAnchors.contains { script.contains($0) })
+    }
+
     @Test("ONLYOFFICE smoke uses a complete install and repairs renderer fonts before PDF export")
     func onlyOfficeSmokeRepairsRendererFontsBeforePDFExport() throws {
         let repositoryRoot = URL(fileURLWithPath: #filePath)
