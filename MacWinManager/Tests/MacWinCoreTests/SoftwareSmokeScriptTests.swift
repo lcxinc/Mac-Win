@@ -614,4 +614,37 @@ struct SoftwareSmokeScriptTests {
         #expect(curaProfileMinor == expectedMinor,
                 "Cura profile dir \(curaProfileMinor) must derive from MSI version \(expectedMinor)")
     }
+
+    @Test("Every launched Gecko browser profile receives the compatibility user.js")
+    func everyLaunchedGeckoProfileIsRepaired() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        // Gecko-based browsers (Firefox, LibreWolf, SeaMonkey, Mullvad, ...)
+        // launch with --profile C:\macwin-portable\<name>-profile and rely on
+        // repair_gecko_smoke_profiles writing a user.js that disables
+        // multiprocess, WebRender, GPU and telemetry so the run is stable under
+        // Wine. Every profile a browser actually launches with must be covered
+        // by the repair loop, or that browser runs unconfigured and can flake
+        // or phone home during the smoke run.
+        let launchedRegex = try NSRegularExpression(pattern: #"--profile\s+\S*macwin-portable[\\/]+([a-z0-9-]+-profile)"#)
+        let launched = Set(launchedRegex
+            .matches(in: script, range: NSRange(script.startIndex..<script.endIndex, in: script))
+            .compactMap { m -> String? in Range(m.range(at: 1), in: script).map { String(script[$0]) } })
+
+        let repairRegex = try NSRegularExpression(pattern: #"for profile in ([a-z0-9- ]+profile);"#)
+        guard let repairMatch = repairRegex.firstMatch(in: script, range: NSRange(script.startIndex..<script.endIndex, in: script)),
+              let repairRange = Range(repairMatch.range(at: 1), in: script) else {
+            throw NSError(domain: "test", code: 1, userInfo: [NSLocalizedDescriptionKey: "repair_gecko_smoke_profiles loop not found"])
+        }
+        let repaired = Set(script[repairRange].split(separator: " ").map(String.init))
+
+        let unrepaired = launched.subtracting(repaired)
+        #expect(unrepaired.isEmpty, "Gecko browser profiles launched but not repaired: \(unrepaired.sorted())")
+    }
 }

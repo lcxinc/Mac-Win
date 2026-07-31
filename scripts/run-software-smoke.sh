@@ -9499,7 +9499,7 @@ repair_gimp_extracted_layout() {
 
 repair_gecko_smoke_profiles() {
   local profile
-  for profile in firefox-profile firefox-dev-profile librewolf-profile floorp-profile waterfox-profile palemoon-profile palemoon32-profile zen-profile zotero-profile; do
+  for profile in firefox-profile firefox-dev-profile librewolf-profile floorp-profile waterfox-profile palemoon-profile palemoon32-profile seamonkey-profile seamonkey32-profile mullvad-profile zen-profile zotero-profile; do
     local profile_dir="$PREFIX/drive_c/macwin-portable/$profile"
     mkdir -p "$profile_dir"
     rm -rf "$profile_dir/.startup-incomplete" "$profile_dir/startupCache" "$profile_dir/cache2" 2>/dev/null || true
