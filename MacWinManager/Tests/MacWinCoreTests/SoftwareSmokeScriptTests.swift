@@ -481,4 +481,36 @@ struct SoftwareSmokeScriptTests {
         #expect(script.contains(#"Keyboard Layout\Substitutes' /v 00000409 /t REG_SZ /d 00000409 /f"#))
         #expect(script.contains(#"Keyboard Layout\Substitutes' /v 00000804 /t REG_SZ /d 00000804 /f"#))
     }
+
+    @Test("Engine DLL repair mirrors i386 deployment candidates against x86_64")
+    func engineDllRepairMirrorsI386DeploymentCandidates() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        // repair_engine_dlls deploys each Wine module's x86_64 build into
+        // system32 with a three-source fallback chain (ENGINE_BUILD_DIR, then
+        // Whisky-x86_64-game-build, then Whisky-x86_64-build). The i386 build
+        // must reach syswow64 through the same breadth of candidates. The
+        // Whisky-wow64-game-build reference is the primary i386 source (it ships
+        // i386 builds for ole32, combase, ...), so the i386 branch must include
+        // it; without it, 32-bit (WoW64) apps in the smoke run miss the Wine
+        // 32-bit implementation of any module absent from ENGINE_BUILD_DIR.
+        let engineDllsFn = try #require(script.range(of: "repair_engine_dlls() {"))
+        let wineMonoFn = try #require(script.range(of: "repair_engine_tools() {"))
+        let fnBody = script[engineDllsFn.lowerBound..<wineMonoFn.lowerBound]
+
+        // The x86_64 chain targets drive_c/windows/system32; the i386 chain
+        // targets drive_c/windows/syswow64. Both must consult the wow64 game
+        // build for the i386 architecture.
+        #expect(fnBody.contains(#"Whisky-wow64-game-build/dlls/$module/i386-windows/$dll"#),
+                "i386 DLL deployment must fall back to Whisky-wow64-game-build like x86_64 does")
+        // Sanity: the x86_64 chain must still be present too.
+        #expect(fnBody.contains(#"Whisky-x86_64-game-build/dlls/$module/x86_64-windows/$dll"#))
+        #expect(fnBody.contains(#"drive_c/windows/syswow64/$dll"#))
+    }
 }

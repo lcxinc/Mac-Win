@@ -9104,6 +9104,12 @@ repair_engine_dlls() {
     fi
     if [ -f "$ENGINE_BUILD_DIR/dlls/$module/i386-windows/$dll" ]; then
       cp -f "$ENGINE_BUILD_DIR/dlls/$module/i386-windows/$dll" "$PREFIX/drive_c/windows/syswow64/$dll" || true
+    elif [ -f "$PROJECT_ROOT/refs/Whisky-wow64-game-build/dlls/$module/i386-windows/$dll" ]; then
+      cp -f "$PROJECT_ROOT/refs/Whisky-wow64-game-build/dlls/$module/i386-windows/$dll" "$PREFIX/drive_c/windows/syswow64/$dll" || true
+    elif [ -f "$PROJECT_ROOT/refs/Whisky-x86_64-game-build/dlls/$module/i386-windows/$dll" ]; then
+      cp -f "$PROJECT_ROOT/refs/Whisky-x86_64-game-build/dlls/$module/i386-windows/$dll" "$PREFIX/drive_c/windows/syswow64/$dll" || true
+    elif [ -f "$PROJECT_ROOT/refs/Whisky-x86_64-build/dlls/$module/i386-windows/$dll" ]; then
+      cp -f "$PROJECT_ROOT/refs/Whisky-x86_64-build/dlls/$module/i386-windows/$dll" "$PREFIX/drive_c/windows/syswow64/$dll" || true
 	    fi
 	  done
   if [ ! -f "$PREFIX/drive_c/windows/syswow64/ntdll.dll" ]; then
