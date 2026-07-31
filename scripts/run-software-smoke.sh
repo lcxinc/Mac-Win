@@ -10410,8 +10410,14 @@ out = []
 in_key = False
 seen_key = False
 seen_values = set()
+skip_replaced_value_continuation = False
 
 for line in lines:
+    if skip_replaced_value_continuation:
+        if line[:1].isspace():
+            skip_replaced_value_continuation = line.endswith("\\")
+            continue
+        skip_replaced_value_continuation = False
     if line.startswith("["):
         if in_key:
             for name, value in values.items():
@@ -10429,6 +10435,7 @@ for line in lines:
                 out.append(value)
                 seen_values.add(name)
                 replaced = True
+                skip_replaced_value_continuation = line.endswith("\\")
                 break
         if replaced:
             continue

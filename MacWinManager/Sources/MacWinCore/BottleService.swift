@@ -35,7 +35,7 @@ public struct BottleService {
     public static let portableAppsBackupLauncherId = "portableapps-backup"
     public static let portableAppsBackupRestoreLauncherId = "portableapps-backup-restore"
     public static let portableAppsUpdaterLauncherId = "portableapps-updater"
-    public static let renderingRepairSentinelName = ".macwin-rendering-repair-v17"
+    public static let renderingRepairSentinelName = ".macwin-rendering-repair-v18"
     public static let fontRegistrySection = "Software\\\\Microsoft\\\\Windows NT\\\\CurrentVersion\\\\Fonts"
     public static let currentVersionFontRegistrySection = "Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Fonts"
     public static let fontSubstitutesRegistrySection = "Software\\\\Microsoft\\\\Windows NT\\\\CurrentVersion\\\\FontSubstitutes"
@@ -1648,6 +1648,7 @@ public struct BottleService {
         var isInTargetSection = false
         var foundTargetSection = false
         var wroteValueInTargetSection = false
+        var skipsReplacedValueContinuation = false
         var changed = false
 
         func finishTargetSectionIfNeeded() {
@@ -1659,6 +1660,15 @@ public struct BottleService {
         }
 
         for line in text.components(separatedBy: .newlines) {
+            if skipsReplacedValueContinuation {
+                if Self.isRegistryContinuationLine(line) {
+                    skipsReplacedValueContinuation = line.hasSuffix("\\")
+                    changed = true
+                    continue
+                }
+                skipsReplacedValueContinuation = false
+            }
+
             if let currentSection = registrySectionName(line) {
                 finishTargetSectionIfNeeded()
                 isInTargetSection = currentSection == sectionName
@@ -1676,6 +1686,7 @@ public struct BottleService {
                 if line != valueLine {
                     changed = true
                 }
+                skipsReplacedValueContinuation = line.hasSuffix("\\")
                 continue
             }
 
@@ -1707,6 +1718,7 @@ public struct BottleService {
         var isInTargetSection = false
         var foundTargetSection = false
         var wroteValueInTargetSection = false
+        var skipsReplacedValueContinuation = false
         var changed = false
 
         func finishTargetSectionIfNeeded() {
@@ -1718,6 +1730,15 @@ public struct BottleService {
         }
 
         for line in text.components(separatedBy: .newlines) {
+            if skipsReplacedValueContinuation {
+                if Self.isRegistryContinuationLine(line) {
+                    skipsReplacedValueContinuation = line.hasSuffix("\\")
+                    changed = true
+                    continue
+                }
+                skipsReplacedValueContinuation = false
+            }
+
             if let currentSection = registrySectionName(line) {
                 finishTargetSectionIfNeeded()
                 isInTargetSection = currentSection == sectionName
@@ -1735,6 +1756,7 @@ public struct BottleService {
                 if line != valueLine {
                     changed = true
                 }
+                skipsReplacedValueContinuation = line.hasSuffix("\\")
                 continue
             }
 
@@ -1821,6 +1843,7 @@ public struct BottleService {
         var isInTargetSection = false
         var foundTargetSection = false
         var wroteValueInTargetSection = false
+        var skipsReplacedValueContinuation = false
         var changed = false
 
         func finishTargetSectionIfNeeded() {
@@ -1832,6 +1855,15 @@ public struct BottleService {
         }
 
         for line in text.components(separatedBy: .newlines) {
+            if skipsReplacedValueContinuation {
+                if Self.isRegistryContinuationLine(line) {
+                    skipsReplacedValueContinuation = line.hasSuffix("\\")
+                    changed = true
+                    continue
+                }
+                skipsReplacedValueContinuation = false
+            }
+
             if let currentSection = registrySectionName(line) {
                 finishTargetSectionIfNeeded()
                 isInTargetSection = currentSection == sectionName
@@ -1849,6 +1881,7 @@ public struct BottleService {
                 if line != valueLine {
                     changed = true
                 }
+                skipsReplacedValueContinuation = line.hasSuffix("\\")
                 continue
             }
 
@@ -2573,9 +2606,19 @@ public struct BottleService {
         guard !valueNames.isEmpty else { return text }
         var output: [String] = []
         var isInTargetSection = false
+        var skipsRemovedValueContinuation = false
         var changed = false
 
         for line in text.components(separatedBy: .newlines) {
+            if skipsRemovedValueContinuation {
+                if Self.isRegistryContinuationLine(line) {
+                    skipsRemovedValueContinuation = line.hasSuffix("\\")
+                    changed = true
+                    continue
+                }
+                skipsRemovedValueContinuation = false
+            }
+
             if let currentSection = registrySectionName(line) {
                 isInTargetSection = currentSection == sectionName
                 output.append(line)
@@ -2586,6 +2629,7 @@ public struct BottleService {
                let valueName = registryLineValueName(line),
                valueNames.contains(valueName) {
                 changed = true
+                skipsRemovedValueContinuation = line.hasSuffix("\\")
                 continue
             }
 
@@ -3293,5 +3337,9 @@ public struct BottleService {
         guard line.hasPrefix("\"") else { return nil }
         guard let closingQuote = line.dropFirst().firstIndex(of: "\"") else { return nil }
         return String(line[line.index(after: line.startIndex)..<closingQuote])
+    }
+
+    private static func isRegistryContinuationLine(_ line: String) -> Bool {
+        line.first?.isWhitespace == true
     }
 }

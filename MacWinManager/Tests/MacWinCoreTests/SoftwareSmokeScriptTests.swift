@@ -23,6 +23,20 @@ struct SoftwareSmokeScriptTests {
         #expect(script.contains("run_dbeaver_jdbc_workload"))
     }
 
+    @Test("Window metrics repair removes multiline registry continuations")
+    func windowMetricsRepairRemovesMultilineRegistryContinuations() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        #expect(script.contains("skip_replaced_value_continuation = False"))
+        #expect(script.contains(#"skip_replaced_value_continuation = line.endswith("\\")"#))
+    }
+
     @Test("ONLYOFFICE smoke uses a complete install and repairs renderer fonts before PDF export")
     func onlyOfficeSmokeRepairsRendererFontsBeforePDFExport() throws {
         let repositoryRoot = URL(fileURLWithPath: #filePath)

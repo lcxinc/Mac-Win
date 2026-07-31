@@ -533,13 +533,16 @@ struct BottleServiceTests {
 
     @Test("Registry repair assigns stable native UI metrics with CJK fallback")
     func registryRepairAssignsStableSystemUIFont() {
-        let registry = """
-        WINE REGISTRY Version 2
-
-        [Control Panel\\\\Desktop\\\\WindowMetrics] 1781622934
-        "MessageFont"=hex:00,01,02
-
-        """
+        let registry = [
+            "WINE REGISTRY Version 2",
+            "",
+            #"[Control Panel\\Desktop\\WindowMetrics] 1781622934"#,
+            "\"MessageFont\"=hex:00,01,02,\\",
+            "  03,04,\\",
+            "  05,06",
+            "\"MenuHeight\"=\"18\"",
+            ""
+        ].joined(separator: "\n")
 
         let repaired = BottleService.registryTextWithWindowMetricsFontRepairs(registry)
         let tahomaUTF16 = "54,00,61,00,68,00,6f,00,6d,00,61,00,00,00"
@@ -549,8 +552,55 @@ struct BottleServiceTests {
             #expect(repaired.contains("\"\(valueName)\"=hex:"))
         }
         #expect(repaired.contains(tahomaUTF16))
-        #expect(!repaired.contains(#""MessageFont"=hex:00,01,02"#))
+        #expect(!repaired.contains(#""MessageFont"=hex:00,01,02,\"#))
+        #expect(!repaired.contains("\n  03,04,\\"))
+        #expect(!repaired.contains("\n  05,06"))
+        #expect(repaired.contains(#""MenuHeight"="18""#))
         #expect(BottleService.registryTextWithWindowMetricsFontRepairs(repaired) == repaired)
+    }
+
+    @Test("Registry value updates remove complete multiline hex values")
+    func registryValueUpdatesRemoveMultilineHexContinuations() {
+        let section = #"Software\\MacWin"#
+        let registry = [
+            "WINE REGISTRY Version 2",
+            "",
+            "[\(section)] 1781622934",
+            "\"DWORD\"=hex:01,02,\\",
+            "  03,04",
+            "\"String\"=hex:05,06,\\",
+            "  07,08",
+            "\"Remove\"=hex:09,0a,\\",
+            "  0b,0c",
+            "\"Keep\"=\"Y\"",
+            ""
+        ].joined(separator: "\n")
+
+        var repaired = BottleService.registryText(
+            registry,
+            settingDWORD: "DWORD",
+            value: 1,
+            inSection: section
+        )
+        repaired = BottleService.registryText(
+            repaired,
+            settingString: "String",
+            value: "ready",
+            inSection: section
+        )
+        repaired = BottleService.registryText(
+            repaired,
+            removingValueNames: ["Remove"],
+            inSection: section
+        )
+
+        #expect(repaired.contains(#""DWORD"=dword:00000001"#))
+        #expect(repaired.contains(#""String"="ready""#))
+        #expect(!repaired.contains(#""Remove"="#))
+        #expect(!repaired.contains("\n  03,04"))
+        #expect(!repaired.contains("\n  07,08"))
+        #expect(!repaired.contains("\n  0b,0c"))
+        #expect(repaired.contains(#""Keep"="Y""#))
     }
 
     @Test("Registry repair enables Wine Mac driver input focus")
