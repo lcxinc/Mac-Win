@@ -239,4 +239,46 @@ struct SoftwareSmokeScriptTests {
             #expect(instanceGuids.contains(guid), "pixel format \(guid) not registered")
         }
     }
+
+    @Test("CJK font aliases register YaHei against its own file family, not MingLiU")
+    func cjkFontAliasesRegisterYaHeiAgainstOwnFileFamily() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        // Microsoft YaHei (Simplified Chinese) and Microsoft YaHei UI must
+        // resolve to the YaHei file family (MSYH*), matching BottleService and
+        // real Windows. Earlier the smoke script registered them against the
+        // Traditional-Chinese MingLiU container, which diverged from production
+        // and from the YaHei UI line immediately below it.
+        let yaHeiRegular = try #require(script.range(of: #"register_windows_font_file "Microsoft YaHei \(TrueType\)" MSYH"#, options: .regularExpression))
+        let yaHeiUI = try #require(script.range(of: #"register_windows_font_file "Microsoft YaHei UI \(TrueType\)" MSYH"#, options: .regularExpression))
+        let yaHeiBold = try #require(script.range(of: #"register_windows_font_file "Microsoft YaHei Bold \(TrueType\)" MSYHBD"#, options: .regularExpression))
+
+        // The stale MingLiU mappings for YaHei must be gone.
+        #expect(!script.contains(#"register_windows_font_file "Microsoft YaHei (TrueType)" MINGLIU"#))
+        #expect(!script.contains(#"register_windows_font_file "Microsoft YaHei Bold (TrueType)" MINGLIUB"#))
+
+        _ = yaHeiRegular; _ = yaHeiUI; _ = yaHeiBold
+
+        // Every CJK file referenced by a register_windows_font_file call must
+        // also appear in the CJK copy list, or the file would not exist on disk.
+        let copyList = try #require(script.range(of: #"for target in [A-Za-z0-9. ]+; do"#, options: .regularExpression))
+        let copyTargets = Set(script[copyList]
+            .split(whereSeparator: { $0 == " " || $0 == ";" })
+            .map { $0.uppercased() }
+            .filter { $0.hasSuffix(".TTC") || $0.hasSuffix(".TTF") || $0.hasSuffix(".ttf") })
+        let cjkPrefixes = ["MSYH", "MSJH", "MSMINCHO", "MSGOTHIC", "SIMSUN", "MINGLIU",
+                           "GULIM", "BATANG", "MALGUN", "YUGOTH", "HKSCS"]
+        for line in script.split(separator: "\n") where line.contains("register_windows_font_file") {
+            guard let fileToken = line.split(separator: " ").last else { continue }
+            let file = String(fileToken).uppercased()
+            guard cjkPrefixes.contains(where: { file.hasPrefix($0) }) else { continue }
+            #expect(copyTargets.contains(file), "CJK font \(file) registered but not in copy list")
+        }
+    }
 }

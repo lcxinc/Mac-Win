@@ -10851,7 +10851,7 @@ repair_javafx_windows_fonts() {
   copy_windows_font_alias SYMBOL.TTF "/System/Library/Fonts/Symbol.ttf" "/System/Library/Fonts/Apple Symbols.ttf" || true
   copy_windows_font_alias WINGDING.TTF "/System/Library/Fonts/Supplemental/Wingdings.ttf" "/System/Library/Fonts/Symbol.ttf" || true
 
-  for target in SIMSUN.TTC SIMSUN18030.TTC SIMSUNB.TTF MINGLIU.TTC MINGLIUB.TTC hkscsm3u.ttf MSMINCHO.TTC MSGOTHIC.TTC gulim.TTC batang.TTC malgun.ttf malgunbd.TTF MSJH.TTC MSYH.TTC YUGOTHM.TTC; do
+  for target in SIMSUN.TTC SIMSUN18030.TTC SIMSUNB.TTF MINGLIU.TTC MINGLIUB.TTC hkscsm3u.ttf MSMINCHO.TTC MSGOTHIC.TTC gulim.TTC batang.TTC malgun.ttf malgunbd.TTF MSJH.TTC MSYH.TTC MSYHBD.TTF YUGOTHM.TTC; do
     copy_windows_font_alias "$target" \
       "/System/Library/Fonts/Hiragino Sans GB.ttc" \
       "/System/Library/Fonts/STHeiti Medium.ttc" \
@@ -10878,8 +10878,8 @@ repair_javafx_windows_fonts() {
   register_windows_font_file "Wingdings (TrueType)" WINGDING.TTF
   register_windows_font_file "SimSun & NSimSun (TrueType)" SIMSUN.TTC
   register_windows_font_file "SimSun-ExtB (TrueType)" SIMSUNB.TTF
-  register_windows_font_file "Microsoft YaHei (TrueType)" MINGLIU.TTC
-  register_windows_font_file "Microsoft YaHei Bold (TrueType)" MINGLIUB.TTC
+  register_windows_font_file "Microsoft YaHei (TrueType)" MSYH.TTC
+  register_windows_font_file "Microsoft YaHei Bold (TrueType)" MSYHBD.TTF
   register_windows_font_file "Microsoft JhengHei (TrueType)" MSJH.TTC
   register_windows_font_file "Microsoft YaHei UI (TrueType)" MSYH.TTC
   register_windows_font_file "Yu Gothic Medium (TrueType)" YUGOTHM.TTC
