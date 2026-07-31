@@ -780,4 +780,33 @@ struct SoftwareSmokeScriptTests {
         }
         #expect(missing.isEmpty, "workload fixtures missing from scripts/fixtures: \(missing.sorted())")
     }
+
+    @Test("MuseScore MSI version matches between install matrix and manifest")
+    func musescoreMsiVersionMatchesManifest() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+        let manifestURL = repositoryRoot.appendingPathComponent("scripts/download-software-samples.sh")
+        let manifest = try String(contentsOf: manifestURL, encoding: .utf8)
+
+        // The smoke script's install matrix pins the MuseScore MSI filename
+        // (MuseScore-Studio-<ver>-x86_64.msi), which must match the MSI shipped
+        // by the download manifest. A drift makes the installer step look for a
+        // file the manifest never downloaded.
+        func capture(_ source: String, pattern: String) -> String? {
+            guard let regex = try? NSRegularExpression(pattern: pattern),
+                  let m = regex.firstMatch(in: source, range: NSRange(source.startIndex..<source.endIndex, in: source)),
+                  m.numberOfRanges > 1,
+                  let r = Range(m.range(at: 1), in: source) else { return nil }
+            return String(source[r])
+        }
+        let scriptVersion = try #require(capture(script, pattern: #"MuseScore-Studio-(\d+\.\d+\.\d+\.\d+)-x86_64\.msi"#))
+        let manifestVersion = try #require(capture(manifest, pattern: #"MuseScore-Studio-(\d+\.\d+\.\d+\.\d+)-x86_64\.msi"#))
+        #expect(scriptVersion == manifestVersion,
+                "MuseScore MSI version \(scriptVersion) must match manifest \(manifestVersion)")
+    }
 }
