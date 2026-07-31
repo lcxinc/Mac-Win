@@ -809,4 +809,39 @@ struct SoftwareSmokeScriptTests {
         #expect(scriptVersion == manifestVersion,
                 "MuseScore MSI version \(scriptVersion) must match manifest \(manifestVersion)")
     }
+
+    @Test("Temurin JDK path version matches the manifest JDK archive")
+    func temurinJdkPathVersionMatchesManifest() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+        let manifestURL = repositoryRoot.appendingPathComponent("scripts/download-software-samples.sh")
+        let manifest = try String(contentsOf: manifestURL, encoding: .utf8)
+
+        // run_projectlibre_core_workload (and the ProjectLibre/DBeaver Java
+        // workloads) pin the Temurin JDK install path (jdk-<ver>+<build>).
+        // Temurin's version separator differs between the path (+) and the
+        // hotspot archive filename (_), but the version must match, or the
+        // workload runs java/javac against a directory that was never
+        // extracted.
+        func capture(_ source: String, pattern: String) -> String? {
+            guard let regex = try? NSRegularExpression(pattern: pattern),
+                  let m = regex.firstMatch(in: source, range: NSRange(source.startIndex..<source.endIndex, in: source)),
+                  m.numberOfRanges > 1,
+                  let r = Range(m.range(at: 1), in: source) else { return nil }
+            return String(source[r])
+        }
+        let pathVersion = try #require(capture(script, pattern: #"jdk-(\d+\.\d+\.\d+)\+(\d+)"#))
+        let pathBuild = try #require(capture(script, pattern: #"jdk-\d+\.\d+\.\d+\+(\d+)"#))
+        let manifestVersion = try #require(capture(manifest, pattern: #"hotspot_(\d+\.\d+\.\d+)_\d+\.zip"#))
+        let manifestBuild = try #require(capture(manifest, pattern: #"hotspot_\d+\.\d+\.\d+_(\d+)\.zip"#))
+        #expect(pathVersion == manifestVersion,
+                "Temurin JDK path version \(pathVersion) must match manifest \(manifestVersion)")
+        #expect(pathBuild == manifestBuild,
+                "Temurin JDK path build \(pathBuild) must match manifest \(manifestBuild)")
+    }
 }
