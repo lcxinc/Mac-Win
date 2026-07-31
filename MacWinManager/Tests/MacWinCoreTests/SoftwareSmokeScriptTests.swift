@@ -716,4 +716,38 @@ struct SoftwareSmokeScriptTests {
         #expect(appDirVersion == expectedDirVersion,
                 "EnergyPlus app dir \(appDirVersion) must match manifest \(expectedDirVersion)")
     }
+
+    @Test("R statistics and RStudio paths pin the manifest R version")
+    func rVersionPathsMatchManifest() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+        let manifestURL = repositoryRoot.appendingPathComponent("scripts/download-software-samples.sh")
+        let manifest = try String(contentsOf: manifestURL, encoding: .utf8)
+
+        // run_r_statistics_workload and run_rstudio_backend_workload hardcode
+        // the R install path (R\R-<ver>\bin). If R is upgraded in the manifest
+        // without updating those paths, Rscript/rsession run against a missing
+        // directory. Every R-<ver> path reference must match the manifest's
+        // R installer version.
+        func capture(_ source: String, pattern: String) -> String? {
+            guard let regex = try? NSRegularExpression(pattern: pattern),
+                  let m = regex.firstMatch(in: source, range: NSRange(source.startIndex..<source.endIndex, in: source)),
+                  m.numberOfRanges > 1,
+                  let r = Range(m.range(at: 1), in: source) else { return nil }
+            return String(source[r])
+        }
+        let manifestR = try #require(capture(manifest, pattern: #"R-(\d+\.\d+\.\d+)-win\.exe"#))
+        let rPathRegex = try NSRegularExpression(pattern: #"R-(\d+\.\d+\.\d+)\\"#)
+        let rVersions = rPathRegex
+            .matches(in: script, range: NSRange(script.startIndex..<script.endIndex, in: script))
+            .compactMap { m -> String? in Range(m.range(at: 1), in: script).map { String(script[$0]) } }
+        let distinctRVersions = Set(rVersions)
+        #expect(distinctRVersions == [manifestR],
+                "R workload path version(s) \(distinctRVersions) must match manifest \(manifestR)")
+    }
 }
