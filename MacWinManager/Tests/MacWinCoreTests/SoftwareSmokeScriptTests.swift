@@ -37,6 +37,52 @@ struct SoftwareSmokeScriptTests {
         #expect(script.contains(#"skip_replaced_value_continuation = line.endswith("\\")"#))
     }
 
+    @Test("Window metrics repair matches sections by bracket boundary, not first space")
+    func windowMetricsRepairMatchesSectionsByBracketBoundary() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        // The WindowMetrics section path contains a space ("Control Panel").
+        // Matching it by splitting the header on the first space captures only
+        // "[Control" and never matches, silently skipping the repair and then
+        // appending a duplicate section at the end of user.reg. The header must
+        // instead be extracted from the bracket boundary.
+        #expect(script.contains(#"bracket_end = line.find("]")"#))
+        #expect(script.contains(#"current = line[:bracket_end + 1]"#))
+        // The fragile first-space section split must be gone everywhere the
+        // script walks registry headers.
+        #expect(!script.contains(#"line.split(" ", 1)[0]"#))
+    }
+
+    @Test("Timezone repair matches bracketed sections and drops multiline hex continuations")
+    func timezoneRepairMatchesBracketedSectionsAndDropsMultilineHex() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        // The timezone section paths contain spaces ("Windows NT", "Time
+        // Zones"). The header must be matched by bracket boundary, not first
+        // space, or the repair is skipped and a duplicate section appended.
+        let tzFunction = try #require(script.range(of: "repair_windows_timezone_registry()"))
+        let tzRegion = script[tzFunction.lowerBound...]
+        #expect(tzRegion.contains(#"bracket_end = line.find("]")"#))
+        #expect(tzRegion.contains(#"header = line[:bracket_end + 1]"#))
+        #expect(tzRegion.contains(#"header if header in sections"#))
+        // TZI is a multiline hex value; replaced values must drop their
+        // trailing-backslash continuation lines just like the metrics repair.
+        #expect(tzRegion.contains("skip_replaced_value_continuation = False"))
+        #expect(tzRegion.contains(#"skip_replaced_value_continuation = line.endswith("\\")"#))
+    }
+
     @Test("ONLYOFFICE smoke uses a complete install and repairs renderer fonts before PDF export")
     func onlyOfficeSmokeRepairsRendererFontsBeforePDFExport() throws {
         let repositoryRoot = URL(fileURLWithPath: #filePath)

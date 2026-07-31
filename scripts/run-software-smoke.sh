@@ -10423,7 +10423,15 @@ for line in lines:
             for name, value in values.items():
                 if name not in seen_values:
                     out.append(value)
-        current = line.split(" ", 1)[0]
+        # Section headers look like "[Control Panel\\...\\WindowMetrics] 123"
+        # where the trailing number is an optional timestamp. Registry key
+        # paths may contain spaces (e.g. "Control Panel"), so splitting on the
+        # first space yields only "[Control" and never matches. Extract the
+        # section name from the bracket boundaries instead, mirroring
+        # BottleService.registrySectionName (the dict keys keep their brackets,
+        # so include them here).
+        bracket_end = line.find("]")
+        current = line[:bracket_end + 1] if line.startswith("[") and bracket_end > 0 else line
         in_key = current == key
         if in_key:
             seen_key = True
@@ -10618,15 +10626,28 @@ out = []
 in_key = None
 seen_keys = set()
 seen_values = set()
+skip_replaced_value_continuation = False
 
 for line in lines:
+    if skip_replaced_value_continuation:
+        if line[:1].isspace():
+            skip_replaced_value_continuation = line.endswith("\\")
+            continue
+        skip_replaced_value_continuation = False
     if line.startswith("["):
         if in_key:
             for value_name, value_line in sections[in_key].items():
                 if value_name not in seen_values:
                     out.append(value_line)
-        key = line.split(" ", 1)[0]
-        in_key = key if key in sections else None
+        # Section headers carry an optional trailing timestamp after the
+        # closing bracket (e.g. "[Software\\Microsoft\\Windows NT\\...]
+        # 1234567890"). Registry key paths contain spaces (Windows NT, Time
+        # Zones), so split(" ") only captures "[Software" and never matches.
+        # Use the bracket boundary instead, like registrySectionName in Swift
+        # (dict keys keep their brackets, so include them here).
+        bracket_end = line.find("]")
+        header = line[:bracket_end + 1] if bracket_end > 0 else line
+        in_key = header if header in sections else None
         if in_key:
             seen_keys.add(in_key)
             seen_values = set()
@@ -10637,6 +10658,10 @@ for line in lines:
                 out.append(value_line)
                 seen_values.add(value_name)
                 matched = True
+                # Registry hex values can span multiple lines using a trailing
+                # backslash continuation. Drop the now-stale continuation lines
+                # (whitespace-prefixed) of the value we just replaced.
+                skip_replaced_value_continuation = line.endswith("\\")
                 break
         if matched:
             continue
