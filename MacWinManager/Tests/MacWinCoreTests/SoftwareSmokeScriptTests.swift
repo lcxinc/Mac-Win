@@ -884,4 +884,31 @@ struct SoftwareSmokeScriptTests {
         #expect(script.contains("PowerToysUserSetup-\(powertoysManifest)-x64"),
                 "PowerToys install matrix must reference manifest setup \(powertoysManifest)")
     }
+
+    @Test("FreeCAD uname shim reports Windows semantics via a 5-field tuple")
+    func freecadUnameShimReportsWindowsSemantics() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        // repair_freecad_python_uname_shim writes a sitecustomize.py that
+        // stubs os.uname (absent on Windows Python) to a 5-field tuple with
+        // Windows semantics, so FreeCAD's platform probes do not crash. The
+        // shim must (a) report sysname=Windows and machine=AMD64, (b) expose
+        // all five posix.uname_result fields, and (c) be a tuple subclass so
+        // indexed access works like the real os.uname_result.
+        // sysname/machine/release values:
+        #expect(script.contains(#"("Windows", "macwin", "11", "Wine", "AMD64")"#))
+        // Five named property fields matching posix.uname_result._fields:
+        for field in ["sysname", "nodename", "release", "version", "machine"] {
+            #expect(script.contains("def \(field)(self):"), "uname shim missing field \(field)")
+        }
+        #expect(script.contains("_fields = (\"sysname\", \"nodename\", \"release\", \"version\", \"machine\")"))
+        // Tuple subclass so indexed/iterable access matches os.uname_result:
+        #expect(script.contains("class _MacWinUnameResult(tuple):"))
+    }
 }
