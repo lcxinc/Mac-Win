@@ -1008,4 +1008,41 @@ struct SoftwareSmokeScriptTests {
         // map the converter needs alongside AllFonts.js).
         #expect(pdfBody.contains("font_selection.bin"), "PDF export must check font_selection.bin")
     }
+
+    @Test("WIC codec registry PNG and BMP signatures use the correct byte order")
+    func wicCodecRegistrySignaturesUseCorrectByteOrder() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let regURL = repositoryRoot.appendingPathComponent("scripts/wic-codecs-minimal.reg")
+        let reg = try String(contentsOf: regURL, encoding: .utf8)
+
+        // WIC matches image files by byte signatures. The PNG decoder pattern
+        // must be the canonical PNG 8-byte signature and the BMP decoder
+        // pattern must be "BM". A wrong byte order makes WIC fail to identify
+        // the format and skip decoding.
+        //   PNG: 89 50 4E 47 0D 0A 1A 0A
+        //   BMP: 42 4D (BM)
+        #expect(reg.contains("\"Pattern\"=hex:89,50,4e,47,0d,0a,1a,0a"),
+                "PNG decoder pattern must be the canonical PNG signature")
+        #expect(reg.contains("\"Pattern\"=hex:42,4d"),
+                "BMP decoder pattern must be the canonical BM signature")
+        // PNG metadata chunk readers must match real chunk type names:
+        // bKGD=62,4b,47,44  gAMA=67,41,4d,41  tEXt=74,45,58,74
+        // hIST=68,49,53,54  tIME=74,49,4d,45  cHRM=63,48,52,4d
+        let chunkPatterns: [(name: String, hex: String)] = [
+            ("bKGD", "62,4b,47,44"),
+            ("gAMA", "67,41,4d,41"),
+            ("tEXt", "74,45,58,74"),
+            ("hIST", "68,49,53,54"),
+            ("tIME", "74,49,4d,45"),
+            ("cHRM", "63,48,52,4d"),
+        ]
+        for chunk in chunkPatterns {
+            #expect(reg.contains("\"Pattern\"=hex:\(chunk.hex)"),
+                    "PNG \(chunk.name) metadata reader pattern must match the chunk type bytes")
+        }
+    }
 }
