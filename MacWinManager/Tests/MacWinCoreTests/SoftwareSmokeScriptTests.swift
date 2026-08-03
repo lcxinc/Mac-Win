@@ -1642,4 +1642,33 @@ struct SoftwareSmokeScriptTests {
             #expect(fnBody.contains(exe), "GUI process pattern must cover \(exe)")
         }
     }
+
+    @Test("record function writes JSON with all required result fields")
+    func recordFunctionWritesJsonWithAllFields() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        // record() writes a JSON-line result to $records_file that downstream
+        // Python report generation parses. The JSON must contain all required
+        // fields (id, phase, state, exitCode, logPath, durationSeconds, note)
+        // and use json_escape for the note field, or the report parser fails
+        // or produces missing columns.
+        let fnStart = try #require(script.range(of: "record() {"))
+        let nextFn = try #require(script.range(of: "gui_process_pattern_for_sample() {"))
+        let fnBody = String(script[fnStart.lowerBound..<nextFn.lowerBound])
+        // Must write to records_file.
+        #expect(fnBody.contains("records_file"), "must append to records_file")
+        // Must call json_escape on the note.
+        #expect(fnBody.contains("json_escape"), "must escape the note field as JSON")
+        // Must include all 7 required JSON fields.
+        for field in ["\"id\"", "\"phase\"", "\"state\"", "\"exitCode\"",
+                      "\"logPath\"", "\"durationSeconds\"", "\"note\""] {
+            #expect(fnBody.contains(field), "record JSON must include \(field)")
+        }
+    }
 }
