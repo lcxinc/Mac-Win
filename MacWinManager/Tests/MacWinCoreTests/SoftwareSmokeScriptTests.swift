@@ -1492,4 +1492,29 @@ struct SoftwareSmokeScriptTests {
         #expect(seedSha256.count == 64, "Npackd repository seed SHA256 must be 64 hex chars")
         #expect(seedSha256 != String(repeating: "0", count: 64), "SHA256 must not be an all-zeros placeholder")
     }
+
+    @Test("WPS packet extraction requires 3 7z packets and validates the office6 runtime")
+    func wpsPacketExtractionRequiresThreePacketsAndOffice6() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        // extract_wps_packet_into_prefix parses a PE executable to find embedded
+        // 7z archives, extracts control/product1/product2 packets, and deploys
+        // the office6 shared runtime. The function must require at least 3
+        // packets and verify the office6/wps.exe deployment at the end.
+        let fnStart = try #require(script.range(of: "extract_wps_packet_into_prefix() {"))
+        let nextFn = try #require(script.range(of: "extract_rar_bsdtar_into_prefix() {"))
+        let fnBody = String(script[fnStart.lowerBound..<nextFn.lowerBound])
+        // Must require at least 3 7z packets (control, product1, product2).
+        #expect(fnBody.contains("Expected at least three WPS 7z packets"), "must require >= 3 7z packets")
+        // Must verify the PE file starts with MZ before parsing.
+        #expect(fnBody.contains(#"data[:2] != b"MZ""#), "must validate PE signature (MZ)")
+        // Must verify the deployed office6 runtime has wps.exe.
+        #expect(fnBody.contains("office6/wps.exe"), "must verify office6/wps.exe after deployment")
+    }
 }
