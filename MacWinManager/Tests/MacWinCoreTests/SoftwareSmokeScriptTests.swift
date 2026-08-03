@@ -1517,4 +1517,29 @@ struct SoftwareSmokeScriptTests {
         // Must verify the deployed office6 runtime has wps.exe.
         #expect(fnBody.contains("office6/wps.exe"), "must verify office6/wps.exe after deployment")
     }
+
+    @Test("Squirrel PE extraction targets the lib/net45 application payload")
+    func squirrelPeExtractionTargetsNet45Payload() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        // extract_squirrel_pe_into_prefix extracts a .nupkg from a Squirrel
+        // PE installer and deploys the lib/net45/ payload (the .NET application
+        // files Squirrel.Windows stores in that NuGet path). The prefix must
+        // be exactly "lib/net45/", or the extraction misses the app files or
+        // includes NuGet metadata.
+        let fnStart = try #require(script.range(of: "extract_squirrel_pe_into_prefix() {"))
+        let nextFn = try #require(script.range(of: "install_chrome_enterprise_payload() {"))
+        let fnBody = String(script[fnStart.lowerBound..<nextFn.lowerBound])
+        #expect(fnBody.contains(#"prefix = "lib/net45/""#),
+                "must extract the lib/net45/ application payload from the .nupkg")
+        // Must validate a payload was found before extraction.
+        #expect(fnBody.contains("Squirrel PE package missing embedded ZIP payload"),
+                "must validate the payload exists before extraction")
+    }
 }
