@@ -1241,4 +1241,27 @@ struct SoftwareSmokeScriptTests {
             #expect(fnBody.contains(style), "JabRef JavaFX font replacement must cover Lucida Sans \(style)")
         }
     }
+
+    @Test("DWSIM profile forces GTK3 platform rendering and CPU flowsheet")
+    func dwsimProfileForcesGtk3Rendering() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        // configure_dwsim_gtk3_profile writes a dwsim_newui.ini that forces
+        // DWSIM to use the GTK3 renderer on all platforms and the CPU
+        // flowsheet renderer (avoiding GPU-dependent rendering that fails under
+        // Wine). These are the critical keys that make DWSIM launch stable.
+        let fnStart = try #require(script.range(of: "configure_dwsim_gtk3_profile() {"))
+        let nextFn = try #require(script.range(of: "configure_epanet_cli_sample() {"))
+        let fnBody = String(script[fnStart.lowerBound..<nextFn.lowerBound])
+        #expect(fnBody.contains("Windows = Gtk3"), "DWSIM must force GTK3 rendering on Windows")
+        #expect(fnBody.contains("Linux = Gtk3"), "DWSIM must force GTK3 rendering on Linux")
+        #expect(fnBody.contains("Mac = Gtk3"), "DWSIM must force GTK3 rendering on Mac")
+        #expect(fnBody.contains("FlowsheetRenderer = CPU"), "DWSIM must use CPU flowsheet rendering")
+    }
 }
