@@ -1108,4 +1108,34 @@ struct SoftwareSmokeScriptTests {
         #expect(decoded.contains("兼容性调试"), "probe must embed 兼容性调试 (asserted as <Name>兼容性调试</Name>)")
         #expect(decoded.contains("测试工程师"), "probe must embed 测试工程师 (asserted as <Name>测试工程师</Name>)")
     }
+
+    @Test("DBeaver JDBC driver download SHA1 is a valid 40-char hex hash")
+    func dbeaverJdbcDriverSha1IsValidHex() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        // configure_dbeaver_profile downloads the PostgreSQL JDBC driver and
+        // the ECJ compiler, verifying each by SHA1. A malformed SHA1 (wrong
+        // length or non-hex) silently skips verification or always fails.
+        // Assert both expected hashes are 40-character lowercase hex strings.
+        func capture(_ source: String, pattern: String) -> String? {
+            guard let regex = try? NSRegularExpression(pattern: pattern),
+                  let m = regex.firstMatch(in: source, range: NSRange(source.startIndex..<source.endIndex, in: source)),
+                  m.numberOfRanges > 1,
+                  let r = Range(m.range(at: 1), in: source) else { return nil }
+            return String(source[r])
+        }
+        let driverSha1 = try #require(capture(script, pattern: #"expected_sha1='([0-9a-f]{40})'"#))
+        let compilerSha1 = try #require(capture(script, pattern: #"expected_compiler_sha1='([0-9a-f]{40})'"#))
+        #expect(driverSha1.count == 40, "PostgreSQL JDBC driver SHA1 must be 40 hex chars")
+        #expect(compilerSha1.count == 40, "ECJ compiler SHA1 must be 40 hex chars")
+        // The SHA1 must not be all zeros (a placeholder).
+        #expect(driverSha1 != String(repeating: "0", count: 40))
+        #expect(compilerSha1 != String(repeating: "0", count: 40))
+    }
 }
