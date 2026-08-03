@@ -1264,4 +1264,27 @@ struct SoftwareSmokeScriptTests {
         #expect(fnBody.contains("Mac = Gtk3"), "DWSIM must force GTK3 rendering on Mac")
         #expect(fnBody.contains("FlowsheetRenderer = CPU"), "DWSIM must use CPU flowsheet rendering")
     }
+
+    @Test("JASP desktop exe override validates both PE32 and PE32+ executables")
+    func jaspDesktopExeOverrideValidatesBothPeArchitectures() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        // configure_jasp_desktop_exe_override validates the override file is a
+        // Windows PE executable before replacing JASPDesktop.exe. The check
+        // must accept both 64-bit (PE32+ ... x86-64) and 32-bit
+        // (PE32 ... Intel 80386) executables, or a valid override is rejected.
+        let fnStart = try #require(script.range(of: "configure_jasp_desktop_exe_override() {"))
+        let nextFn = try #require(script.range(of: "configure_jasp_ipc_trace_preset() {"))
+        let fnBody = String(script[fnStart.lowerBound..<nextFn.lowerBound])
+        #expect(fnBody.contains(#"PE32\+? executable"#), "PE validation must match PE32+ (64-bit)")
+        #expect(fnBody.contains("x86-64"), "PE validation must match x86-64 (64-bit)")
+        #expect(fnBody.contains("PE32 executable"), "PE validation must match PE32 (32-bit)")
+        #expect(fnBody.contains("Intel 80386"), "PE validation must match Intel 80386 (32-bit)")
+    }
 }
