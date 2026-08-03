@@ -1358,4 +1358,28 @@ struct SoftwareSmokeScriptTests {
         #expect(fnBody.contains("libgallium_wgl.dll"), "must deploy libgallium_wgl.dll")
         #expect(fnBody.contains("cmp -s"), "must verify the copy with cmp -s")
     }
+
+    @Test("MeshLab deploys its bundled software OpenGL as opengl32.dll")
+    func meshlabDeploysBundledSoftwareOpenglAsOpengl32() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        // configure_meshlab_software_opengl copies MeshLab's bundled
+        // opengl32sw.dll to opengl32.dll so the app's OpenGL loader finds the
+        // Mesa software renderer. The copy must be opengl32sw.dll ->
+        // opengl32.dll (the loader-expected name), or MeshLab's 3D viewport
+        // fails to initialize under Wine.
+        let fnStart = try #require(script.range(of: "configure_meshlab_software_opengl() {"))
+        let nextFn = try #require(script.range(of: "configure_bambu_studio_runtime() {"))
+        let fnBody = String(script[fnStart.lowerBound..<nextFn.lowerBound])
+        #expect(fnBody.contains(#"cp -f "$app_dir/opengl32sw.dll" "$app_dir/opengl32.dll""#),
+                "MeshLab must deploy opengl32sw.dll as opengl32.dll")
+        // Must gate on both the source DLL and the cube fixture existing.
+        #expect(fnBody.contains("opengl32sw.dll"), "must check the bundled software OpenGL DLL exists")
+    }
 }
