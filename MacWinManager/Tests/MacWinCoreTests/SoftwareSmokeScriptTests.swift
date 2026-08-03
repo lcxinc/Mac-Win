@@ -1310,4 +1310,29 @@ struct SoftwareSmokeScriptTests {
             #expect(fnBody.contains(alias), "pango.aliases must cover font family \(alias)")
         }
     }
+
+    @Test("OpenDSS SVN x64 install verifies the core engine and solver files")
+    func opendssInstallVerifiesCoreFiles() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        // install_opendss_svn_x64_into_prefix validates a required-files list
+        // before copying the OpenDSS runtime. The list must include the CLI
+        // solver (OpenDSScmd.exe), the COM engine (OpenDSSengine.dll), and the
+        // KLUSolve linear solver (KLUSolve.dll) — the three components the
+        // power and COM workloads depend on. A missing entry would deploy an
+        // incomplete runtime and the workload would fail with a confusing
+        // "file not found" instead of a clear "install incomplete" message.
+        let fnStart = try #require(script.range(of: "install_opendss_svn_x64_into_prefix() {"))
+        let nextFn = try #require(script.range(of: "repair_user_shell_folders() {"))
+        let fnBody = String(script[fnStart.lowerBound..<nextFn.lowerBound])
+        for required in ["OpenDSScmd.exe", "OpenDSSengine.dll", "KLUSolve.dll"] {
+            #expect(fnBody.contains(required), "OpenDSS required-files list must include \(required)")
+        }
+    }
 }
