@@ -1382,4 +1382,33 @@ struct SoftwareSmokeScriptTests {
         // Must gate on both the source DLL and the cube fixture existing.
         #expect(fnBody.contains("opengl32sw.dll"), "must check the bundled software OpenGL DLL exists")
     }
+
+    @Test("QGIS launcher version matches between configure and manifest")
+    func qgisLauncherVersionMatchesManifest() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+        let manifestURL = repositoryRoot.appendingPathComponent("scripts/download-software-samples.sh")
+        let manifest = try String(contentsOf: manifestURL, encoding: .utf8)
+
+        // configure_qgis_launcher pins the QGIS install path
+        // (QGIS <ver>\bin\qgis-ltr.bat) and embeds it in a .cmd wrapper. The
+        // version must match the manifest installer, or the launcher calls a
+        // path that was never installed.
+        func capture(_ source: String, pattern: String) -> String? {
+            guard let regex = try? NSRegularExpression(pattern: pattern),
+                  let m = regex.firstMatch(in: source, range: NSRange(source.startIndex..<source.endIndex, in: source)),
+                  m.numberOfRanges > 1,
+                  let r = Range(m.range(at: 1), in: source) else { return nil }
+            return String(source[r])
+        }
+        let manifestVersion = try #require(capture(manifest, pattern: #"QGIS-OSGeo4W-(\d+\.\d+\.\d+)-"#))
+        let scriptVersion = try #require(capture(script, pattern: #"QGIS (\d+\.\d+\.\d+)\\bin"#))
+        #expect(scriptVersion == manifestVersion,
+                "QGIS launcher version \(scriptVersion) must match manifest \(manifestVersion)")
+    }
 }
