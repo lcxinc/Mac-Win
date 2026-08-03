@@ -1717,4 +1717,28 @@ struct SoftwareSmokeScriptTests {
         #expect(fnBody.contains("--accept-licenses"), "must accept QtIFW licenses non-interactively")
         #expect(fnBody.contains("--confirm-command install"), "must run non-interactive QtIFW install")
     }
+
+    @Test("Krita workload generates a valid 24-bit BMP input")
+    func kritaWorkloadGeneratesValidBmp() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        // run_krita_image_workload generates a 24-bit BMP input that Krita
+        // converts to PNG. The BMP must use the correct BITMAPINFOHEADER format
+        // (24bpp, 4-byte aligned rows, BM signature) or Krita cannot load it.
+        let fnStart = try #require(script.range(of: "run_krita_image_workload() {"))
+        let nextFn = try #require(script.range(of: "run_godot_vulkan_workload() {"))
+        let fnBody = String(script[fnStart.lowerBound..<nextFn.lowerBound])
+        #expect(fnBody.contains(#"b"BM""#), "must write the BMP signature")
+        #expect(fnBody.contains("struct.pack"), "must use struct.pack for binary BMP header")
+        // Must use 24-bit color depth.
+        #expect(fnBody.contains("24"), "BMP must use 24 bits per pixel")
+        // Must verify the output PNG dimensions are 256x256.
+        #expect(fnBody.contains("256, 256, 8, 6, 0"), "must verify 256x256 RGBA8 PNG output")
+    }
 }
