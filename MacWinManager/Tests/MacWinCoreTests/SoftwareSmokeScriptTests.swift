@@ -1572,4 +1572,27 @@ struct SoftwareSmokeScriptTests {
         #expect(fnBody.contains("UPDATER.PACKED.7Z"),
                 "must extract the UPDATER.PACKED.7Z resource from the Chrome metainstaller")
     }
+
+    @Test("PE32 executable detection excludes PE32+ (64-bit)")
+    func pe32ExecutableDetectionExcludesPe32Plus() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        // is_pe32_executable must match "PE32 executable" but explicitly exclude
+        // "PE32+ executable" (64-bit). Since "PE32+ executable" contains the
+        // substring "PE32 executable", the exclusion check is essential to
+        // avoid misidentifying 64-bit PE files as 32-bit. A 32-bit-only .NET
+        // app gated on this check would incorrectly try to launch a 64-bit
+        // executable on a WoW64-incapable engine.
+        let fnStart = try #require(script.range(of: "is_pe32_executable() {"))
+        let nextFn = try #require(script.range(of: "gui_launcher_may_delegate() {"))
+        let fnBody = String(script[fnStart.lowerBound..<nextFn.lowerBound])
+        #expect(fnBody.contains(#"'PE32 executable'"#), "must match PE32 executable")
+        #expect(fnBody.contains(#"'PE32\+ executable'"#), "must exclude PE32+ executable (64-bit)")
+    }
 }
