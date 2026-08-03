@@ -1192,4 +1192,26 @@ struct SoftwareSmokeScriptTests {
         // py.bat must handle the -3 flag (Windows py launcher convention).
         #expect(fnBody.contains(#""%~1"=="-3""#), "py.bat must handle the Windows py launcher -3 flag")
     }
+
+    @Test("GeoGebra api-ms-win DLL removal uses case-insensitive find")
+    func geogebraApiMsWinDllRemovalIsCaseInsensitive() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        // configure_geogebra_classic_profile moves bundled api-ms-win-* and
+        // ext-ms-win-* DLLs aside so GeoGebra uses Wine's implementations.
+        // Windows packages ship these with mixed case (api-ms-win, API-MS-Win,
+        // Api-Ms-Win), so the find must use -iname (case-insensitive) for both
+        // prefixes, or a differently-cased DLL leaks through and conflicts.
+        let fnStart = try #require(script.range(of: "configure_geogebra_classic_profile() {"))
+        let nextFn = try #require(script.range(of: "disable_bundled_gpu_dlls() {"))
+        let fnBody = String(script[fnStart.lowerBound..<nextFn.lowerBound])
+        #expect(fnBody.contains("-iname 'api-ms-win*.dll'"), "must use case-insensitive -iname for api-ms-win DLLs")
+        #expect(fnBody.contains("-iname 'ext-ms-win*.dll'"), "must use case-insensitive -iname for ext-ms-win DLLs")
+    }
 }
