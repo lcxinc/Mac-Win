@@ -1138,4 +1138,32 @@ struct SoftwareSmokeScriptTests {
         #expect(driverSha1 != String(repeating: "0", count: 40))
         #expect(compilerSha1 != String(repeating: "0", count: 40))
     }
+
+    @Test("WPS Office version is consistent between configure profile and install matrix")
+    func wpsOfficeVersionIsConsistent() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        // configure_wps_office_profile defaults the WPS install version
+        // (12.1.0.27458) and the install matrix pins the same version into
+        // the install path. Both must agree, or the configure function looks
+        // for a directory the installer never created.
+        func capture(_ source: String, pattern: String) -> String? {
+            guard let regex = try? NSRegularExpression(pattern: pattern),
+                  let m = regex.firstMatch(in: source, range: NSRange(source.startIndex..<source.endIndex, in: source)),
+                  m.numberOfRanges > 1,
+                  let r = Range(m.range(at: 1), in: source) else { return nil }
+            return String(source[r])
+        }
+        let configureDefault = try #require(capture(script, pattern: #"local version="\$\{1:-([0-9.]+)\}""#))
+        // The install matrix embeds the version in the Kingsoft install path.
+        let matrixVersion = try #require(capture(script, pattern: #"Kingsoft\\\\WPS Office\\\\([0-9.]+)\\\\office6"#))
+        #expect(configureDefault == matrixVersion,
+                "WPS configure default \(configureDefault) must match install matrix \(matrixVersion)")
+    }
 }
