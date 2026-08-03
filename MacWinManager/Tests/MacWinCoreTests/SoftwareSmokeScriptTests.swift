@@ -1287,4 +1287,27 @@ struct SoftwareSmokeScriptTests {
         #expect(fnBody.contains("PE32 executable"), "PE validation must match PE32 (32-bit)")
         #expect(fnBody.contains("Intel 80386"), "PE validation must match Intel 80386 (32-bit)")
     }
+
+    @Test("DWSIM pango aliases cover the standard Windows UI font families")
+    func dwsimPangoAliasesCoverWindowsUiFonts() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        // configure_dwsim_gtk3_profile writes pango.aliases that map the
+        // standard Windows UI font family names (MS Shell Dlg / MS Shell Dlg 2)
+        // plus Sans/Serif/Monospace to real available fonts. DWSIM uses GTK
+        // rendering and its UI defaults to MS Shell Dlg, so the alias must be
+        // present or DWSIM text renders as boxes.
+        let fnStart = try #require(script.range(of: "configure_dwsim_gtk3_profile() {"))
+        let nextFn = try #require(script.range(of: "configure_epanet_cli_sample() {"))
+        let fnBody = String(script[fnStart.lowerBound..<nextFn.lowerBound])
+        for alias in [#""MS Shell Dlg""#, #""MS Shell Dlg 2""#, "Sans", "Serif", "Monospace"] {
+            #expect(fnBody.contains(alias), "pango.aliases must cover font family \(alias)")
+        }
+    }
 }
