@@ -1067,4 +1067,45 @@ struct SoftwareSmokeScriptTests {
         #expect(fnBody.contains("sort -rV"),
                 "version directory selection must use sort -rV (version-aware), not sort -r (lexical)")
     }
+
+    @Test("ProjectLibre MPXJ probe CJK names match the workload assertions")
+    func projectlibreMpxjProbeCjkNamesMatchAssertions() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        // run_projectlibre_core_workload asserts the MSPDI XML contains
+        // <Name>兼容性调试</Name> and <Name>测试工程师</Name>. The Java probe
+        // fixture embeds those names as \uXXXX escapes; a wrong escape silently
+        // corrupts the CJK text and the roundtrip fails. Decode the escapes and
+        // confirm they match the assertion text.
+        let probeURL = repositoryRoot.appendingPathComponent("scripts/fixtures/projectlibre-mpxj-smoke.java")
+        let probe = try String(contentsOf: probeURL, encoding: .utf8)
+
+        func decodeUnicodeEscapes(_ source: String) -> [String] {
+            guard let regex = try? NSRegularExpression(pattern: #""((?:\\u[0-9A-Fa-f]{4})+)""#) else { return [] }
+            return regex.matches(in: source, range: NSRange(source.startIndex..<source.endIndex, in: source))
+                .compactMap { m -> String? in
+                    guard let r = Range(m.range(at: 1), in: source) else { return nil }
+                    let escapes = source[r]
+                    // Convert \uXXXX runs to the actual string
+                    var result = ""
+                    var s = escapes[escapes.startIndex...]
+                    while let backslash = s.firstIndex(of: "\\") {
+                        result += String(s[..<backslash])
+                        let hexStart = s.index(backslash, offsetBy: 2)
+                        let hexEnd = s.index(hexStart, offsetBy: 4)
+                        guard hexEnd <= s.endIndex, let code = UInt32(s[hexStart..<hexEnd], radix: 16) else { return nil }
+                        result.append(Character(UnicodeScalar(code)!))
+                        s = s[hexEnd...]
+                    }
+                    result += String(s)
+                    return result
+                }
+        }
+        let decoded = decodeUnicodeEscapes(probe)
+        #expect(decoded.contains("兼容性调试"), "probe must embed 兼容性调试 (asserted as <Name>兼容性调试</Name>)")
+        #expect(decoded.contains("测试工程师"), "probe must embed 测试工程师 (asserted as <Name>测试工程师</Name>)")
+    }
 }
