@@ -1741,4 +1741,30 @@ struct SoftwareSmokeScriptTests {
         // Must verify the output PNG dimensions are 256x256.
         #expect(fnBody.contains("256, 256, 8, 6, 0"), "must verify 256x256 RGBA8 PNG output")
     }
+
+    @Test(".NET host failure detection covers key runtime error signatures")
+    func dotnetHostFailureDetectionCoversKeyErrors() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        // has_dotnet_host_failure must detect the key .NET runtime error
+        // signatures, or a .NET app that fails to launch due to missing
+        // runtime is misclassified as a successful launch.
+        let fnStart = try #require(script.range(of: "has_dotnet_host_failure() {"))
+        let nextFn = try #require(script.range(of: "has_mono_native_crash_failure() {"))
+        let fnBody = String(script[fnStart.lowerBound..<nextFn.lowerBound])
+        // Core CLR / hostfxr failures.
+        #expect(fnBody.contains("hostfxr"), "must detect hostfxr resolution failure")
+        #expect(fnBody.contains("coreclr"), "must detect CoreCLR failure")
+        #expect(fnBody.contains("mscoree"), "must detect missing mscoree.dll")
+        // Assembly load failures.
+        #expect(fnBody.contains("Could not load file or assembly"), "must detect assembly load failure")
+        // .NET install prompt.
+        #expect(fnBody.contains("You must install"), "must detect the .NET install prompt")
+    }
 }
