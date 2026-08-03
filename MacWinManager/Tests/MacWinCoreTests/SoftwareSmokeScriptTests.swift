@@ -1617,4 +1617,29 @@ struct SoftwareSmokeScriptTests {
         #expect(fnBody.contains("kill -KILL"), "must escalate to SIGKILL if TERM fails")
         #expect(fnBody.contains("WINESERVER_CMD"), "must kill wineserver as final fallback")
     }
+
+    @Test("GUI process patterns cover key application executables")
+    func guiProcessPatternsCoverKeyExecutables() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        // gui_process_pattern_for_sample returns a regex to detect/terminate
+        // each sample's GUI process. The pattern must reference the correct
+        // executable name, or the process cannot be detected (false failure)
+        // or terminated (resource leak into the next sample).
+        let fnStart = try #require(script.range(of: "gui_process_pattern_for_sample() {"))
+        let nextFn = try #require(script.range(of: "has_live_gui_process_for_sample() {"))
+        let fnBody = String(script[fnStart.lowerBound..<nextFn.lowerBound])
+        // Key executables that must have patterns.
+        for exe in ["et\\.exe", "wpp\\.exe", "wpspdf\\.exe", "editors\\.exe",
+                     "floorp\\.exe", "librewolf\\.exe", "waterfox\\.exe",
+                     "seamonkey\\.exe", "zen\\.exe", "mullvadbrowser\\.exe"] {
+            #expect(fnBody.contains(exe), "GUI process pattern must cover \(exe)")
+        }
+    }
 }
