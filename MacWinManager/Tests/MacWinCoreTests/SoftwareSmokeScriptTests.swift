@@ -1435,4 +1435,36 @@ struct SoftwareSmokeScriptTests {
         #expect(fnBody.contains("i386-windows"), "must build from the i386 (32-bit) Wine DLL source")
         #expect(fnBody.contains(#"PE32 executable .* Intel 80386"#), "must validate as 32-bit PE32")
     }
+
+    @Test(".NET Desktop 10 runtime version is consistent between zip and marker paths")
+    func dotnetDesktop10RuntimeVersionIsConsistent() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        // install_dotnet_desktop10_zip_runtime deploys .NET 10 from
+        // dotnet-runtime-<ver>-win-x64.zip and windowsdesktop-runtime-<ver>-win-x64.zip,
+        // then validates marker files under shared/.../<ver>/. The version
+        // in the zip filenames, the shared-framework directory, and the deps.json
+        // marker must all agree, or the function deploys one version and checks
+        // a marker from a different version.
+        func capture(_ source: String, pattern: String) -> String? {
+            guard let regex = try? NSRegularExpression(pattern: pattern),
+                  let m = regex.firstMatch(in: source, range: NSRange(source.startIndex..<source.endIndex, in: source)),
+                  m.numberOfRanges > 1,
+                  let r = Range(m.range(at: 1), in: source) else { return nil }
+            return String(source[r])
+        }
+        let fnStart = try #require(script.range(of: "install_dotnet_desktop10_zip_runtime() {"))
+        let nextFn = try #require(script.range(of: "install_python314_portable_runtime() {"))
+        let fnBody = String(script[fnStart.lowerBound..<nextFn.lowerBound])
+        let zipVersion = try #require(capture(fnBody, pattern: #"dotnet-runtime-(\d+\.\d+\.\d+)-win"#))
+        let markerVersion = try #require(capture(fnBody, pattern: #"Microsoft\.NETCore\.App/(\d+\.\d+\.\d+)/"#))
+        #expect(zipVersion == markerVersion,
+                ".NET runtime zip version \(zipVersion) must match marker path version \(markerVersion)")
+    }
 }
