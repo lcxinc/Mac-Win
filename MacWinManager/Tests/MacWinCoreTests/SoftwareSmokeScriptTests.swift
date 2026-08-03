@@ -3,6 +3,45 @@ import Testing
 
 @Suite("Software smoke script")
 struct SoftwareSmokeScriptTests {
+    @Test("PowerToys Quick Access probe captures real WinUI output without hiding known gaps")
+    func powerToysQuickAccessProbePreservesVisualEvidence() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-powertoys-quick-access-probe.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        #expect(script.contains(#"WINE_D3D_CONFIG="${WINE_D3D_CONFIG:-renderer=vulkan,csmt=0x0}""#))
+        #expect(script.contains(#"Local\\PowerToysQuickAccess_32_Show"#))
+        #expect(script.contains("--discover-smallest wine"))
+        #expect(script.contains("capture-macos-window.swift"))
+        #expect(script.contains("analyze-window-image.py"))
+        #expect(script.contains(#"state = "passed" if event_was_signaled else "failed""#))
+        #expect(script.contains(#"state = "pending""#))
+        #expect(script.contains(#"[ "$event_signaled" != "1" ]"#))
+        #expect(script.contains(#"[ "$classification" != "rendered" ] && [ "$REQUIRE_RENDERED" = "1" ]"#))
+        #expect(!script.contains(#"classification == "low-information-window" else "passed""#))
+    }
+
+    @Test("WinUI host composition patch preserves the verified DComp fixes")
+    func winUIHostCompositionPatchPreservesVerifiedFixes() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let patchURL = repositoryRoot.appendingPathComponent("patches/wine-dcomp-winui-host-composition.patch")
+        let patch = try String(contentsOf: patchURL, encoding: .utf8)
+
+        #expect(patch.contains("GetCurrentBatchId([out] DWORD *batch_id)"))
+        #expect(patch.contains("GetLastConfirmedBatchId([out] DWORD *batch_id)"))
+        #expect(patch.contains("Batch ID write clobbered guard"))
+        #expect(patch.contains("output_window = GetAncestor(target->hwnd, GA_ROOT)"))
+        #expect(patch.contains("MsgWaitForMultipleObjectsEx(0, NULL, 0, 0, 0)"))
+    }
+
     @Test("DBeaver smoke preserves Latin UI fonts and uses CJK glyph fallback")
     func dbeaverSmokePreservesLatinUIFontFiles() throws {
         let repositoryRoot = URL(fileURLWithPath: #filePath)

@@ -1,0 +1,196 @@
+diff --git a/dlls/dcomp/dcomp_private.h b/dlls/dcomp/dcomp_private.h
+index 6d7b1a5d109..2e4f147b79a 100644
+--- a/dlls/dcomp/dcomp_private.h
++++ b/dlls/dcomp/dcomp_private.h
+@@ -36,6 +36,8 @@ struct composition_device
+     HANDLE thread;
+     BOOL exit_thread;
+     BOOL thread_exited;
++    LONG current_batch_id;
++    LONG last_confirmed_batch_id;
+     int version;
+     LONG ref;
+ };
+diff --git a/dlls/dcomp/dcomp_private_iface.idl b/dlls/dcomp/dcomp_private_iface.idl
+index 3f67e6dbfb8..4506c2af1ef 100644
+--- a/dlls/dcomp/dcomp_private_iface.idl
++++ b/dlls/dcomp/dcomp_private_iface.idl
+@@ -72,8 +72,8 @@ interface IDCompositionDeviceUnknown : IDCompositionDesktopDevicePartner
+     HRESULT Unknown13();
+     HRESULT Unknown14();
+     HRESULT Unknown15();
+-    HRESULT Unknown16(void **parameter1);
+-    HRESULT Unknown17(void **parameter1);
++    HRESULT GetCurrentBatchId([out] DWORD *batch_id);
++    HRESULT GetLastConfirmedBatchId([out] DWORD *batch_id);
+     HRESULT Unknown18();
+     HRESULT Unknown19();
+     HRESULT Unknown20();
+diff --git a/dlls/dcomp/device.c b/dlls/dcomp/device.c
+index 00426a74d25..e2abd753e7e 100644
+--- a/dlls/dcomp/device.c
++++ b/dlls/dcomp/device.c
+@@ -431,6 +431,8 @@ static void do_composite_dxgi_surface(const struct composition_target *target,
+     DXGI_SURFACE_DESC surface_desc;
+     ID2D1Bitmap *src_bitmap = NULL;
+     ID2D1Image *old_target = NULL;
++    HWND output_window;
++    POINT output_origin = {0};
+     HDC dst_dc, src_dc;
+     D2D1_SIZE_U size;
+     DWORD style;
+@@ -560,12 +562,26 @@ static void do_composite_dxgi_surface(const struct composition_target *target,
+         goto done;
+     }
+ 
+-    style = DCX_USESTYLE | DCX_CACHE;
+-    if (!target->topmost)
+-        style |= DCX_CLIPCHILDREN;
+-    dst_dc = GetDCEx(target->hwnd, 0, style);
+-    GdiAlphaBlend(dst_dc, 0, 0, size.width, size.height, src_dc, 0, 0, size.width, size.height, blend_func);
+-    ReleaseDC(target->hwnd, dst_dc);
++    output_window = GetAncestor(target->hwnd, GA_ROOT);
++    if (!output_window)
++        output_window = target->hwnd;
++    if (output_window != target->hwnd)
++        MapWindowPoints(target->hwnd, output_window, &output_origin, 1);
++
++    if (output_window != target->hwnd)
++        style = DCX_CACHE;
++    else
++    {
++        style = DCX_USESTYLE | DCX_CACHE;
++        if (!target->topmost)
++            style |= DCX_CLIPCHILDREN;
++    }
++    dst_dc = GetDCEx(output_window, 0, style);
++    if (!GdiAlphaBlend(dst_dc, output_origin.x, output_origin.y, size.width, size.height,
++            src_dc, 0, 0,
++            size.width, size.height, blend_func))
++        ERR("GdiAlphaBlend failed, error %lu.\n", GetLastError());
++    ReleaseDC(output_window, dst_dc);
+ 
+     ID2D1GdiInteropRenderTarget_ReleaseDC(visual->interop, NULL);
+     ID2D1DeviceContext_SetTarget(visual->device_context, old_target);
+@@ -775,6 +791,11 @@ static DWORD WINAPI composite_thread_proc(void *iface)
+                 count++;
+         }
+ 
++        /* The composition worker may not otherwise enter the user message wait path that
++         * flushes window surfaces to the host driver. Flush once after the complete frame. */
++        if (count)
++            MsgWaitForMultipleObjectsEx(0, NULL, 0, 0, 0);
++
+         if (!count || !continuous)
+         {
+             TRACE("Composition thread exited.\n");
+@@ -821,6 +842,12 @@ static HRESULT STDMETHODCALLTYPE device_Commit(IDCompositionDevice *iface)
+ 
+     dcomp_unlock();
+ 
++    if (SUCCEEDED(hr))
++    {
++        LONG batch_id = InterlockedIncrement(&device->current_batch_id);
++        InterlockedExchange(&device->last_confirmed_batch_id, batch_id);
++    }
++
+     return hr;
+ }
+ 
+@@ -1499,26 +1526,32 @@ static HRESULT STDMETHODCALLTYPE desktop_device_Unknown15(IDCompositionDeviceUnk
+     return E_NOTIMPL;
+ }
+ 
+-static HRESULT STDMETHODCALLTYPE desktop_device_Unknown16(IDCompositionDeviceUnknown *iface, void **parameter1)
++static HRESULT STDMETHODCALLTYPE desktop_device_GetCurrentBatchId(IDCompositionDeviceUnknown *iface,
++        DWORD *batch_id)
+ {
+-    FIXME("iface %p parameter1 %p stub!\n", iface, parameter1);
++    struct composition_device *device = impl_from_IDCompositionDeviceUnknown(iface);
++
++    TRACE("iface %p, batch_id %p.\n", iface, batch_id);
+ 
+-    if (!parameter1)
++    if (!batch_id)
+         return E_INVALIDARG;
+ 
+-    *parameter1 = NULL;
+-    return E_NOTIMPL;
++    *batch_id = InterlockedCompareExchange(&device->current_batch_id, 0, 0);
++    return S_OK;
+ }
+ 
+-static HRESULT STDMETHODCALLTYPE desktop_device_Unknown17(IDCompositionDeviceUnknown *iface, void **parameter1)
++static HRESULT STDMETHODCALLTYPE desktop_device_GetLastConfirmedBatchId(IDCompositionDeviceUnknown *iface,
++        DWORD *batch_id)
+ {
+-    FIXME("iface %p parameter1 %p stub!\n", iface, parameter1);
++    struct composition_device *device = impl_from_IDCompositionDeviceUnknown(iface);
++
++    TRACE("iface %p, batch_id %p.\n", iface, batch_id);
+ 
+-    if (!parameter1)
++    if (!batch_id)
+         return E_INVALIDARG;
+ 
+-    *parameter1 = NULL;
+-    return E_NOTIMPL;
++    *batch_id = InterlockedCompareExchange(&device->last_confirmed_batch_id, 0, 0);
++    return S_OK;
+ }
+ 
+ static HRESULT STDMETHODCALLTYPE desktop_device_Unknown18(IDCompositionDeviceUnknown *iface)
+@@ -2065,8 +2098,8 @@ static const struct IDCompositionDeviceUnknownVtbl desktop_device_vtbl =
+     desktop_device_Unknown13,
+     desktop_device_Unknown14,
+     desktop_device_Unknown15,
+-    desktop_device_Unknown16,
+-    desktop_device_Unknown17,
++    desktop_device_GetCurrentBatchId,
++    desktop_device_GetLastConfirmedBatchId,
+     desktop_device_Unknown18,
+     desktop_device_Unknown19,
+     desktop_device_Unknown20,
+diff --git a/dlls/dcomp/tests/dcomp.c b/dlls/dcomp/tests/dcomp.c
+index 251587de15b..5ebc0c2f596 100644
+--- a/dlls/dcomp/tests/dcomp.c
++++ b/dlls/dcomp/tests/dcomp.c
+@@ -1084,6 +1084,12 @@ static void test_device_Commit(void)
+ 
+ static void test_DCompositionCreateDevice3(void)
+ {
++    struct
++    {
++        DWORD value;
++        DWORD guard;
++    } batch_id;
++    IDCompositionDeviceUnknown *device_unknown;
+     IDCompositionDevice *dcomp_device;
+     IDXGIDevice *dxgi_device;
+     ULONG refcount;
+@@ -1126,6 +1132,25 @@ static void test_DCompositionCreateDevice3(void)
+     check_interface(dcomp_device, &IID_IDCompositionDeviceInternal, TRUE);
+     check_inherited_interface(dcomp_device, &IID_IDCompositionDesktopDevicePartner, &IID_IDCompositionDeviceUnknown);
+ 
++    hr = IDCompositionDevice_QueryInterface(dcomp_device, &IID_IDCompositionDeviceUnknown,
++            (void **)&device_unknown);
++    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
++    if (SUCCEEDED(hr))
++    {
++        batch_id.value = 0xdeadbeef;
++        batch_id.guard = 0x12345678;
++        hr = IDCompositionDeviceUnknown_GetCurrentBatchId(device_unknown, &batch_id.value);
++        ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
++        ok(batch_id.guard == 0x12345678, "Batch ID write clobbered guard %#lx.\n", batch_id.guard);
++
++        batch_id.value = 0xdeadbeef;
++        batch_id.guard = 0x12345678;
++        hr = IDCompositionDeviceUnknown_GetLastConfirmedBatchId(device_unknown, &batch_id.value);
++        ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
++        ok(batch_id.guard == 0x12345678, "Batch ID write clobbered guard %#lx.\n", batch_id.guard);
++        IDCompositionDeviceUnknown_Release(device_unknown);
++    }
++
+     refcount = IDCompositionDevice_Release(dcomp_device);
+     ok(!refcount, "Device has %lu references left.\n", refcount);
+ 
