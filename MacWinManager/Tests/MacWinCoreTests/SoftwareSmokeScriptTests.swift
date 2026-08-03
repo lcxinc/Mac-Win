@@ -1335,4 +1335,27 @@ struct SoftwareSmokeScriptTests {
             #expect(fnBody.contains(required), "OpenDSS required-files list must include \(required)")
         }
     }
+
+    @Test("Blender Mesa deployment verifies the copy and deploys both DLLs")
+    func blenderMesaDeploymentVerifiesCopy() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        // configure_blender_software_opengl deploys Mesa opengl32.dll and
+        // libgallium_wgl.dll beside Blender so its OpenGL 4.3 viewport can
+        // start under Wine. Both DLLs must be deployed and verified (cmp -s)
+        // after copy, or Blender loads a partial/missing Mesa runtime and
+        // fails to create the required context.
+        let fnStart = try #require(script.range(of: "configure_blender_software_opengl() {"))
+        let nextFn = try #require(script.range(of: "configure_meshlab_software_opengl() {"))
+        let fnBody = String(script[fnStart.lowerBound..<nextFn.lowerBound])
+        #expect(fnBody.contains("opengl32.dll"), "must deploy opengl32.dll")
+        #expect(fnBody.contains("libgallium_wgl.dll"), "must deploy libgallium_wgl.dll")
+        #expect(fnBody.contains("cmp -s"), "must verify the copy with cmp -s")
+    }
 }
