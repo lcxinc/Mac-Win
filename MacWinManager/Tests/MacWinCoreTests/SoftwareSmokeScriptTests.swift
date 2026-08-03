@@ -1542,4 +1542,34 @@ struct SoftwareSmokeScriptTests {
         #expect(fnBody.contains("Squirrel PE package missing embedded ZIP payload"),
                 "must validate the payload exists before extraction")
     }
+
+    @Test("Chrome Enterprise payload extraction verifies SHA256 before deployment")
+    func chromeEnterprisePayloadVerifiesSha256() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        // install_chrome_enterprise_payload extracts chrome_installer.exe from
+        // a multi-layered MSI/PE/7z archive and verifies its SHA256 against
+        // the hash declared in the MSI package manifest before deploying it.
+        // The hash verification must be present at both the Python extraction
+        // stage and the shell post-deployment stage, or a corrupted or
+        // tampered payload could be installed.
+        let fnStart = try #require(script.range(of: "install_chrome_enterprise_payload() {"))
+        let nextFn = try #require(script.range(of: "extract_inno_into_prefix() {"))
+        let fnBody = String(script[fnStart.lowerBound..<nextFn.lowerBound])
+        // Python extraction stage verifies the hash.
+        #expect(fnBody.contains("Chrome payload hash mismatch"),
+                "must verify SHA256 at the Python extraction stage")
+        // Shell stage also verifies the hash after deployment.
+        #expect(fnBody.contains("payload hash mismatch"),
+                "must verify SHA256 at the shell post-deployment stage")
+        // Must extract the UPDATER.PACKED.7Z resource from the PE.
+        #expect(fnBody.contains("UPDATER.PACKED.7Z"),
+                "must extract the UPDATER.PACKED.7Z resource from the Chrome metainstaller")
+    }
 }
