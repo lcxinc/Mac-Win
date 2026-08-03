@@ -1411,4 +1411,28 @@ struct SoftwareSmokeScriptTests {
         #expect(scriptVersion == manifestVersion,
                 "QGIS launcher version \(scriptVersion) must match manifest \(manifestVersion)")
     }
+
+    @Test("FreeOffice VC8 runtime deploys and validates 32-bit PE32 DLLs")
+    func freeofficeVc8RuntimeValidates32BitPe32() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        // configure_freeoffice_profile deploys Wine's VC8 runtime (msvcr80/
+        // msvcp80) as 32-bit i386 DLLs into syswow64 and validates them with
+        // the file command as PE32 Intel 80386. The i386 architecture is
+        // critical — FreeOffice's helper modules are 32-bit and a 64-bit DLL
+        // would fail to load.
+        let fnStart = try #require(script.range(of: "configure_freeoffice_profile() {"))
+        let nextFn = try #require(script.range(of: "configure_sqlitebrowser_profile() {"))
+        let fnBody = String(script[fnStart.lowerBound..<nextFn.lowerBound])
+        #expect(fnBody.contains("msvcr80.dll"), "must deploy msvcr80.dll")
+        #expect(fnBody.contains("msvcp80.dll"), "must deploy msvcp80.dll")
+        #expect(fnBody.contains("i386-windows"), "must build from the i386 (32-bit) Wine DLL source")
+        #expect(fnBody.contains(#"PE32 executable .* Intel 80386"#), "must validate as 32-bit PE32")
+    }
 }
