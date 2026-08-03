@@ -1595,4 +1595,26 @@ struct SoftwareSmokeScriptTests {
         #expect(fnBody.contains(#"'PE32 executable'"#), "must match PE32 executable")
         #expect(fnBody.contains(#"'PE32\+ executable'"#), "must exclude PE32+ executable (64-bit)")
     }
+
+    @Test("wine_reg_add_quiet uses escalation kill with wineserver fallback")
+    func wineRegAddQuietUsesEscalationKill() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        // wine_reg_add_quiet runs reg add in the background and must escalate
+        // from TERM to KILL to wineserver -k on timeout, or a hung reg add
+        // process blocks the entire smoke run. The function must use both
+        // SIGTERM and SIGKILL, plus the wineserver fallback.
+        let fnStart = try #require(script.range(of: "wine_reg_add_quiet() {"))
+        let nextFn = try #require(script.range(of: "prefix_wine_runtime_pids() {"))
+        let fnBody = String(script[fnStart.lowerBound..<nextFn.lowerBound])
+        #expect(fnBody.contains("kill -TERM"), "must escalate with SIGTERM first")
+        #expect(fnBody.contains("kill -KILL"), "must escalate to SIGKILL if TERM fails")
+        #expect(fnBody.contains("WINESERVER_CMD"), "must kill wineserver as final fallback")
+    }
 }
