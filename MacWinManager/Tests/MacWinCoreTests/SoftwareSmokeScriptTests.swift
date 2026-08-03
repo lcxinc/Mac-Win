@@ -1166,4 +1166,30 @@ struct SoftwareSmokeScriptTests {
         #expect(configureDefault == matrixVersion,
                 "WPS configure default \(configureDefault) must match install matrix \(matrixVersion)")
     }
+
+    @Test("LyX Python shims forward to the deployed portable Python")
+    func lyxPythonShimsTargetDeployedPython() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        // configure_lyx_python_shims creates python.bat/python3.bat/py.bat that
+        // forward to the portable Python deployed elsewhere in the smoke run.
+        // All three shims must target the same python.exe path, or LyX's Python
+        // calls resolve to inconsistent runtimes. The py.bat must also handle
+        // the Windows py launcher -3 flag.
+        let fnStart = try #require(script.range(of: "configure_lyx_python_shims() {"))
+        let nextFn = try #require(script.range(of: "configure_mremoteng_1782_profile() {"))
+        let fnBody = String(script[fnStart.lowerBound..<nextFn.lowerBound])
+        // All three shims must reference the same $target variable (defined
+        // once as the portable python.exe path and used in each .bat body).
+        let targetCount = fnBody.components(separatedBy: "\"$target\"").count - 1
+        #expect(targetCount == 3, "all three Python shims must reference $target, found \(targetCount)")
+        // py.bat must handle the -3 flag (Windows py launcher convention).
+        #expect(fnBody.contains(#""%~1"=="-3""#), "py.bat must handle the Windows py launcher -3 flag")
+    }
 }
