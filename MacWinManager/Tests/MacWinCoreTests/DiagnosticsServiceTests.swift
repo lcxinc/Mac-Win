@@ -65,6 +65,7 @@ struct DiagnosticsServiceTests {
         let script = root.appendingPathComponent("run-suite.sh")
         try Data("""
         #!/usr/bin/env bash
+        test -d "$WINEPREFIX/drive_c/ProgramData" || exit 31
         echo "PASS console"
         echo "PASS vulkan"
         """.utf8).write(to: script)
@@ -82,6 +83,11 @@ struct DiagnosticsServiceTests {
         #expect(report.durationSeconds >= 0)
         #expect(report.items.first { $0.id == "console" }?.status == .passed)
         #expect(report.items.first { $0.id == "vulkan" }?.status == .passed)
+        #expect(FileManager.default.fileExists(
+            atPath: paths.bottleDirectory(id: testBottle().id)
+                .appendingPathComponent("drive_c/ProgramData", isDirectory: true)
+                .path
+        ))
         let log = try String(contentsOf: report.logURL, encoding: .utf8)
         #expect(log.contains("----- MacWin diagnostics -----"))
         #expect(log.contains("probeSuite=\(script.path)"))

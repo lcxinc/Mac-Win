@@ -36,6 +36,7 @@ public struct BottleService {
     public static let portableAppsBackupRestoreLauncherId = "portableapps-backup-restore"
     public static let portableAppsUpdaterLauncherId = "portableapps-updater"
     public static let renderingRepairSentinelName = ".macwin-rendering-repair-v18"
+    public static let commonAppDataRegistrySentinelName = ".macwin-common-appdata-registry-v1"
     public static let fontRegistrySection = "Software\\\\Microsoft\\\\Windows NT\\\\CurrentVersion\\\\Fonts"
     public static let currentVersionFontRegistrySection = "Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Fonts"
     public static let fontSubstitutesRegistrySection = "Software\\\\Microsoft\\\\Windows NT\\\\CurrentVersion\\\\FontSubstitutes"
@@ -386,6 +387,9 @@ public struct BottleService {
         let didRepairFontFiles = try repairWindowsFontFiles(bottle)
         let didRepairFontConfig = try repairFontConfig(bottle)
         let didRepairRegistry = try repairRegistryCompatibility(bottle)
+        if let engine {
+            try synchronizeCommonAppDataRegistry(bottle, engine: engine)
+        }
         let renderingRepairSentinel = paths.bottleDirectory(id: bottle.id)
             .appendingPathComponent(Self.renderingRepairSentinelName)
         let shouldResetRenderingCaches = didRepairFontFiles
@@ -407,6 +411,36 @@ public struct BottleService {
         let sentinel = paths.bottleDirectory(id: bottle.id)
             .appendingPathComponent(Self.renderingRepairSentinelName)
         return fileManager.fileExists(atPath: sentinel.path)
+    }
+
+    private func synchronizeCommonAppDataRegistry(
+        _ bottle: BottleManifest,
+        engine: EngineManifest
+    ) throws {
+        guard fileManager.isExecutableFile(atPath: engine.winePath) else { return }
+        let marker = paths.bottleDirectory(id: bottle.id)
+            .appendingPathComponent(Self.commonAppDataRegistrySentinelName)
+        guard !fileManager.fileExists(atPath: marker.path) else { return }
+
+        _ = try runner.run(WineRunRequest(
+            exe: "reg",
+            args: [
+                "add",
+                #"HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders"#,
+                "/v",
+                "Common AppData",
+                "/t",
+                "REG_SZ",
+                "/d",
+                #"C:\ProgramData"#,
+                "/f"
+            ],
+            bottle: bottle,
+            engine: engine,
+            envOverrides: ["WINEDEBUG": "-all"],
+            logName: "\(bottle.id)-common-appdata-registry.log"
+        ))
+        try Data("ok\n".utf8).write(to: marker, options: [.atomic])
     }
 
     public func resetWebViewRenderingCaches(for bottle: BottleManifest) throws {

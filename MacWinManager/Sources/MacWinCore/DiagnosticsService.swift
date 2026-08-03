@@ -240,6 +240,7 @@ public struct DiagnosticsService {
         timeoutSeconds: TimeInterval
     ) throws -> DiagnosticReport {
         try paths.ensureBaseDirectories(fileManager: fileManager)
+        try prepareCommonAppData(for: bottle)
         let logURL = paths.logsDirectory.appendingPathComponent(logName)
         let environment = probeEnvironment(engine: engine, bottle: bottle)
         let startedAt = Date()
@@ -309,6 +310,15 @@ public struct DiagnosticsService {
             rawOutput: output,
             timedOut: timedOut,
             durationSeconds: duration
+        )
+    }
+
+    private func prepareCommonAppData(for bottle: BottleManifest) throws {
+        let programDataURL = paths.bottleDirectory(id: bottle.id)
+            .appendingPathComponent("drive_c/ProgramData", isDirectory: true)
+        try fileManager.createDirectory(
+            at: programDataURL,
+            withIntermediateDirectories: true
         )
     }
 

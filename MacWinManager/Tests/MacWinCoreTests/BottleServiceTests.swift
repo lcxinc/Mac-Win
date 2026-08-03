@@ -387,6 +387,52 @@ struct BottleServiceTests {
         #expect(repaired.contains(#""Common Startup"="C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\Startup""#))
     }
 
+    @Test("Compatibility repair runs the Common AppData HKLM command and writes its sentinel")
+    func compatibilityRepairRunsCommonAppDataRegistryCommand() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacWinCommonAppDataRegistryTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let paths = MacWinPaths(root: root)
+        let service = BottleService(paths: paths)
+        let bottle = BottleManifest(
+            id: "boost-ipc",
+            name: "Boost IPC",
+            windowsVersion: "win11",
+            arch: .win64,
+            engineId: "engine"
+        )
+        try service.saveBottle(bottle)
+        let bottleRoot = paths.bottleDirectory(id: bottle.id)
+        try Data("WINE REGISTRY Version 2\n\n".utf8)
+            .write(to: bottleRoot.appendingPathComponent("system.reg"))
+        try Data("WINE REGISTRY Version 2\n\n".utf8)
+            .write(to: bottleRoot.appendingPathComponent("user.reg"))
+        let engine = EngineManifest(
+            id: "engine",
+            name: "Engine",
+            wineVersion: "wine-test",
+            arch: .win64,
+            winePath: "/bin/echo",
+            wineserverPath: "/bin/echo",
+            runtimePath: "/runtime",
+            defaultEnv: [:]
+        )
+
+        try service.repairBottleCompatibility(bottle, engine: engine)
+
+        let log = try String(
+            contentsOf: paths.logsDirectory.appendingPathComponent("boost-ipc-common-appdata-registry.log"),
+            encoding: .utf8
+        )
+        #expect(log.contains(#"HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders"#))
+        #expect(log.contains("Common AppData"))
+        #expect(log.contains(#"C:\ProgramData"#))
+        #expect(FileManager.default.fileExists(
+            atPath: bottleRoot.appendingPathComponent(BottleService.commonAppDataRegistrySentinelName).path
+        ))
+    }
+
     @Test("Compatibility repair writes FreeCAD Python uname shim")
     func compatibilityRepairWritesFreeCADPythonUnameShim() throws {
         let root = FileManager.default.temporaryDirectory
