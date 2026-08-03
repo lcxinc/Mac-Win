@@ -1695,4 +1695,26 @@ struct SoftwareSmokeScriptTests {
         // Qt RHI failures (has_qt_rhi_failure):
         #expect(script.contains(#"Failed to create RHI"#), "must detect Qt RHI creation failures")
     }
+
+    @Test("QtIFW installer waits for target stability grace period after file appears")
+    func qtifwInstallerWaitsForStabilityGrace() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        // install_qtifw_until_file waits for the target file to appear, then
+        // keeps watching for a grace period (default 90s) to confirm the file
+        // stays present. Without the grace period, the installer could be
+        // killed mid-write when the file first appears but is incomplete.
+        let fnStart = try #require(script.range(of: "install_qtifw_until_file() {"))
+        let nextFn = try #require(script.range(of: "install_msi_until_file() {"))
+        let fnBody = String(script[fnStart.lowerBound..<nextFn.lowerBound])
+        #expect(fnBody.contains("target_grace"), "must use a grace period for target stability")
+        #expect(fnBody.contains("--accept-licenses"), "must accept QtIFW licenses non-interactively")
+        #expect(fnBody.contains("--confirm-command install"), "must run non-interactive QtIFW install")
+    }
 }
