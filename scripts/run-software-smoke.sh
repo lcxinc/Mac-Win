@@ -10908,6 +10908,9 @@ configure_jabref_javafx_fonts() {
   if [ -f "$fonts_dir/ARIALI.TTF" ]; then
     cp -f "$fonts_dir/ARIALI.TTF" "$runtime_lib/fontsLucidaSansRegularItalic.ttf" || true
   fi
+  if [ -f "$fonts_dir/ARIALBI.TTF" ]; then
+    cp -f "$fonts_dir/ARIALBI.TTF" "$runtime_lib/fontsLucidaSansDemiBoldItalic.ttf" || true
+  fi
   rm -f "$runtime_lib/fontconfig.bfc"
 }
 

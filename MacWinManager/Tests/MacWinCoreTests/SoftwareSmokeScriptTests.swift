@@ -1214,4 +1214,31 @@ struct SoftwareSmokeScriptTests {
         #expect(fnBody.contains("-iname 'api-ms-win*.dll'"), "must use case-insensitive -iname for api-ms-win DLLs")
         #expect(fnBody.contains("-iname 'ext-ms-win*.dll'"), "must use case-insensitive -iname for ext-ms-win DLLs")
     }
+
+    @Test("JabRef JavaFX font replacement covers all four Lucida Sans styles")
+    func jabrefJavafxFontReplacementCoversAllLucidaStyles() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        // configure_jabref_javafx_fonts replaces the JavaFX-bundled Lucida
+        // Sans fonts with Arial equivalents so JabRef renders with a real
+        // Windows font. JavaFX ships four Lucida Sans styles (per the OpenJFX
+        // Font Setup wiki); all four must be replaced, or a missing style falls
+        // back to a default and renders inconsistently (especially bold-italic
+        // emphasized text).
+        let fnStart = try #require(script.range(of: "configure_jabref_javafx_fonts() {"))
+        let nextFn = try #require(script.range(of: "repair_gtk2_font_aliases() {"))
+        let fnBody = String(script[fnStart.lowerBound..<nextFn.lowerBound])
+        for style in ["fontsLucidaSansRegular.ttf",
+                      "fontsLucidaSansDemiBold.ttf",
+                      "fontsLucidaSansRegularItalic.ttf",
+                      "fontsLucidaSansDemiBoldItalic.ttf"] {
+            #expect(fnBody.contains(style), "JabRef JavaFX font replacement must cover Lucida Sans \(style)")
+        }
+    }
 }
