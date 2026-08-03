@@ -1467,4 +1467,29 @@ struct SoftwareSmokeScriptTests {
         #expect(zipVersion == markerVersion,
                 ".NET runtime zip version \(zipVersion) must match marker path version \(markerVersion)")
     }
+
+    @Test("Npackd repository seed SHA256 is a valid 64-char hex hash")
+    func npackdRepositorySeedSha256IsValidHex() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        // prepare_npackd_repository_seed verifies the downloaded Npackd
+        // repository Data.db by SHA256 before deploying it. A malformed hash
+        // (wrong length or non-hex) silently skips verification.
+        func capture(_ source: String, pattern: String) -> String? {
+            guard let regex = try? NSRegularExpression(pattern: pattern),
+                  let m = regex.firstMatch(in: source, range: NSRange(source.startIndex..<source.endIndex, in: source)),
+                  m.numberOfRanges > 1,
+                  let r = Range(m.range(at: 1), in: source) else { return nil }
+            return String(source[r])
+        }
+        let seedSha256 = try #require(capture(script, pattern: #"expected='([0-9a-f]{64})'"#))
+        #expect(seedSha256.count == 64, "Npackd repository seed SHA256 must be 64 hex chars")
+        #expect(seedSha256 != String(repeating: "0", count: 64), "SHA256 must not be an all-zeros placeholder")
+    }
 }
