@@ -1767,4 +1767,38 @@ struct SoftwareSmokeScriptTests {
         // .NET install prompt.
         #expect(fnBody.contains("You must install"), "must detect the .NET install prompt")
     }
+
+    @Test("Wine GUI focus activation targets apps that need foreground focus")
+    func wineGuiFocusActivationTargetsCorrectApps() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        // activate_wine_gui_focus uses AppleScript to bring the Wine GUI to
+        // the foreground for apps that need focus to render correctly. The
+        // case list must include the known focus-sensitive apps, or those apps
+        // launch in the background and fail rendering.
+        let launchFnStart = try #require(script.range(of: "run_launch_logged() {"))
+        let focusFnStart = try #require(script.range(of: "activate_wine_gui_focus() {"))
+        let nextFn = try #require(script.range(of: "run_repair_with_watchdog() {"))
+        let launchFnBody = String(script[launchFnStart.lowerBound..<focusFnStart.lowerBound])
+        let focusFnBody = String(script[focusFnStart.lowerBound..<nextFn.lowerBound])
+
+        let launchGuard = try #require(launchFnBody.range(of: #"if [ "$phase" = "launch" ]; then"#))
+        let cleanupCall = try #require(launchFnBody.range(of: "terminate_wine_focus_residue"))
+        let activationCall = try #require(launchFnBody.range(of: #"activate_wine_gui_focus "$id""#))
+        let launchCall = try #require(launchFnBody.range(of: "run_logged"))
+        #expect(launchGuard.lowerBound < cleanupCall.lowerBound)
+        #expect(cleanupCall.lowerBound < activationCall.lowerBound)
+        #expect(activationCall.lowerBound < launchCall.lowerBound)
+
+        #expect(focusFnBody.contains("musescore-studio"), "must activate focus for MuseScore")
+        #expect(focusFnBody.contains("qelectrotech-cad"), "must activate focus for QElectroTech")
+        #expect(focusFnBody.contains("qgroundcontrol-drone"), "must activate focus for QGroundControl")
+        #expect(focusFnBody.contains("/usr/bin/osascript"), "must use osascript for macOS focus activation")
+    }
 }
