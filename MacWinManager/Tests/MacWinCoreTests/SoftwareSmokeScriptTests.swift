@@ -1671,4 +1671,28 @@ struct SoftwareSmokeScriptTests {
             #expect(fnBody.contains(field), "record JSON must include \(field)")
         }
     }
+
+    @Test("Crash detection patterns cover Wine, OpenGL, and Qt RHI failures")
+    func crashDetectionPatternsCoverKeyFailures() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        // Crash detection functions use rg patterns to identify launch
+        // failures from Wine, OpenGL, and Qt RHI. These patterns must match
+        // the actual error strings these subsystems emit, or a genuine crash
+        // is misclassified as a successful launch.
+        // Wine crash signatures (has_wine_crash_failure):
+        #expect(script.contains(#"Unhandled page fault"#), "must detect Wine page faults")
+        #expect(script.contains(#"starting debugger"#), "must detect Wine debugger attach")
+        // OpenGL capability failures (has_opengl_capability_failure):
+        #expect(script.contains(#"OpenGL 3\.2 or later"#), "must detect OpenGL 3.2+ requirement failures")
+        #expect(script.contains(#"Failed to create OpenGL context"#), "must detect OpenGL context creation failures")
+        // Qt RHI failures (has_qt_rhi_failure):
+        #expect(script.contains(#"Failed to create RHI"#), "must detect Qt RHI creation failures")
+    }
 }
