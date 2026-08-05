@@ -81,9 +81,12 @@ def analyze(png_path):
         rows.append(reconstructed)
         previous = reconstructed
 
-    x0 = int(width * 0.06)
-    x1 = max(x0 + 1, int(width * 0.94))
-    y0 = int(height * 0.10)
+    # Sparse native UIs often put their only visible controls close to the
+    # left edge or just below the title bar. Keep the lower title-bar margin,
+    # but include the full client width and the first few rows of content.
+    x0 = 0
+    x1 = width
+    y0 = int(height * 0.04)
     y1 = max(y0 + 1, int(height * 0.94))
     step_x = max(1, (x1 - x0) // 240)
     step_y = max(1, (y1 - y0) // 180)
@@ -123,13 +126,18 @@ def analyze(png_path):
         classification = "transparent-window"
     elif dark_ratio >= 0.92:
         classification = "black-window"
+    elif dark_count >= 64 or (standard_deviation >= 6.0 and non_bright_count >= 256):
+        classification = "rendered"
     elif bright_ratio >= 0.92:
         classification = (
             "partial-render-window"
             if len(colors) >= 8 and non_bright_count >= 32
             else "white-window"
         )
-    elif standard_deviation < 6.0 or (unique_ratio < 0.002 and len(colors) < 24):
+    # A sparse UI can legitimately use very few quantized colors. Only apply
+    # the color-count fallback to nearly uniform captures so those UIs are not
+    # reported as blank windows.
+    elif standard_deviation < 6.0 or (unique_ratio < 0.002 and len(colors) < 8):
         classification = "low-information-window"
 
     return {

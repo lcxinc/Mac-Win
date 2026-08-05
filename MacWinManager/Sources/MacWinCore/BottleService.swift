@@ -328,7 +328,7 @@ public struct BottleService {
             if runWineboot {
                 return try bootstrapWinePrefixIfNeeded(bottle: existing, engine: engine, force: engineChanged)
             }
-            if !engineChanged, hasCurrentCompatibilityRepairSentinel(existing) {
+            if !engineChanged, hasCurrentCompatibilityRepairSentinels(existing) {
                 return existing
             }
             try repairBottleCompatibility(existing, engine: engine)
@@ -407,10 +407,13 @@ public struct BottleService {
         _ = try migrateLauncherCompatibility(in: detectedBottle)
     }
 
-    private func hasCurrentCompatibilityRepairSentinel(_ bottle: BottleManifest) -> Bool {
-        let sentinel = paths.bottleDirectory(id: bottle.id)
+    private func hasCurrentCompatibilityRepairSentinels(_ bottle: BottleManifest) -> Bool {
+        let renderingRepairSentinel = paths.bottleDirectory(id: bottle.id)
             .appendingPathComponent(Self.renderingRepairSentinelName)
-        return fileManager.fileExists(atPath: sentinel.path)
+        let commonAppDataRegistrySentinel = paths.bottleDirectory(id: bottle.id)
+            .appendingPathComponent(Self.commonAppDataRegistrySentinelName)
+        return fileManager.fileExists(atPath: renderingRepairSentinel.path)
+            && fileManager.fileExists(atPath: commonAppDataRegistrySentinel.path)
     }
 
     private func synchronizeCommonAppDataRegistry(
@@ -422,8 +425,8 @@ public struct BottleService {
             .appendingPathComponent(Self.commonAppDataRegistrySentinelName)
         guard !fileManager.fileExists(atPath: marker.path) else { return }
 
-        _ = try runner.run(WineRunRequest(
-            exe: "reg",
+        let result = try runner.run(WineRunRequest(
+            exe: #"C:\windows\system32\reg.exe"#,
             args: [
                 "add",
                 #"HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders"#,
@@ -440,6 +443,13 @@ public struct BottleService {
             envOverrides: ["WINEDEBUG": "-all"],
             logName: "\(bottle.id)-common-appdata-registry.log"
         ))
+        guard result.exitCode == 0 else {
+            throw MacWinError.processFailed(
+                command: result.commandLine.joined(separator: " "),
+                exitCode: result.exitCode,
+                logPath: result.logURL.path
+            )
+        }
         try Data("ok\n".utf8).write(to: marker, options: [.atomic])
     }
 
@@ -3065,7 +3075,10 @@ public struct BottleService {
         ("Windows.UI.ViewManagement.InputPane", "windows.ui.dll"),
         ("Windows.UI.Core.CoreWindow", "windows.ui.dll"),
         ("Windows.UI.Internal.Input.InputSite", "windows.ui.dll"),
-        ("Windows.UI.Internal.Input.ActivationConfigurationInputObject", "windows.ui.dll")
+        ("Windows.UI.Internal.Input.ActivationConfigurationInputObject", "windows.ui.dll"),
+        ("Windows.UI.Composition.Compositor", "windows.ui.dll"),
+        ("Windows.UI.Composition.CompositionCapabilities", "windows.ui.dll"),
+        ("Windows.UI.Composition.CompositionEffectSourceParameter", "windows.ui.dll")
     ]
 
     private static let webViewRenderingCacheDirectoryNames: Set<String> = [

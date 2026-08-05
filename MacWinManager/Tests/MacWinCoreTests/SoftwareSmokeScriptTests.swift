@@ -3,6 +3,22 @@ import Testing
 
 @Suite("Software smoke script")
 struct SoftwareSmokeScriptTests {
+    @Test("App packaging defaults to a signed release build")
+    func appPackagingUsesReleaseByDefault() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("MacWinManager/Tools/package-app.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        #expect(script.contains(#"BUILD_CONFIGURATION="${MACWIN_BUILD_CONFIGURATION:-release}""#))
+        #expect(script.contains(#"BUILD_DIR="$ROOT/.build/arm64-apple-macosx/$BUILD_CONFIGURATION""#))
+        #expect(script.contains(#"swift build --disable-sandbox --package-path "$ROOT" --configuration "$BUILD_CONFIGURATION" --jobs 1"#))
+        #expect(script.contains("Unsupported MACWIN_BUILD_CONFIGURATION"))
+    }
+
     @Test("PowerToys Quick Access probe captures real WinUI output without hiding known gaps")
     func powerToysQuickAccessProbePreservesVisualEvidence() throws {
         let repositoryRoot = URL(fileURLWithPath: #filePath)
@@ -14,13 +30,31 @@ struct SoftwareSmokeScriptTests {
         let script = try String(contentsOf: scriptURL, encoding: .utf8)
 
         #expect(script.contains(#"WINE_D3D_CONFIG="${WINE_D3D_CONFIG:-renderer=vulkan,csmt=0x0}""#))
+        #expect(script.contains("ENGINE_ID=\"${MACWIN_ENGINE_ID:-wine-11.11-x86_64-game}\""))
         #expect(script.contains(#"Local\\PowerToysQuickAccess_32_Show"#))
+        #expect(script.contains(#"MACWIN_POWETOYS_SETTLE_SECONDS=4"#))
+        #expect(script.contains("MACWIN_POWETOYS_REQUIRE_EVENT=1"))
+        #expect(script.contains(#"MACWIN_POWETOYS_REQUIRE_RENDERED:-1"#))
+        #expect(script.contains("PowerToys.QuickAccess.exe"))
+        #expect(script.contains("if [ \"$REQUIRE_EVENT\" = \"1\" ]; then\n  require_file \"$EVENT_PROBE\""))
+        #expect(script.contains("ENGINE_BUILD_DIR=\"$(cd \"$(dirname \"$WINE\")/..\" && pwd)\""))
+        #expect(script.contains("sync_engine_dlls()"))
         #expect(script.contains("--discover-smallest wine"))
         #expect(script.contains("capture-macos-window.swift"))
         #expect(script.contains("analyze-window-image.py"))
-        #expect(script.contains(#"state = "passed" if event_was_signaled else "failed""#))
+        #expect(script.contains("while [ \"$elapsed\" -lt \"$TIMEOUT\" ]; do"))
+        #expect(script.contains("[ \"$REQUIRE_EVENT\" != \"1\" ] || [ \"$event_signaled\" -eq 1 ]"))
+        #expect(script.contains("settled_window_line="))
+        #expect(!script.contains("  else\n    window_line=\"\""))
+        #expect(script.contains("event_was_signaled or not required_event"))
+        #expect(script.contains("[ \"$REQUIRE_EVENT\" = \"1\" ] && [ \"$event_signaled\" -eq 0 ]"))
+        #expect(script.contains("eventRequired"))
+        #expect(script.contains("\"$RESULT_JSON\" \"$elapsed\" \"$event_signaled\" \"$REQUIRE_EVENT\""))
+        #expect(script.contains("\"eventRequired\": require_event == \"1\""))
+        #expect(script.contains("required_rendered = require_rendered == \"1\""))
+        #expect(script.contains("elif required_rendered:"))
         #expect(script.contains(#"state = "pending""#))
-        #expect(script.contains(#"[ "$event_signaled" != "1" ]"#))
+        #expect(script.contains(#"[ "$REQUIRE_EVENT" = "1" ] && [ "$event_signaled" != "1" ]"#))
         #expect(script.contains(#"[ "$classification" != "rendered" ] && [ "$REQUIRE_RENDERED" = "1" ]"#))
         #expect(!script.contains(#"classification == "low-information-window" else "passed""#))
     }
@@ -37,9 +71,32 @@ struct SoftwareSmokeScriptTests {
 
         #expect(patch.contains("GetCurrentBatchId([out] DWORD *batch_id)"))
         #expect(patch.contains("GetLastConfirmedBatchId([out] DWORD *batch_id)"))
+        #expect(patch.contains("ICompositionBackdropBrush"))
+        #expect(patch.contains("c5acae58-3898-499e-8d7f-224e91286a5d"))
+        #expect(patch.contains("ICompositionBackdropBrush **result"))
         #expect(patch.contains("Batch ID write clobbered guard"))
-        #expect(patch.contains("output_window = GetAncestor(target->hwnd, GA_ROOT)"))
+        #expect(patch.contains("output_window = source_memory_dc_active ? target->hwnd : GetAncestor(target->hwnd, GA_ROOT);"))
+        #expect(patch.contains("GetDCEx(output_window, 0, style);"))
+        #expect(patch.contains("GdiAlphaBlend(dst_dc, output_origin.x, output_origin.y"))
+        #expect(patch.contains("ID3D11PartnerDevice_Lifted"))
+        #expect(patch.contains("UINT WINAPI d3d11_partner_device_GetPartnerCaps"))
+        #expect(patch.contains("wine_dcomp_detach_shared_visual_from_window"))
+        #expect(patch.contains("shared_visual_target_find_process_window"))
+        #expect(patch.contains("EnumWindows( shared_visual_target_find_process_window"))
+        #expect(patch.contains("shared_visual_host_search"))
+        #expect(patch.contains("IVisual_get_Size( target->root, &root_size )"))
+        #expect(patch.contains("shared_visual_target_update_host( impl )"))
+        #expect(patch.contains("detach_host_visual = target->host_visual && target->root != visual"))
+        #expect(patch.contains("+    if (attach_host_visual)\n+        composition_target_attach_host_visual(target)"))
+        #expect(!patch.contains("WINE_WINUI_HOST_BACKDROP_FALLBACK"))
+        #expect(patch.contains("composition_brush_changed"))
+        #expect(patch.contains("ID3D11Texture2D_GetDevice( texture, &device );"))
+        #expect(patch.contains("if (!device || !context)"))
+        #expect(patch.contains("if (context) ID3D11DeviceContext_Release( context );"))
         #expect(patch.contains("MsgWaitForMultipleObjectsEx(0, NULL, 0, 0, 0)"))
+        #expect(patch.contains("WaitForMultipleObjects(count, handles, FALSE, wait_timeout)"))
+        #expect(patch.contains("return WAIT_OBJECT_0 + count;"))
+        #expect(patch.contains("Compositor clock unexpectedly signaled the event."))
     }
 
     @Test("DBeaver smoke preserves Latin UI fonts and uses CJK glyph fallback")
@@ -412,11 +469,19 @@ struct SoftwareSmokeScriptTests {
             ("Windows.UI.ViewManagement.InputPane", "windows.ui.dll"),
             ("Windows.UI.Core.CoreWindow", "windows.ui.dll"),
             ("Windows.UI.Internal.Input.InputSite", "windows.ui.dll"),
-            ("Windows.UI.Internal.Input.ActivationConfigurationInputObject", "windows.ui.dll")
+            ("Windows.UI.Internal.Input.ActivationConfigurationInputObject", "windows.ui.dll"),
+            ("Windows.UI.Composition.Compositor", "windows.ui.dll"),
+            ("Windows.UI.Composition.CompositionCapabilities", "windows.ui.dll"),
+            ("Windows.UI.Composition.CompositionEffectSourceParameter", "windows.ui.dll")
         ]
         for (className, dll) in expected {
             #expect(script.contains("\(className)|\(dll)"), "WinRT class \(className) must map to \(dll)")
         }
+        let verification = try #require(script.range(of: "== verification =="))
+        let verificationBody = String(script[verification.lowerBound...])
+        #expect(verificationBody.contains("for item in \"${classes[@]}\""))
+        #expect(verificationBody.contains("reg query \"$key\""))
+        #expect(verificationBody.contains("reg query \"$wow_key\""))
     }
 
     @Test(".NET Framework registry Release DWORD and Version string stay in sync")
@@ -1325,6 +1390,23 @@ struct SoftwareSmokeScriptTests {
         #expect(fnBody.contains("x86-64"), "PE validation must match x86-64 (64-bit)")
         #expect(fnBody.contains("PE32 executable"), "PE validation must match PE32 (32-bit)")
         #expect(fnBody.contains("Intel 80386"), "PE validation must match Intel 80386 (32-bit)")
+    }
+
+    @Test("JASP prelaunch runtime probe accepts a session database created during launch")
+    func jaspPrelaunchRuntimeProbeAcceptsDeferredSessionDatabase() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repositoryRoot.appendingPathComponent("scripts/run-software-smoke.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        // A clean JASP prefix does not have internal.sqlite until the desktop
+        // process starts. The prelaunch probe must record that as expected so
+        // the postlaunch probe can be the one that validates persisted state.
+        #expect(script.contains(#"elif [ "$phase" = "runtime-state-probe" ]; then"#))
+        #expect(script.contains("expectedMissing.reason=JASP creates the normal session database during launch, after the prelaunch runtime-state probe."))
     }
 
     @Test("DWSIM pango aliases cover the standard Windows UI font families")

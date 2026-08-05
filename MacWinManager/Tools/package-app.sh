@@ -7,8 +7,17 @@ CONTENTS="$APP/Contents"
 RESOURCES="$CONTENTS/Resources"
 MACOS="$CONTENTS/MacOS"
 PLIST="$CONTENTS/Info.plist"
-EXECUTABLE="$ROOT/.build/arm64-apple-macosx/debug/MacWinManagerApp"
-RESOURCE_BUNDLE="$ROOT/.build/arm64-apple-macosx/debug/MacWinManager_MacWinManagerApp.bundle"
+BUILD_CONFIGURATION="${MACWIN_BUILD_CONFIGURATION:-release}"
+case "$BUILD_CONFIGURATION" in
+    debug|release) ;;
+    *)
+        printf 'Unsupported MACWIN_BUILD_CONFIGURATION: %s (use debug or release)\n' "$BUILD_CONFIGURATION" >&2
+        exit 2
+        ;;
+esac
+BUILD_DIR="$ROOT/.build/arm64-apple-macosx/$BUILD_CONFIGURATION"
+EXECUTABLE="$BUILD_DIR/MacWinManagerApp"
+RESOURCE_BUNDLE="$BUILD_DIR/MacWinManager_MacWinManagerApp.bundle"
 ICONS="$ROOT/Sources/MacWinManagerApp/Resources/Icons"
 ASSET_CATALOG="$ROOT/Sources/MacWinManagerApp/Resources/AppAssets.xcassets"
 ASSET_INFO="$ROOT/.build/macwin-app-icon-info.plist"
@@ -21,7 +30,7 @@ mkdir -p "$MODULE_CACHE"
 )
 CLANG_MODULE_CACHE_PATH="$MODULE_CACHE" \
 SWIFTPM_MODULECACHE_OVERRIDE="$MODULE_CACHE" \
-swift build --disable-sandbox --package-path "$ROOT" --jobs 1
+swift build --disable-sandbox --package-path "$ROOT" --configuration "$BUILD_CONFIGURATION" --jobs 1
 
 mkdir -p "$MACOS" "$RESOURCES"
 cp -f "$EXECUTABLE" "$MACOS/MacWinManagerApp"

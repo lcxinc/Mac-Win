@@ -4,6 +4,16 @@ import Testing
 
 @Suite("Software collection service")
 struct SoftwareCollectionServiceTests {
+    @Test("Default collections expose the verified JASP adaptation")
+    func defaultCollectionsIncludeJASP() throws {
+        let collection = try #require(
+            SoftwareCollectionService.defaultCollections.first { $0.id == "scientific-industrial" }
+        )
+
+        #expect(collection.requiredRecipeIds == ["jasp-stats"])
+        #expect(collection.name == "Scientific and Industrial Apps")
+    }
+
     @Test("Report groups curated recipes and preserves installer hashes")
     func reportGroupsRecipesAndPreservesHashes() throws {
         let rootPath = "/tmp/MacWin Collections"

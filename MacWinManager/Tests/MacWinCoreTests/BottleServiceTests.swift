@@ -80,6 +80,10 @@ struct BottleServiceTests {
             to: paths.bottleDirectory(id: bottle.id)
                 .appendingPathComponent(BottleService.renderingRepairSentinelName)
         )
+        try Data("ok\n".utf8).write(
+            to: paths.bottleDirectory(id: bottle.id)
+                .appendingPathComponent(BottleService.commonAppDataRegistrySentinelName)
+        )
 
         _ = try service.ensureHighPerformanceBottle(
             name: "High Performance Windows 11",
@@ -89,6 +93,47 @@ struct BottleServiceTests {
 
         let after = try String(contentsOf: userRegistry, encoding: .utf8)
         #expect(after == registryText)
+    }
+
+    @Test("Existing high performance bottle repairs a missing Common AppData registry sentinel")
+    func existingHighPerformanceBottleRepairsMissingCommonAppDataSentinel() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacWinBottleMissingCommonAppDataSentinelTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let paths = MacWinPaths(root: root)
+        let service = BottleService(paths: paths)
+        let engine = EngineManifest(
+            id: "engine",
+            name: "Engine",
+            wineVersion: "wine-11.11",
+            arch: .win64,
+            winePath: "/bin/echo",
+            wineserverPath: "/bin/echo",
+            runtimePath: "/runtime",
+            defaultEnv: [:]
+        )
+        let bottle = try service.ensureHighPerformanceBottle(
+            name: "High Performance Windows 11",
+            engine: engine,
+            runWineboot: false
+        )
+        try service.repairBottleCompatibility(bottle, engine: engine)
+        let commonAppDataSentinel = paths.bottleDirectory(id: bottle.id)
+            .appendingPathComponent(BottleService.commonAppDataRegistrySentinelName)
+        try FileManager.default.removeItem(at: commonAppDataSentinel)
+        try Data("ok\n".utf8).write(
+            to: paths.bottleDirectory(id: bottle.id)
+                .appendingPathComponent(BottleService.renderingRepairSentinelName)
+        )
+
+        _ = try service.ensureHighPerformanceBottle(
+            name: "High Performance Windows 11",
+            engine: engine,
+            runWineboot: false
+        )
+
+        #expect(FileManager.default.fileExists(atPath: commonAppDataSentinel.path))
     }
 
     @Test("Wineboot bootstrap writes sentinel")
@@ -429,6 +474,50 @@ struct BottleServiceTests {
         #expect(log.contains("Common AppData"))
         #expect(log.contains(#"C:\ProgramData"#))
         #expect(FileManager.default.fileExists(
+            atPath: bottleRoot.appendingPathComponent(BottleService.commonAppDataRegistrySentinelName).path
+        ))
+    }
+
+    @Test("Compatibility repair does not cache a failed Common AppData registry command")
+    func compatibilityRepairDoesNotWriteCommonAppDataSentinelAfterFailure() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacWinCommonAppDataRegistryFailureTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let paths = MacWinPaths(root: root)
+        let service = BottleService(paths: paths)
+        let bottle = BottleManifest(
+            id: "boost-ipc-failure",
+            name: "Boost IPC failure",
+            windowsVersion: "win11",
+            arch: .win64,
+            engineId: "engine"
+        )
+        try service.saveBottle(bottle)
+        let bottleRoot = paths.bottleDirectory(id: bottle.id)
+        try Data("WINE REGISTRY Version 2\n\n".utf8)
+            .write(to: bottleRoot.appendingPathComponent("system.reg"))
+        try Data("WINE REGISTRY Version 2\n\n".utf8)
+            .write(to: bottleRoot.appendingPathComponent("user.reg"))
+        let engine = EngineManifest(
+            id: "engine",
+            name: "Engine",
+            wineVersion: "wine-test",
+            arch: .win64,
+            winePath: "/usr/bin/false",
+            wineserverPath: "/bin/echo",
+            runtimePath: "/runtime",
+            defaultEnv: [:]
+        )
+
+        #expect(throws: MacWinError.processFailed(
+            command: "/usr/bin/arch -x86_64 /usr/bin/false C:\\windows\\system32\\reg.exe add HKEY_LOCAL_MACHINE\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Shell Folders /v Common AppData /t REG_SZ /d C:\\ProgramData /f",
+            exitCode: 1,
+            logPath: paths.logsDirectory.appendingPathComponent("boost-ipc-failure-common-appdata-registry.log").path
+        )) {
+            try service.repairBottleCompatibility(bottle, engine: engine)
+        }
+        #expect(!FileManager.default.fileExists(
             atPath: bottleRoot.appendingPathComponent(BottleService.commonAppDataRegistrySentinelName).path
         ))
     }

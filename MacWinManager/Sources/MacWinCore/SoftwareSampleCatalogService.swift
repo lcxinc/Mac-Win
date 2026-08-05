@@ -1006,6 +1006,32 @@ public struct SoftwareSampleCatalogService {
             warnings: ["Game compatibility depends on DRM, anti-cheat, GPU translation path, and per-game launchers."]
         ),
         SoftwareSampleProfile(
+            id: "jasp-stats",
+            name: "JASP 统计分析",
+            publisher: "JASP Services B.V.",
+            category: "Scientific / Industrial",
+            purpose: "QtWebEngine statistics workstation coverage for QML startup, tables, plots, results pages, engine IPC, and large MSI installation.",
+            installSource: .signedRecipe,
+            catalogRecipeId: "jasp-stats",
+            installerFileNames: ["JASP-0.97.1-Windows-Community.msi"],
+            launcherCandidates: [
+                "C:\\Program Files\\JASP\\JASPDesktop.exe",
+                "C:\\Program Files\\JASP\\JASPEngine.exe"
+            ],
+            compatibilityProfileId: "jasp-qtwebengine-qrc",
+            expectedIssueIds: ["qtwebengine-startup", "qml-resource", "engine-ipc", "large-installer", "qt-text"],
+            recommendedProbeIds: ["00_console_probe", "10_tls_winhttp_probe", "70_text_rendering_probe", "80_window_input_probe", "90_ipc_file_mapping_probe"],
+            environment: [
+                "MACWIN_JASP_WEBENGINE_MODE": "multiprocess",
+                "MACWIN_TEXT_RENDERING_REPAIR": "1",
+                "WINE_D3D_CONFIG": "renderer=gl,csmt=0x0"
+            ],
+            warnings: [
+                "The current verified smoke path reaches JASP Desktop started, QML Initialized, Results page loaded, and JASP IPC heartbeat milestones.",
+                "R modules, network downloads, and every statistical analysis require separate validation."
+            ]
+        ),
+        SoftwareSampleProfile(
             id: "itch",
             name: "itch.io 游戏市场",
             publisher: "itch.io",

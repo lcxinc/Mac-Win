@@ -276,21 +276,27 @@ final class MacWinStore: ObservableObject {
 
     func bootstrap() async {
         setBusy(text(.importingEngine))
+        await Task.yield()
         suppressFoundationStatusSnapshot = true
         do {
-            try loadBundledCatalog()
+            try loadBundledCatalog(refreshReports: false)
             let engine = try registry.importCurrentGameEngine()
             statusMessage = text(.preparingDefaultBottle)
+            await Task.yield()
             _ = try ensureDefaultPerformanceBottle(engine: engine, runWineboot: false)
-            try reloadLocalState()
-            try loadBundledCatalog()
+            try reloadLocalState(refreshReports: false)
             suppressFoundationStatusSnapshot = false
-            refreshSoftwareTestPlan()
             if !didCompleteInitialBootstrap {
                 selection = .desktop
                 didCompleteInitialBootstrap = true
             }
             finish(text(.ready))
+            Task { @MainActor [weak self] in
+                await Task.yield()
+                guard let self else { return }
+                self.refreshDiagnosticHistory()
+                self.refreshRecentLogs()
+            }
         } catch {
             suppressFoundationStatusSnapshot = false
             fail(error)
@@ -314,18 +320,20 @@ final class MacWinStore: ObservableObject {
         }
     }
 
-    func reloadLocalState() throws {
+    func reloadLocalState(refreshReports: Bool = true) throws {
         engines = try registry.listEngines()
         bottles = try bottleService.listBottles()
         testAssetReport = testAssetService.report()
-        refreshDiagnosticHistory()
-        refreshRecentLogs()
+        if refreshReports {
+            refreshDiagnosticHistory()
+            refreshRecentLogs()
+        }
         if selectedBottleId == nil {
             selectedBottleId = bottles.first?.id
         }
     }
 
-    func loadBundledCatalog() throws {
+    func loadBundledCatalog(refreshReports: Bool = true) throws {
         guard let indexURL = bundledCatalogIndexURL() ?? cachedCatalogIndexURL() else {
             throw MacWinError.missingFile("Bundled or cached Catalog/catalog.index.json resource")
         }
@@ -341,7 +349,9 @@ final class MacWinStore: ObservableObject {
             _ = try CatalogCacheService(paths: paths).syncVerifiedCatalog(from: source, snapshot: catalog)
         }
         recipes = catalog.recipes.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-        refreshSoftwareTestPlan()
+        if refreshReports {
+            refreshSoftwareTestPlan()
+        }
         if catalog.isExpired {
             statusMessage = text(.catalogExpired)
         }

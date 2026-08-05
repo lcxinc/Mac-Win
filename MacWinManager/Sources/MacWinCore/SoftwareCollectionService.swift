@@ -620,6 +620,12 @@ public struct SoftwareCollectionService {
             requiredRecipeIds: ["hoyoplay-cn", "steam"]
         ),
         SoftwareCollectionDefinition(
+            id: "scientific-industrial",
+            name: "Scientific and Industrial Apps",
+            purpose: "QtWebEngine, QML, engine IPC, large MSI, tables, plots, and scientific workstation coverage.",
+            requiredRecipeIds: ["jasp-stats"]
+        ),
+        SoftwareCollectionDefinition(
             id: "media-graphics",
             name: "Media and Graphics",
             purpose: "GStreamer, GPU compositing, Vulkan, D3D, and media playback smoke coverage.",

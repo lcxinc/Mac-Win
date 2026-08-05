@@ -606,7 +606,17 @@ struct AppLauncherView: View {
         ZStack {
             MacWorkspaceBackground()
 
-            if let bottle = activeBottle {
+            if store.isBusy && store.bottles.isEmpty {
+                VStack(spacing: 12) {
+                    ProgressView()
+                        .controlSize(.large)
+                    Text(store.statusMessage)
+                        .font(.headline)
+                        .foregroundStyle(.primary)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let bottle = activeBottle {
                 VStack(alignment: .leading, spacing: 0) {
                     appHeader(for: bottle)
                     categoryBar.padding(.bottom, 12)

@@ -21,6 +21,12 @@
       "sha256" : "2c66c2001d3ad679a8df292172bc950db7f259a723dfce23ee7ed3035ccfd6f7"
     },
     {
+      "file" : "recipes/jasp-stats.json",
+      "id" : "jasp-stats",
+      "name" : "JASP Statistics",
+      "sha256" : "ebaf01b7de53da849c9aa45e3c87f24e6c8e69ef3f742ca5eaedd6a0f8c79dd4"
+    },
+    {
       "file" : "recipes/libreoffice.json",
       "id" : "libreoffice",
       "name" : "LibreOffice",

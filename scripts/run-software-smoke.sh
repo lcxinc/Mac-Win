@@ -25,7 +25,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 DOWNLOADS="$ROOT/Downloads"
 ENGINES="$ROOT/Engines"
-ENGINE_ID="${MACWIN_ENGINE_ID:-wine-11.11-wow64-game}"
+ENGINE_ID="${MACWIN_ENGINE_ID:-wine-11.11-x86_64-game}"
 ENGINE_MANIFEST="$ENGINES/$ENGINE_ID/manifest.json"
 RUN_ID="${MACWIN_SMOKE_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
 SMOKE_SUITE="${MACWIN_SMOKE_SUITE:-quick}"
@@ -1274,9 +1274,12 @@ for _row_index in range(height):
     rows.append(recon)
     prev = recon
 
-x0 = int(width * 0.06)
-x1 = max(x0 + 1, int(width * 0.94))
-y0 = int(height * 0.10)
+# Sparse native UIs can place their only visible controls at the left edge or
+# immediately below the title bar, so keep the full client width and a small
+# top margin in the sampled region.
+x0 = 0
+x1 = width
+y0 = int(height * 0.04)
 y1 = max(y0 + 1, int(height * 0.94))
 step_x = max(1, (x1 - x0) // 240)
 step_y = max(1, (y1 - y0) // 180)
@@ -1320,9 +1323,11 @@ if transparent_ratio >= 0.50:
     classification = "transparent-window"
 elif dark_ratio >= 0.92:
     classification = "black-window"
+elif dark_count >= 64 or (stddev >= 6.0 and non_bright_count >= 256):
+    classification = "rendered"
 elif bright_ratio >= 0.92:
     classification = "partial-render-window" if len(colors) >= 8 and non_bright_count >= 32 else "white-window"
-elif stddev < 6.0 or (unique_ratio < 0.002 and len(colors) < 24):
+elif stddev < 6.0 or (unique_ratio < 0.002 and len(colors) < 8):
     classification = "low-information-window"
 
 analysis = {
@@ -4391,6 +4396,9 @@ repair_winrt_activation_registry() {
     "Windows.UI.Core.CoreWindow|windows.ui.dll"
     "Windows.UI.Internal.Input.InputSite|windows.ui.dll"
     "Windows.UI.Internal.Input.ActivationConfigurationInputObject|windows.ui.dll"
+    "Windows.UI.Composition.Compositor|windows.ui.dll"
+    "Windows.UI.Composition.CompositionCapabilities|windows.ui.dll"
+    "Windows.UI.Composition.CompositionEffectSourceParameter|windows.ui.dll"
   )
 
   started="$(date +%s)"
@@ -4412,18 +4420,13 @@ repair_winrt_activation_registry() {
     done
     echo
     echo "== verification =="
-    "${WINE_CMD[@]}" reg query 'HKLM\Software\Microsoft\WindowsRuntime\ActivatableClassId\Windows.Foundation.Metadata.ApiInformation'
-    "${WINE_CMD[@]}" reg query 'HKLM\Software\Microsoft\WindowsRuntime\ActivatableClassId\Windows.System.Threading.ThreadPool'
-    "${WINE_CMD[@]}" reg query 'HKLM\Software\Microsoft\WindowsRuntime\ActivatableClassId\Windows.System.Threading.ThreadPoolTimer'
-    "${WINE_CMD[@]}" reg query 'HKLM\Software\Microsoft\WindowsRuntime\ActivatableClassId\Windows.UI.ViewManagement.UISettings'
-    "${WINE_CMD[@]}" reg query 'HKLM\Software\Microsoft\WindowsRuntime\ActivatableClassId\Windows.UI.Internal.Input.InputSite'
-    "${WINE_CMD[@]}" reg query 'HKLM\Software\Microsoft\WindowsRuntime\ActivatableClassId\Windows.UI.Internal.Input.ActivationConfigurationInputObject'
-    "${WINE_CMD[@]}" reg query 'HKLM\Software\Wow6432Node\Microsoft\WindowsRuntime\ActivatableClassId\Windows.Foundation.Metadata.ApiInformation'
-    "${WINE_CMD[@]}" reg query 'HKLM\Software\Wow6432Node\Microsoft\WindowsRuntime\ActivatableClassId\Windows.System.Threading.ThreadPool'
-    "${WINE_CMD[@]}" reg query 'HKLM\Software\Wow6432Node\Microsoft\WindowsRuntime\ActivatableClassId\Windows.System.Threading.ThreadPoolTimer'
-    "${WINE_CMD[@]}" reg query 'HKLM\Software\Wow6432Node\Microsoft\WindowsRuntime\ActivatableClassId\Windows.UI.ViewManagement.UISettings'
-    "${WINE_CMD[@]}" reg query 'HKLM\Software\Wow6432Node\Microsoft\WindowsRuntime\ActivatableClassId\Windows.UI.Internal.Input.InputSite'
-    "${WINE_CMD[@]}" reg query 'HKLM\Software\Wow6432Node\Microsoft\WindowsRuntime\ActivatableClassId\Windows.UI.Internal.Input.ActivationConfigurationInputObject'
+    for item in "${classes[@]}"; do
+      IFS='|' read -r class_name _ <<< "$item"
+      key="HKLM\\Software\\Microsoft\\WindowsRuntime\\ActivatableClassId\\$class_name"
+      wow_key="HKLM\\Software\\Wow6432Node\\Microsoft\\WindowsRuntime\\ActivatableClassId\\$class_name"
+      "${WINE_CMD[@]}" reg query "$key"
+      "${WINE_CMD[@]}" reg query "$wow_key"
+    done
   } > "$log" 2>&1
   exit_code=$?
   ended="$(date +%s)"
@@ -6505,6 +6508,10 @@ PY
       sqlite_expected_missing=1
       echo "expectedMissing=${sqlite_db#$PREFIX/drive_c/}" >> "$log"
       echo "expectedMissing.reason=JASP creates the unit-test session database after the prelaunch runtime-state probe." >> "$log"
+    elif [ "$phase" = "runtime-state-probe" ]; then
+      sqlite_expected_missing=1
+      echo "expectedMissing=${sqlite_db#$PREFIX/drive_c/}" >> "$log"
+      echo "expectedMissing.reason=JASP creates the normal session database during launch, after the prelaunch runtime-state probe." >> "$log"
     elif [ "$phase" = "runtime-state-postlaunch-probe" ] \
       && [ -f "$launch_log" ] \
       && is_jasp_unit_test_launch \

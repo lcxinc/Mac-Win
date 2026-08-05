@@ -13,6 +13,7 @@ struct SoftwareSampleCatalogServiceTests {
                 recipe(id: "steam", name: "Steam"),
                 recipe(id: "7zip", name: "7-Zip"),
                 recipe(id: "lenovo-app-store", name: "联想应用商店"),
+                recipe(id: "jasp-stats", name: "JASP Statistics"),
                 recipe(id: "portableapps-platform", name: "PortableApps.com Platform")
             ],
             generatedAt: Date(timeIntervalSince1970: 100)
@@ -20,7 +21,7 @@ struct SoftwareSampleCatalogServiceTests {
 
         #expect(report.sampleCount >= 29)
         #expect(report.localInstallerCount >= 25)
-        #expect(report.catalogBackedCount == 5)
+        #expect(report.catalogBackedCount == 6)
         #expect(report.warningCount > 0)
 
         let itch = try #require(report.samples.first { $0.id == "itch" })
@@ -29,6 +30,16 @@ struct SoftwareSampleCatalogServiceTests {
         #expect(itch.recommendedProbeIds.contains("70_text_rendering_probe"))
         #expect(itch.environment["MACWIN_WEBVIEW_SOFTWARE_RENDERER"] == "1")
         #expect(itch.environment["ROSETTA_X87_PATH"] == "")
+
+        let jasp = try #require(report.samples.first { $0.id == "jasp-stats" })
+        #expect(jasp.installSource == .signedRecipe)
+        #expect(jasp.catalogRecipeId == "jasp-stats")
+        #expect(jasp.catalogBacked)
+        #expect(jasp.compatibilityProfileId == "jasp-qtwebengine-qrc")
+        #expect(jasp.installerFileNames == ["JASP-0.97.1-Windows-Community.msi"])
+        #expect(jasp.launcherCandidates.contains("C:\\Program Files\\JASP\\JASPDesktop.exe"))
+        #expect(jasp.expectedIssueIds.contains("engine-ipc"))
+        #expect(jasp.environment["MACWIN_JASP_WEBENGINE_MODE"] == "multiprocess")
 
         let lenovo = try #require(report.samples.first { $0.id == "lenovo-app-store" })
         #expect(lenovo.installSource == .signedRecipe)
