@@ -444,7 +444,7 @@ private struct WorkspaceModeControl: View {
         } label: {
             Image(systemName: systemImage)
                 .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(isSelected ? Color.white : Color.secondary)
+                .foregroundStyle(isSelected ? Color(nsColor: .selectedControlTextColor) : Color.secondary)
                 .frame(width: 29, height: 22)
                 .contentShape(Rectangle())
                 .background {
@@ -1015,21 +1015,21 @@ struct BottleRow: View {
             HStack(spacing: 10) {
                 Image(systemName: "shippingbox")
                     .frame(width: 24)
-                    .foregroundStyle(selected ? Color.white : Color.accentColor)
+                    .foregroundStyle(selected ? Color(nsColor: .selectedControlTextColor) : Color.accentColor)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(bottle.name)
                         .font(.headline)
                         .lineLimit(1)
                     Text(subtitle)
                         .font(.caption)
-                        .foregroundStyle(selected ? Color.white.opacity(0.78) : Color.secondary)
+                        .foregroundStyle(selected ? Color(nsColor: .selectedControlTextColor).opacity(0.86) : Color.secondary)
                         .lineLimit(1)
                 }
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 12)
             .frame(height: 58)
-            .foregroundStyle(selected ? Color.white : Color.primary)
+            .foregroundStyle(selected ? Color(nsColor: .selectedControlTextColor) : Color.primary)
             .background(selected ? Color.accentColor : Color.clear, in: RoundedRectangle(cornerRadius: 8))
         }
         .buttonStyle(.plain)

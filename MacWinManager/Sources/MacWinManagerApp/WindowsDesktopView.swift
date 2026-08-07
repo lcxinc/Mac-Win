@@ -1,5 +1,6 @@
 import AppKit
 import MacWinCore
+import ImageIO
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -176,7 +177,7 @@ struct WindowsDesktopView: View {
             }
         }
         .font(.subheadline)
-        .foregroundStyle(.white)
+        .foregroundStyle(.primary)
         .shadow(color: .black.opacity(0.24), radius: 4, y: 1)
         .padding(.horizontal, 26)
         .padding(.top, 22)
@@ -1069,7 +1070,54 @@ struct LauncherIconView: View {
 
     private var extractedIcon: NSImage? {
         guard let iconPath else { return nil }
-        return NSImage(contentsOf: URL(fileURLWithPath: iconPath))
+        return Self.imageFromIconPath(iconPath)
+    }
+
+    private static func imageFromIconPath(_ iconPath: String) -> NSImage? {
+        let url = URL(fileURLWithPath: iconPath)
+
+        if let iconImage = NSImage(contentsOf: url) {
+            return iconImage
+        }
+
+        guard let data = try? Data(contentsOf: url),
+              let iconImage = imageFromICOData(data) else {
+            return nil
+        }
+        return iconImage
+    }
+
+    private static func imageFromICOData(_ data: Data) -> NSImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
+            return nil
+        }
+
+        let count = CGImageSourceGetCount(source)
+        guard count > 0 else { return nil }
+
+        var selectedImage: CGImage?
+        var selectedArea = 0
+
+        for index in 0..<count {
+            guard let cgImage = CGImageSourceCreateImageAtIndex(source, index, nil) else {
+                continue
+            }
+
+            let area = Int(cgImage.width) * Int(cgImage.height)
+            if area > selectedArea {
+                selectedArea = area
+                selectedImage = cgImage
+            }
+        }
+
+        guard let cgImage = selectedImage ?? CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+            return nil
+        }
+
+        return NSImage(
+            cgImage: cgImage,
+            size: CGSize(width: CGFloat(cgImage.width), height: CGFloat(cgImage.height))
+        )
     }
 
     private var builtInIcon: NSImage? {
@@ -1261,17 +1309,17 @@ private struct InstallerDropOverlay: View {
         VStack(spacing: 12) {
             Image(systemName: "tray.and.arrow.down.fill")
                 .font(.system(size: 42, weight: .semibold))
-                .foregroundStyle(.white)
+                .foregroundStyle(.primary)
                 .frame(width: 72, height: 72)
                 .background(Color.white.opacity(0.18), in: RoundedRectangle(cornerRadius: 8))
 
             Text(store.text(.dropInstallerTitle))
                 .font(.system(size: 30, weight: .bold))
-                .foregroundStyle(.white)
+                .foregroundStyle(.primary)
 
             Text(store.text(.dropInstallerHelp))
                 .font(.headline)
-                .foregroundStyle(.white.opacity(0.84))
+                .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .lineLimit(2)
         }
@@ -1279,7 +1327,7 @@ private struct InstallerDropOverlay: View {
         .background(Color.black.opacity(0.42), in: RoundedRectangle(cornerRadius: 8))
         .overlay {
             RoundedRectangle(cornerRadius: 8)
-                .stroke(.white.opacity(0.72), style: StrokeStyle(lineWidth: 2, dash: [10, 7]))
+                .stroke(.primary.opacity(0.72), style: StrokeStyle(lineWidth: 2, dash: [10, 7]))
         }
     }
 }
@@ -1383,7 +1431,7 @@ private struct DesktopShortcutButton: View {
                     .multilineTextAlignment(.center)
                     .lineLimit(2)
                     .minimumScaleFactor(0.78)
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Color(nsColor: .labelColor))
                     .shadow(color: .black.opacity(0.48), radius: 3, y: 1)
                     .frame(width: 100, height: 30, alignment: .top)
             }
