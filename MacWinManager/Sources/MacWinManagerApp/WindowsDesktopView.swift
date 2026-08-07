@@ -4,6 +4,10 @@ import ImageIO
 import SwiftUI
 import UniformTypeIdentifiers
 
+private extension Color {
+    static let macWinSecondaryText = Color(nsColor: .secondaryLabelColor)
+}
+
 struct WindowsDesktopView: View {
     @EnvironmentObject private var store: MacWinStore
     var showsHeader = true
@@ -178,7 +182,6 @@ struct WindowsDesktopView: View {
         }
         .font(.subheadline)
         .foregroundStyle(.primary)
-        .shadow(color: .black.opacity(0.24), radius: 4, y: 1)
         .padding(.horizontal, 26)
         .padding(.top, 22)
         .padding(.bottom, 8)
@@ -388,7 +391,7 @@ struct ImmersiveWorkspaceView: View {
                                         if store.runningItems.isEmpty {
                                             Text(store.text(.noRunningApps))
                                                 .font(.callout)
-                                                .foregroundStyle(.secondary)
+                                                .foregroundStyle(Color.macWinSecondaryText)
                                                 .frame(maxWidth: .infinity, minHeight: 86)
                                         } else {
                                             VStack(spacing: 8) {
@@ -423,7 +426,7 @@ struct ImmersiveWorkspaceView: View {
                                         if launchers.isEmpty {
                                             Text(store.text(.noLaunchersYet))
                                                 .font(.callout)
-                                                .foregroundStyle(.secondary)
+                                                .foregroundStyle(Color.macWinSecondaryText)
                                                 .frame(maxWidth: .infinity, minHeight: 112)
                                         } else {
                                             LazyVGrid(columns: columns, alignment: .leading, spacing: 22) {
@@ -453,7 +456,7 @@ struct ImmersiveWorkspaceView: View {
                                                 .font(.title3.weight(.semibold))
                                                 .lineLimit(2)
                                             Text("\(bottle.windowsVersion) · \(bottle.arch.rawValue)")
-                                                .foregroundStyle(.secondary)
+                                                .foregroundStyle(Color.macWinSecondaryText)
                                         }
 
                                         Divider()
@@ -461,7 +464,7 @@ struct ImmersiveWorkspaceView: View {
                                         if let engine = engine(for: bottle) {
                                             Label(engine.wineVersion, systemImage: "cpu")
                                                 .font(.subheadline.weight(.semibold))
-                                                .foregroundStyle(.secondary)
+                                                .foregroundStyle(Color.macWinSecondaryText)
                                                 .lineLimit(1)
                                         }
 
@@ -532,12 +535,12 @@ struct ImmersiveWorkspaceView: View {
                 .font(.system(size: 30, weight: .bold))
             Text(store.text(.desktopSubtitle))
                 .font(.title3)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.macWinSecondaryText)
                 .lineLimit(1)
             Spacer()
             Label(bottle.name, systemImage: "shippingbox")
                 .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.macWinSecondaryText)
                 .lineLimit(1)
         }
         .padding(.top, 4)
@@ -665,12 +668,12 @@ struct AppLauncherView: View {
                 .font(.system(size: 28, weight: .semibold))
             Text(store.text(.appLauncherSubtitle))
                 .font(.callout)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.macWinSecondaryText)
                 .lineLimit(1)
             Spacer()
             Label(bottle.name, systemImage: "shippingbox")
                 .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.macWinSecondaryText)
                 .lineLimit(1)
         }
         .padding(.horizontal, 28)
@@ -1316,7 +1319,7 @@ private struct InstallerDropOverlay: View {
 
             Text(store.text(.dropInstallerHelp))
                 .font(.headline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.macWinSecondaryText)
                 .multilineTextAlignment(.center)
                 .lineLimit(2)
         }
@@ -1389,7 +1392,7 @@ private struct WindowsDesktopWallpaper: View {
                                         .frame(width: 8, height: 8)
                                     Spacer()
                                 }
-                                .foregroundStyle(.secondary.opacity(0.9))
+                                .foregroundStyle(Color.macWinSecondaryText.opacity(0.9))
                                 .padding(.horizontal, 10)
                             )
                             .opacity(0.35)
@@ -1485,7 +1488,7 @@ private struct StartMenuPanel: View {
                 Spacer()
                 Text(bottle.name)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinSecondaryText)
                     .lineLimit(1)
             }
 
@@ -1495,11 +1498,11 @@ private struct StartMenuPanel: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text(store.text(.pinned))
                     .font(.headline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinSecondaryText)
 
                 if filteredLaunchers.isEmpty {
                     Text(store.text(.noDesktopApps))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.macWinSecondaryText)
                         .frame(maxWidth: .infinity, minHeight: 60, alignment: .center)
                 } else {
                     LazyVGrid(columns: gridColumns, alignment: .leading, spacing: 10) {
@@ -1518,7 +1521,7 @@ private struct StartMenuPanel: View {
                 HStack {
                     Text(store.text(.runningApps))
                         .font(.headline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.macWinSecondaryText)
                     Spacer()
                     Button {
                         store.refreshRunningItems()
@@ -1532,7 +1535,7 @@ private struct StartMenuPanel: View {
                 if runningItems.isEmpty {
                     Text(store.text(.noRunningApps))
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.macWinSecondaryText)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.vertical, 4)
                 } else {
@@ -1554,7 +1557,7 @@ private struct StartMenuPanel: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text(store.text(.quickAccess))
                     .font(.headline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinSecondaryText)
 
                 LazyVGrid(columns: gridColumns, alignment: .leading, spacing: 10) {
                     StartMenuAppButton(title: store.text(.thisPC), systemImage: "desktopcomputer") {
@@ -1583,7 +1586,7 @@ private struct StartMenuPanel: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text(store.text(.runCommand))
                     .font(.headline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinSecondaryText)
                 HStack(spacing: 8) {
                     TextField(store.text(.executablePlaceholder), text: $command)
                         .textFieldStyle(.roundedBorder)
@@ -1634,7 +1637,7 @@ private struct RunningProcessRow: View {
                     .lineLimit(1)
                 Text("\(store.text(.pid)) \(item.processIdentifier) · \(item.bottleName)")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinSecondaryText)
                     .lineLimit(1)
             }
             Spacer()
@@ -1732,6 +1735,8 @@ private struct WindowsTaskbar: View {
             }
 
             ForEach(runningItems.prefix(5)) { item in
+                let helpLabel = "\(item.title) · \(store.text(.pid)) \(item.processIdentifier)"
+
                 Button {
                     openRunningLog(item)
                 } label: {
@@ -1747,7 +1752,7 @@ private struct WindowsTaskbar: View {
                 }
                 .buttonStyle(.plain)
                 .background(Color.green.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
-                .help("\(item.title) · \(store.text(.pid)) \(item.processIdentifier)")
+                .help(helpLabel)
                 .contextMenu {
                     Button(store.text(.openLogFile)) {
                         openRunningLog(item)
@@ -1772,7 +1777,7 @@ private struct WindowsTaskbar: View {
             Label(bottle.windowsVersion.uppercased(), systemImage: "shippingbox")
                 .font(.caption)
                 .lineLimit(1)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.macWinSecondaryText)
 
             Button(action: openLogs) {
                 Image(systemName: "doc.text")
