@@ -1021,7 +1021,7 @@ private struct NativePanel<Content: View>: View {
             .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
             .overlay {
                 RoundedRectangle(cornerRadius: 8)
-                    .stroke(Color.white.opacity(0.58), lineWidth: 1)
+                    .stroke(Color(nsColor: .separatorColor).opacity(0.72), lineWidth: 1)
             }
             .shadow(color: .black.opacity(0.07), radius: 18, y: 8)
     }
@@ -1057,7 +1057,7 @@ struct LauncherIconView: View {
                         .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
                         .overlay {
                             RoundedRectangle(cornerRadius: min(size * 0.23, 18), style: .continuous)
-                                .stroke(Color.white.opacity(0.72), lineWidth: 0.8)
+                                .stroke(Color(nsColor: .separatorColor).opacity(0.72), lineWidth: 0.8)
                         }
 
                     MacWinFallbackIcon(systemImage: systemImage, tint: tint, size: size)
@@ -1135,8 +1135,8 @@ struct LauncherIconView: View {
     private var iconShellBackground: LinearGradient {
         LinearGradient(
             colors: [
-                Color.white.opacity(0.95),
-                Color(nsColor: .controlBackgroundColor).opacity(0.95)
+                Color(nsColor: .windowBackgroundColor).opacity(0.95),
+                Color(nsColor: .controlBackgroundColor).opacity(0.9)
             ],
             startPoint: .topLeading,
             endPoint: .bottomTrailing
@@ -1241,9 +1241,9 @@ private struct MacWinFallbackIcon: View {
                 .fill(
                     LinearGradient(
                         colors: [
-                            Color.white.opacity(0.92),
+                            Color(nsColor: .controlBackgroundColor).opacity(0.92),
                             tint.opacity(0.18),
-                            Color(red: 0.95, green: 0.97, blue: 1.0)
+                            Color(nsColor: .underPageBackgroundColor)
                         ],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
@@ -1311,7 +1311,7 @@ private struct InstallerDropOverlay: View {
                 .font(.system(size: 42, weight: .semibold))
                 .foregroundStyle(.primary)
                 .frame(width: 72, height: 72)
-                .background(Color.white.opacity(0.18), in: RoundedRectangle(cornerRadius: 8))
+                .background(Color(nsColor: .controlBackgroundColor).opacity(0.2), in: RoundedRectangle(cornerRadius: 8))
 
             Text(store.text(.dropInstallerTitle))
                 .font(.system(size: 30, weight: .bold))
@@ -1418,7 +1418,7 @@ private struct DesktopShortcutButton: View {
             VStack(spacing: 7) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 8)
-                        .fill(.white.opacity(0.92))
+                        .fill(Color(nsColor: .controlBackgroundColor).opacity(0.92))
                         .shadow(color: .black.opacity(0.14), radius: 8, y: 3)
                     Image(systemName: shortcut.systemImage)
                         .font(.system(size: 26, weight: .semibold))
