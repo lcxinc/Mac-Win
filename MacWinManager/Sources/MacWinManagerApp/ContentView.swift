@@ -1550,9 +1550,9 @@ struct NativeUIProbeSection: View {
                     ))
                     .font(.subheadline.weight(.semibold))
                     Spacer(minLength: 0)
-                    Picker("Architecture", selection: $architecture) {
-                        Text("x86_64").tag(WindowsExecutableArchitecture.x86_64)
-                        Text("i686 / WoW64").tag(WindowsExecutableArchitecture.i386)
+                    Picker(store.text(.nativeUIProbeArchitecture), selection: $architecture) {
+                        Text(store.text(.probeArchitectureX86_64)).tag(WindowsExecutableArchitecture.x86_64)
+                        Text(store.text(.probeArchitectureI686Wow64)).tag(WindowsExecutableArchitecture.i386)
                     }
                     .labelsHidden()
                     .frame(width: 145)
@@ -2899,7 +2899,7 @@ struct RuntimeProcessEntryRow: View {
                         .lineLimit(1)
                 }
                 if let prefixName = entry.winePrefixDisplayName {
-                    Text("\(store.language == .zhHans ? "容器" : "Bottle") \(prefixName) · PPID \(entry.parentProcessIdentifier.map(String.init) ?? "-")")
+                    Text(store.text(.runtimeProcessContext, prefixName, entry.parentProcessIdentifier.map(String.init) ?? "-"))
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(entry.isDetachedWineSystemProcess ? .orange : .secondary)
                         .lineLimit(1)

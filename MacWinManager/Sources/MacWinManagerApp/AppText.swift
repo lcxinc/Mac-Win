@@ -50,6 +50,9 @@ enum TextKey {
     case runningApps
     case noRunningApps
     case pid
+    case probeArchitectureX86_64
+    case probeArchitectureI686Wow64
+    case runtimeProcessContext
     case stop
     case openLogFile
     case terminatedPid
@@ -1481,6 +1484,9 @@ enum AppText {
         case .runningApps: "运行中"
         case .noRunningApps: "暂无运行中的进程"
         case .pid: "PID"
+        case .probeArchitectureX86_64: "x86_64"
+        case .probeArchitectureI686Wow64: "i686 / WoW64"
+        case .runtimeProcessContext: "容器 %@ · PPID %@"
         case .stop: "停止"
         case .openLogFile: "打开日志文件"
         case .terminatedPid: "已停止 %@，PID %@"
@@ -2488,6 +2494,9 @@ enum AppText {
         case .name: "Name"
         case .version: "Version"
         case .architecture: "Architecture"
+        case .probeArchitectureX86_64: "x86_64"
+        case .probeArchitectureI686Wow64: "i686 / WoW64"
+        case .runtimeProcessContext: "Bottle %@ · PPID %@"
         case .runtime: "Runtime"
         case .win32Compatibility: "32-bit compatibility"
         case .win32Supported: "Supports 32-bit apps (WoW64)"
