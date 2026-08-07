@@ -136,7 +136,7 @@ private final class WindowChromeProbeView: NSView {
 enum MacWinWindowChrome {
     private static let defaultContentSize = NSSize(width: 1280, height: 800)
     private static let minimumContentSize = NSSize(width: 1040, height: 700)
-    private static let windowCornerRadius: CGFloat = 12
+    private static let windowCornerRadius: CGFloat = 0
     private static let initiallySizedWindows = NSHashTable<NSWindow>.weakObjects()
     static let sidebarWidth: CGFloat = 216
     static let titlebarHeight: CGFloat = 48
@@ -146,7 +146,7 @@ enum MacWinWindowChrome {
 
         configureWindowBehavior(window)
         let isFullScreen = window.styleMask.contains(.fullScreen)
-        configureContentSurface(for: window, isFullScreen: isFullScreen)
+        configureContentSurface(for: window)
 
         if !initiallySizedWindows.contains(window),
            window.frame.width < minimumContentSize.width
@@ -205,12 +205,12 @@ enum MacWinWindowChrome {
         window.isMovableByWindowBackground = true
         window.isMovable = true
         window.isRestorable = false
-        window.hasShadow = true
+        window.hasShadow = false
         window.minSize = minimumContentSize
         window.contentMinSize = minimumContentSize
         window.minFullScreenContentSize = minimumContentSize
-        window.backgroundColor = .clear
-        window.isOpaque = false
+        window.backgroundColor = .windowBackgroundColor
+        window.isOpaque = true
         window.alphaValue = 1
         window.hidesOnDeactivate = false
         window.acceptsMouseMovedEvents = true
@@ -223,20 +223,19 @@ enum MacWinWindowChrome {
         window.collectionBehavior.remove(.fullScreenAuxiliary)
     }
 
-    private static func configureContentSurface(for window: NSWindow, isFullScreen: Bool) {
+    private static func configureContentSurface(for window: NSWindow) {
         guard let contentView = window.contentView else { return }
-        window.isOpaque = isFullScreen
-        window.backgroundColor = isFullScreen ? .windowBackgroundColor : .clear
-        window.hasShadow = !isFullScreen
+        window.isOpaque = true
+        window.backgroundColor = .windowBackgroundColor
 
         contentView.wantsLayer = true
         contentView.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
         contentView.layer?.cornerCurve = .continuous
-        contentView.layer?.cornerRadius = isFullScreen ? 0 : windowCornerRadius
-        contentView.layer?.masksToBounds = true
+        contentView.layer?.cornerRadius = 0
+        contentView.layer?.masksToBounds = false
         contentView.layer?.borderWidth = 0
         contentView.layer?.borderColor = nil
-        contentView.layer?.isOpaque = isFullScreen
+        contentView.layer?.isOpaque = true
         window.invalidateShadow()
     }
 }
