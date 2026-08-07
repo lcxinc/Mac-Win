@@ -4,6 +4,50 @@ import Testing
 
 @Suite("Wine runner")
 struct WineRunnerTests {
+    @Test("Bare wineboot does not apply interactive Mac driver repairs")
+    func bareWinebootDoesNotApplyInteractiveMacDriverRepairs() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacWinRunnerWinebootRepairTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let paths = MacWinPaths(root: root)
+        let runner = WineRunner(
+            paths: paths,
+            processEnvironmentProvider: { [:] },
+            hostNetworkEnvironmentProvider: { [:] }
+        )
+        let engine = EngineManifest(
+            id: "engine",
+            name: "Engine",
+            wineVersion: "wine-11.11",
+            arch: .win64,
+            winePath: "/bin/echo",
+            wineserverPath: "/bin/echo",
+            runtimePath: "/runtime",
+            defaultEnv: [:]
+        )
+        let bottle = BottleManifest(
+            id: "wineboot-repair",
+            name: "Wineboot Repair",
+            windowsVersion: "win11",
+            arch: .win64,
+            engineId: engine.id
+        )
+
+        let result = try runner.run(WineRunRequest(
+            exe: "wineboot",
+            args: ["-u"],
+            bottle: bottle,
+            engine: engine,
+            logName: "wineboot-repair-test.log"
+        ))
+
+        #expect(result.exitCode == 0)
+        #expect(!FileManager.default.fileExists(
+            atPath: paths.bottleDirectory(id: bottle.id).appendingPathComponent("user.reg").path
+        ))
+    }
+
     @Test("Detached activation helpers are terminated after their deadline")
     func detachedActivationHelpersAreTerminatedAfterTheirDeadline() throws {
         let process = Process()

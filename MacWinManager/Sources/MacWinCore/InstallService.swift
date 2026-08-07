@@ -39,10 +39,28 @@ public struct InstallService {
             logPath: logPath.path
         )
         try installHistoryService.save(task)
+        let rollbackSnapshot = InstallRollbackSnapshot(
+            bottle: bottle,
+            driveCURL: paths.bottleDriveCURL(id: bottle.id),
+            fileManager: fileManager
+        )
 
         do {
             if let disabledReason = recipe.disabledReason {
                 throw MacWinError.unsupportedInstallerMode("Recipe \(recipe.id) is disabled: \(disabledReason)")
+            }
+
+            if isAlreadyInstalled(recipe: recipe, bottle: bottle) {
+                try appendInstallLog(
+                    "duplicateInstall=skipped\nPASS \(recipe.name) is already registered in bottle \(bottle.id)\n",
+                    to: logPath
+                )
+                task.state = .succeeded
+                task.progressText = "Already installed \(recipe.name)"
+                task.endedAt = Date()
+                task.exitCode = 0
+                try installHistoryService.save(task)
+                return task
             }
 
             switch recipe.installer.mode {
@@ -103,7 +121,14 @@ public struct InstallService {
                     }
                     task.state = .failed
                     task.endedAt = Date()
-                    task.progressText = "Installer failed"
+                    let rollback = rollbackAfterFailure(
+                        snapshot: rollbackSnapshot,
+                        bottle: bottle,
+                        logPath: logPath
+                    )
+                    task.progressText = rollback > 0
+                        ? "Installer failed; rolled back \(rollback) new file(s)"
+                        : "Installer failed; rollback complete"
                     try installHistoryService.save(task)
                     return task
                 }
@@ -138,8 +163,15 @@ public struct InstallService {
             try installHistoryService.save(task)
             return task
         } catch {
+            let rollback = rollbackAfterFailure(
+                snapshot: rollbackSnapshot,
+                bottle: bottle,
+                logPath: logPath
+            )
             task.state = .failed
-            task.progressText = "Install failed: \(error.localizedDescription)"
+            task.progressText = rollback > 0
+                ? "Install failed; rolled back \(rollback) new file(s): \(error.localizedDescription)"
+                : "Install failed; rollback complete: \(error.localizedDescription)"
             task.endedAt = Date()
             try? installHistoryService.save(task)
             throw error
@@ -395,6 +427,28 @@ public struct InstallService {
         recipe.installer.hints.first { fileManager.fileExists(atPath: $0) }
     }
 
+    private func isAlreadyInstalled(recipe: RecipeManifest, bottle: BottleManifest) -> Bool {
+        bottle.installedApps.contains { launcher in
+            launcher.appId == recipe.id
+                || recipe.launchers.contains { $0.id == launcher.id }
+        }
+    }
+
+    @discardableResult
+    private func rollbackAfterFailure(
+        snapshot: InstallRollbackSnapshot,
+        bottle: BottleManifest,
+        logPath: URL
+    ) -> Int {
+        let removed = snapshot.removeNewFiles()
+        try? bottleService.saveBottle(snapshot.bottle)
+        try? appendInstallLog(
+            "rollback=best-effort\nrollbackRemovedNewFiles=\(removed)\nrollbackManifestRestored=\((try? bottleService.bottle(id: bottle.id)) != nil)\n",
+            to: logPath
+        )
+        return removed
+    }
+
     private func resolvedLauncherPath(_ path: String, recipe: RecipeManifest) -> String {
         if path == "$existing" {
             return existingInstallPath(for: recipe) ?? path
@@ -453,6 +507,66 @@ public struct InstallService {
         var result = first
         for argument in second where !result.contains(argument) {
             result.append(argument)
+        }
+        return result
+    }
+}
+
+private struct InstallRollbackSnapshot {
+    let bottle: BottleManifest
+    let driveCURL: URL
+    let existingPaths: Set<String>
+    let fileManager: FileManager
+
+    init(bottle: BottleManifest, driveCURL: URL, fileManager: FileManager) {
+        self.bottle = bottle
+        self.driveCURL = driveCURL.standardizedFileURL
+        self.existingPaths = Self.paths(in: driveCURL, fileManager: fileManager)
+        self.fileManager = fileManager
+    }
+
+    func removeNewFiles() -> Int {
+        let currentPaths = Self.paths(in: driveCURL, fileManager: fileManager)
+        let newPaths = currentPaths.subtracting(existingPaths).sorted { lhs, rhs in
+            let leftDepth = lhs.split(separator: "/").count
+            let rightDepth = rhs.split(separator: "/").count
+            if leftDepth != rightDepth { return leftDepth > rightDepth }
+            return lhs > rhs
+        }
+        var removed = 0
+        let rootPath = driveCURL.path
+        for relativePath in newPaths {
+            let candidate = driveCURL.appendingPathComponent(relativePath).standardizedFileURL
+            guard candidate.path.hasPrefix(rootPath + "/"),
+                  fileManager.fileExists(atPath: candidate.path) else {
+                continue
+            }
+            do {
+                try fileManager.removeItem(at: candidate)
+                removed += 1
+            } catch {
+                continue
+            }
+        }
+        return removed
+    }
+
+    private static func paths(in root: URL, fileManager: FileManager) -> Set<String> {
+        guard fileManager.fileExists(atPath: root.path),
+              let enumerator = fileManager.enumerator(
+                  at: root,
+                  includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey],
+                  options: [.skipsHiddenFiles]
+              ) else {
+            return []
+        }
+
+        let normalizedRoot = root.standardizedFileURL.path
+        var result = Set<String>()
+        for case let url as URL in enumerator {
+            let path = url.standardizedFileURL.path
+            guard path.hasPrefix(normalizedRoot + "/") else { continue }
+            result.insert(String(path.dropFirst(normalizedRoot.count + 1)))
         }
         return result
     }

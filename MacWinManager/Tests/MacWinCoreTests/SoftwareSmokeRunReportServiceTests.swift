@@ -194,6 +194,31 @@ struct SoftwareSmokeRunReportServiceTests {
         #expect(summary.uncoveredSkippedCount == 1)
     }
 
+    @Test("Smoke history can be bounded for application startup")
+    func serviceBoundsHistoricalReportLoading() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("MacWinSmokeRunReportBoundedTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let paths = MacWinPaths(root: root)
+        try paths.ensureBaseDirectories()
+
+        for index in 0..<121 {
+            try writeReport(
+                root: paths.logsDirectory,
+                runId: "run-\(String(format: "%03d", index))",
+                modifiedAt: Date(timeIntervalSince1970: TimeInterval(index + 1)),
+                stateCounts: ["passed": 1],
+                effectiveStateCounts: nil,
+                supersededSkips: []
+            )
+        }
+
+        let reports = try SoftwareSmokeRunReportService(paths: paths).reports(limit: 120)
+        #expect(reports.count == 120)
+        #expect(reports.first?.runId == "run-120")
+        #expect(reports.last?.runId == "run-001")
+    }
+
     @Test("Smoke run summary resolves legacy failed launches covered by newer validated sample")
     func summaryResolvesLegacyFailedLaunchesCoveredByNewerValidatedSample() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())

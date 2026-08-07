@@ -41,6 +41,8 @@ struct BottleServiceTests {
         #expect(second.windowsVersion == "win11")
         #expect(second.arch == .win64)
         #expect(second.envOverrides["WINE_D3D_CONFIG"] == "renderer=vulkan,csmt=0x0")
+        #expect(second.envOverrides[NativeUIIntegrationPreset.environmentKey] ==
+                NativeUIIntegrationPreset.automatic.environmentValue)
         #expect(second.envOverrides["WINEDEBUG"] == "-all")
     }
 
@@ -336,6 +338,27 @@ struct BottleServiceTests {
         #expect(repaired.contains(#"[Software\\Classes\\Wow6432Node\\CLSID\\{DCB00C01-570F-4A9B-8D69-199FDBA5723B}\\InprocServer32]"#))
         #expect(repaired.contains(#"@="C:\\windows\\syswow64\\netprofm.dll""#))
         #expect(repaired.contains(#""ThreadingModel"="Both""#))
+        #expect(repaired.contains(#"@="Other class""#))
+    }
+
+    @Test("Registry repair adds 32-bit common file dialog COM registration")
+    func registryRepairAddsCommonFileDialogCOMRegistration() throws {
+        let registry = """
+        WINE REGISTRY Version 2
+
+        [Software\\\\Classes\\\\CLSID\\\\{00000000-0000-0000-0000-000000000000}] 1781633413
+        @="Other class"
+
+        """
+
+        let repaired = BottleService.registryTextWithFileDialogRepairs(registry)
+
+        #expect(repaired.contains(#"[Software\\Classes\\CLSID\\{DC1C5A9C-E88A-4DDE-A5A1-60F82A20AEF7}]"#))
+        #expect(repaired.contains(#"[Software\\Classes\\Wow6432Node\\CLSID\\{DC1C5A9C-E88A-4DDE-A5A1-60F82A20AEF7}\\InprocServer32]"#))
+        #expect(repaired.contains(#"@="C:\\windows\\syswow64\\comdlg32.dll""#))
+        #expect(repaired.contains(#"[Software\\Classes\\Wow6432Node\\CLSID\\{C0B4E2F3-BA21-4773-8DBA-335EC946EB8B}\\InprocServer32]"#))
+        #expect(repaired.contains(#"@="C:\\windows\\syswow64\\comdlg32.dll""#))
+        #expect(repaired.contains(#""ThreadingModel"="Apartment""#))
         #expect(repaired.contains(#"@="Other class""#))
     }
 
@@ -666,6 +689,41 @@ struct BottleServiceTests {
         #expect(!repaired.contains(#""PingFang SC"="Noto Sans SC""#))
     }
 
+    @Test("Registry repair maps Win32 UI font links to the bottle CJK resource")
+    func registryRepairMapsWin32UIFontLinksToBottleCJKResource() {
+        let registry = """
+        WINE REGISTRY Version 2
+
+        """
+
+        let repaired = BottleService.registryTextWithFontLinkRepairs(registry)
+
+        #expect(repaired.contains(#"[Software\\Microsoft\\Windows NT\\CurrentVersion\\FontLink\\SystemLink]"#))
+        #expect(repaired.contains(#""Arial"=str(7):"Noto Sans SC (TrueType).otf\0""#))
+        #expect(repaired.contains(#""Arial Black"=str(7):"Noto Sans SC (TrueType).otf\0""#))
+        #expect(repaired.contains(#""Tahoma"=str(7):"Noto Sans SC (TrueType).otf\0""#))
+        #expect(BottleService.registryTextWithFontLinkRepairs(repaired) == repaired)
+    }
+
+    @Test("Registry repair removes stale Arial Black substitutions")
+    func registryRepairRemovesStaleArialBlackSubstitutions() {
+        let registry = """
+        WINE REGISTRY Version 2
+
+        [Software\\\\Microsoft\\\\Windows NT\\\\CurrentVersion\\\\FontSubstitutes]
+        "Arial Black"="Arial"
+
+        [Software\\\\Wine\\\\Fonts\\\\Replacements]
+        "Arial Black"="Arial"
+
+        """
+
+        let repaired = BottleService.registryTextWithFontRepairs(registry)
+
+        #expect(!repaired.contains(#""Arial Black"="Arial""#))
+        #expect(BottleService.registryTextWithFontRepairs(repaired) == repaired)
+    }
+
     @Test("Registry repair assigns stable native UI metrics with CJK fallback")
     func registryRepairAssignsStableSystemUIFont() {
         let registry = [
@@ -816,6 +874,13 @@ struct BottleServiceTests {
         #expect(fontConfig.contains("OPPOSans"))
         #expect(fontConfig.contains("miHoYo"))
         #expect(fontConfig.contains(#"<family>Arial</family>"#))
+        #expect(fontConfig.contains("""
+            <family>Arial Black</family>
+                <prefer>
+                  <family>Arial Black</family>
+                  <family>Arial</family>
+                  <family>Tahoma</family>
+            """))
         #expect(fontConfig.contains("""
             <family>Arial</family>
                 <prefer>

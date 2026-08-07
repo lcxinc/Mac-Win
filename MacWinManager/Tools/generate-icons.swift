@@ -663,6 +663,50 @@ func appendBigEndianUInt32(_ value: UInt32, to data: inout Data) {
     }
 }
 
+func appendLittleEndianUInt16(_ value: UInt16, to data: inout Data) {
+    var encoded = value.littleEndian
+    withUnsafeBytes(of: &encoded) { bytes in
+        data.append(contentsOf: bytes)
+    }
+}
+
+func appendLittleEndianUInt32(_ value: UInt32, to data: inout Data) {
+    var encoded = value.littleEndian
+    withUnsafeBytes(of: &encoded) { bytes in
+        data.append(contentsOf: bytes)
+    }
+}
+
+func writeICO(to output: URL, draw: @escaping (CGRect) -> Void) throws {
+    let sizes: [CGFloat] = [16, 32, 48, 64, 128, 256]
+    let images = try sizes.map { size -> (size: Int, data: Data) in
+        guard let png = try bitmap(size: size, draw: draw).representation(using: .png, properties: [:]) else {
+            throw NSError(domain: "MacWinIconGenerator", code: 3)
+        }
+        return (Int(size), png)
+    }
+
+    var directory = Data()
+    appendLittleEndianUInt16(0, to: &directory)
+    appendLittleEndianUInt16(1, to: &directory)
+    appendLittleEndianUInt16(UInt16(images.count), to: &directory)
+
+    var offset = UInt32(6 + images.count * 16)
+    for image in images {
+        directory.append(UInt8(image.size == 256 ? 0 : image.size))
+        directory.append(UInt8(image.size == 256 ? 0 : image.size))
+        directory.append(0)
+        directory.append(0)
+        appendLittleEndianUInt16(1, to: &directory)
+        appendLittleEndianUInt16(32, to: &directory)
+        appendLittleEndianUInt32(UInt32(image.data.count), to: &directory)
+        appendLittleEndianUInt32(offset, to: &directory)
+        offset += UInt32(image.data.count)
+    }
+    for image in images { directory.append(image.data) }
+    try directory.write(to: output, options: .atomic)
+}
+
 func writeICNS(to output: URL, draw: @escaping (CGRect) -> Void) throws {
     let entries: [(String, CGFloat)] = [
         ("icp4", 16),
@@ -738,6 +782,10 @@ try writeICNS(
 try writeICNS(
     to: iconsDirectory.appendingPathComponent("MacWinExeDocument.icns"),
     draw: drawExeDocumentIcon
+)
+try writeICO(
+    to: iconsDirectory.appendingPathComponent("MacWinAppIcon.ico"),
+    draw: drawModernAppIconGlyph
 )
 
 print("Generated icons in \(iconsDirectory.path)")

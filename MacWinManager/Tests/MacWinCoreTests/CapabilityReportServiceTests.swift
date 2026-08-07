@@ -269,7 +269,8 @@ struct CapabilityReportServiceTests {
                     executable path="/Users/alice/project/Mac-Win/refs/build/loader/wine"
                     pid = 702 type="Foreground" Arch=X86_64
                 """
-            })
+            }),
+            hostGUISessionService: HostGUISessionService(stateProvider: { .locked })
         ).makeReport(
             generatedAt: Date(timeIntervalSince1970: 500),
             engines: [engine],
@@ -285,6 +286,8 @@ struct CapabilityReportServiceTests {
         #expect(report.hostEnvironment?.bottleCount == 1)
         #expect(report.hostEnvironment?.recipeCount == recipes.count)
         #expect(report.hostEnvironment?.recentLogCount == 2)
+        #expect(report.hostGUISession?.state == .locked)
+        #expect(report.hostGUISession?.isInteractive == false)
         #expect(report.hostEnvironment?.pathStates.first { $0.id == "logs" }?.exists == true)
         #expect(report.engines.first?.supportsWin32 == true)
         #expect(report.engines.first?.winePathExists == true)

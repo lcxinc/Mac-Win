@@ -19,6 +19,7 @@ public struct MacWinPaths: Sendable {
     public var downloadsDirectory: URL { root.appendingPathComponent("Downloads", isDirectory: true) }
     public var iconCacheDirectory: URL { root.appendingPathComponent("IconCache", isDirectory: true) }
     public var externalOpenQueueDirectory: URL { root.appendingPathComponent("ExternalOpenQueue", isDirectory: true) }
+    public var nativeUIProbeDirectory: URL { root.appendingPathComponent("NativeUIProbe", isDirectory: true) }
 
     public func engineDirectory(id: String) -> URL {
         enginesDirectory.appendingPathComponent(id, isDirectory: true)
@@ -41,7 +42,7 @@ public struct MacWinPaths: Sendable {
     }
 
     public func ensureBaseDirectories(fileManager: FileManager = .default) throws {
-        for url in [root, enginesDirectory, bottlesDirectory, catalogDirectory, logsDirectory, downloadsDirectory, iconCacheDirectory, externalOpenQueueDirectory] {
+        for url in [root, enginesDirectory, bottlesDirectory, catalogDirectory, logsDirectory, downloadsDirectory, iconCacheDirectory, externalOpenQueueDirectory, nativeUIProbeDirectory] {
             try fileManager.createDirectory(at: url, withIntermediateDirectories: true)
         }
     }

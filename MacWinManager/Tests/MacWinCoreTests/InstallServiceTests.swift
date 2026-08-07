@@ -199,6 +199,130 @@ struct InstallServiceTests {
         #expect(launcher.envOverrides["CUSTOM_RECIPE_ENV"] == "1")
     }
 
+    @Test("Duplicate recipe installation is recorded but does not rerun the installer")
+    func duplicateInstallIsSkipped() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacWinDuplicateInstallTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let paths = MacWinPaths(root: root)
+        try paths.ensureBaseDirectories()
+
+        let launcher = LauncherManifest(
+            id: "steam",
+            appId: "steam",
+            bottleId: "bottle",
+            displayName: "Steam",
+            exePath: "C:\\Program Files\\Steam\\Steam.exe"
+        )
+        let bottle = BottleManifest(
+            id: "bottle",
+            name: "Bottle",
+            windowsVersion: "win11",
+            arch: .win64,
+            engineId: "engine",
+            installedApps: [launcher]
+        )
+        try JSONStore().save(bottle, to: paths.bottleManifestURL(id: bottle.id))
+        let recipe = RecipeManifest(
+            id: "steam",
+            name: "Steam",
+            publisher: "Valve",
+            category: "Game Store",
+            compatibilityRating: .experimental,
+            installer: InstallerSpec(mode: .download, command: "/bin/false"),
+            bottleTemplate: BottleTemplate(windowsVersion: "win11", arch: .win64),
+            engineRequirements: EngineRequirements(),
+            launchers: [LauncherRecipe(id: "steam", displayName: "Steam", exePath: launcher.exePath)]
+        )
+        let engine = EngineManifest(
+            id: "engine",
+            name: "Engine",
+            wineVersion: "wine-11.11",
+            arch: .win64,
+            winePath: "/bin/false",
+            wineserverPath: "/bin/false",
+            runtimePath: "/runtime",
+            defaultEnv: [:]
+        )
+
+        let task = try InstallService(paths: paths).install(
+            recipe: recipe,
+            bottle: bottle,
+            engine: engine,
+            installerSource: nil
+        )
+        #expect(task.state == .succeeded)
+        #expect(task.progressText == "Already installed Steam")
+        #expect(task.exitCode == 0)
+        let updatedBottle = try BottleService(paths: paths).bottle(id: bottle.id)
+        let updated = try #require(updatedBottle)
+        #expect(updated.installedApps == [launcher])
+        let log = try String(contentsOfFile: task.logPath, encoding: .utf8)
+        #expect(log.contains("duplicateInstall=skipped"))
+    }
+
+    @Test("Installer failure restores bottle manifest and records rollback")
+    func failedInstallRestoresManifest() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacWinRollbackInstallTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let paths = MacWinPaths(root: root)
+        try paths.ensureBaseDirectories()
+        let installer = root.appendingPathComponent("failed-installer.exe")
+        try Data("installer".utf8).write(to: installer)
+
+        let bottle = BottleManifest(
+            id: "bottle",
+            name: "Bottle",
+            windowsVersion: "win11",
+            arch: .win64,
+            engineId: "engine"
+        )
+        try JSONStore().save(bottle, to: paths.bottleManifestURL(id: bottle.id))
+        let recipe = RecipeManifest(
+            id: "failed",
+            name: "Failed",
+            publisher: "MacWin",
+            category: "Test",
+            compatibilityRating: .limited,
+            installer: InstallerSpec(
+                mode: .localFile,
+                fileName: installer.lastPathComponent,
+                command: "/bin/false"
+            ),
+            bottleTemplate: BottleTemplate(windowsVersion: "win11", arch: .win64),
+            engineRequirements: EngineRequirements(),
+            launchers: [LauncherRecipe(id: "failed", displayName: "Failed", exePath: "C:\\Failed\\failed.exe")]
+        )
+        let engine = EngineManifest(
+            id: "engine",
+            name: "Engine",
+            wineVersion: "wine-11.11",
+            arch: .win64,
+            winePath: "/bin/false",
+            wineserverPath: "/bin/false",
+            runtimePath: "/runtime",
+            defaultEnv: [:]
+        )
+
+        let task = try InstallService(paths: paths).install(
+            recipe: recipe,
+            bottle: bottle,
+            engine: engine,
+            installerSource: .localFile(installer)
+        )
+        #expect(task.state == .failed)
+        #expect(task.progressText.contains("rollback"))
+        let updatedBottle = try BottleService(paths: paths).bottle(id: bottle.id)
+        let updated = try #require(updatedBottle)
+        #expect(updated.id == bottle.id)
+        #expect(updated.engineId == bottle.engineId)
+        #expect(updated.installedApps.isEmpty)
+        let log = try String(contentsOfFile: task.logPath, encoding: .utf8)
+        #expect(log.contains("rollback=best-effort"))
+        #expect(log.contains("rollbackManifestRestored=true"))
+    }
+
     @Test("Nonzero installer exit is accepted when launcher targets already exist")
     func nonzeroInstallerExitIsAcceptedWhenLauncherTargetsAlreadyExist() throws {
         let root = FileManager.default.temporaryDirectory

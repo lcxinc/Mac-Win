@@ -22,6 +22,7 @@ ICONS="$ROOT/Sources/MacWinManagerApp/Resources/Icons"
 ASSET_CATALOG="$ROOT/Sources/MacWinManagerApp/Resources/AppAssets.xcassets"
 ASSET_INFO="$ROOT/.build/macwin-app-icon-info.plist"
 MODULE_CACHE="$ROOT/.build/macwin-module-cache"
+NATIVE_UI_PROBE_BUILD="$ROOT/.build/native-ui-probe"
 mkdir -p "$MODULE_CACHE"
 
 (
@@ -31,11 +32,16 @@ mkdir -p "$MODULE_CACHE"
 CLANG_MODULE_CACHE_PATH="$MODULE_CACHE" \
 SWIFTPM_MODULECACHE_OVERRIDE="$MODULE_CACHE" \
 swift build --disable-sandbox --package-path "$ROOT" --configuration "$BUILD_CONFIGURATION" --jobs 1
+"$ROOT/Tools/build-native-ui-probe.sh" "$NATIVE_UI_PROBE_BUILD"
 
 mkdir -p "$MACOS" "$RESOURCES"
 cp -f "$EXECUTABLE" "$MACOS/MacWinManagerApp"
 rm -rf "$RESOURCES/MacWinManager_MacWinManagerApp.bundle"
 cp -R "$RESOURCE_BUNDLE" "$RESOURCES/"
+rm -rf "$RESOURCES/NativeUIProbe"
+mkdir -p "$RESOURCES/NativeUIProbe"
+cp -f "$NATIVE_UI_PROBE_BUILD/native-ui-probe-x86_64.exe" "$RESOURCES/NativeUIProbe/"
+cp -f "$NATIVE_UI_PROBE_BUILD/native-ui-probe-i686.exe" "$RESOURCES/NativeUIProbe/"
 cp -f "$ICONS/MacWinAppIcon.icns" "$RESOURCES/MacWinAppIcon.icns"
 cp -f "$ICONS/MacWinExeDocument.icns" "$RESOURCES/MacWinExeDocument.icns"
 rm -f "$RESOURCES/AppIcon.icns" "$RESOURCES/Assets.car"

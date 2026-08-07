@@ -14920,7 +14920,10 @@ for item in "${installers[@]}"; do
   if [ "$id" = "npackd" ]; then
     launch_env_cmd=(/usr/bin/env -u ROSETTA_X87_PATH)
   fi
-  if [ -n "$launch_arg" ]; then
+  if [ "$launch_mode" = "gui" ] && macos_gui_session_is_locked; then
+    record "$id" launch "skipped" 122 "" 0 \
+      "macOS session is locked; GUI launch and visible-window validation require an unlocked session."
+  elif [ -n "$launch_arg" ]; then
     read -r -a launch_args <<< "$launch_arg"
     if [ "$launch_mode" = "gui" ]; then
       if [ -n "$windows_path_env" ]; then

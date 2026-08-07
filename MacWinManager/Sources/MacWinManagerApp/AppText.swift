@@ -54,6 +54,15 @@ enum TextKey {
     case openLogFile
     case terminatedPid
     case terminatedBottleProcesses
+    case stopBottleProcesses
+    case stoppingBottleProcesses
+    case stoppedBottleProcesses
+    case stoppedBottleProcessesPartial
+    case restartBottle
+    case restartingBottle
+    case restartedBottle
+    case restartBottleIncomplete
+    case cleanedOrphanedProcesses
     case refreshDesktop
     case dropInstallerTitle
     case dropInstallerHelp
@@ -93,6 +102,8 @@ enum TextKey {
     case openMarket
     case run
     case runWithDiagnostics
+    case keepSystemAwake
+    case preventScreenLockHint
     case openWindowsExecutable
     case chooseBottleToOpenExecutable
     case externalExecutable
@@ -128,6 +139,9 @@ enum TextKey {
     case logs
     case delete
     case graphicsPreset
+    case nativeUIIntegration
+    case applyingNativeUIIntegration
+    case appliedNativeUIIntegration
     case defaultGameBottle
     case gptkStatus
     case gptkAvailable
@@ -136,6 +150,48 @@ enum TextKey {
     case createBottle
     case diagnosticSubtitle
     case runProbeSuite
+    case nativeUIProbe
+    case nativeUIProbeSubtitle
+    case nativeUIProbeSessionUnlocked
+    case nativeUIProbeSessionLocked
+    case nativeUIProbeSessionUnavailable
+    case nativeUIBridgeStatus
+    case nativeUIBridgeReady
+    case nativeUIBridgeIncomplete
+    case nativeUIBridgeUnavailable
+    case nativeUIProbeAssets
+    case nativeUIProbeArchitecture
+    case nativeUIProbeAvailable
+    case nativeUIProbeMissingShort
+    case nativeUIProbeMissing
+    case nativeUIProbeCurrentBottle
+    case runningNativeUIProbe
+    case nativeUIProbePassed
+    case nativeUIProbeCancelled
+    case nativeUIProbeLastRun
+    case noNativeUIProbeRun
+    case nativeUIApplicationMatrix
+    case nativeUIApplicationMatrixSubtitle
+    case nativeUIApplicationMatrixSummary
+    case nativeUIApplicationInstalled
+    case nativeUIApplicationRecipeAvailable
+    case nativeUIApplicationInstallerAvailable
+    case nativeUIApplicationUnavailable
+    case nativeUIApplicationNotRun
+    case nativeUIApplicationObserved
+    case nativeUIApplicationPassed
+    case nativeUIApplicationFailed
+    case nativeUIApplicationRun
+    case nativeUIApplicationRunDiagnostics
+    case nativeUIApplicationInstall
+    case nativeUIApplicationSelectInstaller
+    case nativeUIApplicationPreset
+    case nativeUIApplicationNeedsInstall
+    case noNativeUIApplicationMatrix
+    case runRepresentativeAcceptance
+    case runningRepresentativeAcceptance
+    case representativeAcceptanceSummary
+    case representativeAcceptanceFinished
     case result
     case exitCode
     case log
@@ -187,6 +243,7 @@ enum TextKey {
     case exportRecommendedProbeScript
     case exportLogMaintenanceScript
     case archiveCleanupLogs
+    case cleanHistoricalLogs
     case exportSoftwareAdaptationRunbook
     case exportSoftwareAdaptationQueueCSV
     case exportSoftwareAdaptationProbeScript
@@ -202,6 +259,7 @@ enum TextKey {
     case exportHostEnvironmentCSV
     case exportingLogMaintenanceScript
     case archivingCleanupLogs
+    case cleaningHistoricalLogs
     case exportingLogIssueReport
     case exportingRecommendedProbeScript
     case exportingSoftwareAdaptationRunbook
@@ -216,6 +274,7 @@ enum TextKey {
     case logMaintenanceScriptExported
     case cleanupLogsArchived
     case noCleanupLogsToArchive
+    case historicalLogsCleaned
     case softwareAdaptationRunbookExported
     case softwareAdaptationQueueCSVExported
     case softwareAdaptationProbeScriptExported
@@ -622,6 +681,141 @@ enum AppText {
             return text(.gptkD3DMetalPresetHelp, language: language)
         case .gptkD3DMetalDXR:
             return text(.gptkD3DMetalDXRPresetHelp, language: language)
+        }
+    }
+
+    static func nativeUIIntegrationPresetName(_ preset: NativeUIIntegrationPreset, language: AppLanguage) -> String {
+        switch (preset, language) {
+        case (.disabled, .zhHans): "关闭"
+        case (.automatic, .zhHans): "自动 Mac 界面路由"
+        case (.windowIntegration, .zhHans): "Mac 窗口集成"
+        case (.nativeDialogs, .zhHans): "Mac 原生对话框"
+        case (.disabled, .en): "Disabled"
+        case (.automatic, .en): "Automatic Mac UI Routing"
+        case (.windowIntegration, .en): "Mac Window Integration"
+        case (.nativeDialogs, .en): "Mac Native Dialogs"
+        }
+    }
+
+    static func nativeUIIntegrationPresetHelp(_ preset: NativeUIIntegrationPreset, language: AppLanguage) -> String {
+        switch (preset, language) {
+        case (.disabled, .zhHans): "保留完整 Windows 界面行为，适合游戏、自绘界面和兼容性敏感应用。"
+        case (.automatic, .zhHans): "按 API 类型自动选择 macOS 原生窗口、消息框、现代文件对话框和简单任务对话框；复杂或不兼容功能自动回退到 Wine。"
+        case (.windowIntegration, .zhHans): "使用 macOS 窗口、全屏和 Dock 行为，不替换应用内部控件。"
+        case (.nativeDialogs, .zhHans): "将兼容的消息框、现代文件对话框和简单任务对话框交给 macOS。"
+        case (.disabled, .en): "Preserves Windows UI behavior for games, custom rendering, and compatibility-sensitive apps."
+        case (.automatic, .en): "Routes supported windows, alerts, modern file dialogs, and simple task dialogs to macOS, with strict Wine fallback for complex features."
+        case (.windowIntegration, .en): "Uses macOS window, full-screen, and Dock behavior without replacing app controls."
+        case (.nativeDialogs, .en): "Routes compatible alerts, modern file dialogs, and simple task dialogs through macOS."
+        }
+    }
+
+    static func nativeUIProbeModeName(_ mode: NativeUIProbeMode, language: AppLanguage) -> String {
+        switch (mode, language) {
+        case (.message, .zhHans): "消息框"
+        case (.legacyOpen, .zhHans): "传统打开"
+        case (.legacySave, .zhHans): "传统保存"
+        case (.filteredOpen, .zhHans): "带过滤器打开"
+        case (.filteredSave, .zhHans): "带过滤器保存"
+        case (.legacyFallback, .zhHans): "传统回退"
+        case (.modernOpen, .zhHans): "现代打开"
+        case (.modernSave, .zhHans): "现代保存"
+        case (.modernOpenMulti, .zhHans): "现代多选"
+        case (.modernFolder, .zhHans): "现代文件夹"
+        case (.task, .zhHans): "任务对话框"
+        case (.taskFallback, .zhHans): "任务回退"
+        case (.message, .en): "Message Box"
+        case (.legacyOpen, .en): "Legacy Open"
+        case (.legacySave, .en): "Legacy Save"
+        case (.filteredOpen, .en): "Filtered Open"
+        case (.filteredSave, .en): "Filtered Save"
+        case (.legacyFallback, .en): "Legacy Fallback"
+        case (.modernOpen, .en): "Modern Open"
+        case (.modernSave, .en): "Modern Save"
+        case (.modernOpenMulti, .en): "Modern Multi-select"
+        case (.modernFolder, .en): "Modern Folder"
+        case (.task, .en): "Task Dialog"
+        case (.taskFallback, .en): "Task Fallback"
+        }
+    }
+
+    static func nativeUIApplicationFamilyName(_ family: NativeUIApplicationMatrixFamily, language: AppLanguage) -> String {
+        switch (family, language) {
+        case (.hoyoPlay, .zhHans): "HoYoPlay"
+        case (.steam, .zhHans): "Steam"
+        case (.browser, .zhHans): "浏览器"
+        case (.office, .zhHans): "办公软件"
+        case (.lenovoAppStore, .zhHans): "联想应用商店"
+        case (.hoyoPlay, .en): "HoYoPlay"
+        case (.steam, .en): "Steam"
+        case (.browser, .en): "Browsers"
+        case (.office, .en): "Office"
+        case (.lenovoAppStore, .en): "Lenovo App Store"
+        }
+    }
+
+    static func nativeUIApplicationAvailabilityName(_ availability: NativeUIApplicationAvailability, language: AppLanguage) -> String {
+        switch (availability, language) {
+        case (.installed, .zhHans): "已安装"
+        case (.recipeAvailable, .zhHans): "配方可用"
+        case (.installerAvailable, .zhHans): "安装器可用"
+        case (.unavailable, .zhHans): "待准备"
+        case (.installed, .en): "Installed"
+        case (.recipeAvailable, .en): "Recipe available"
+        case (.installerAvailable, .en): "Installer available"
+        case (.unavailable, .en): "Needs preparation"
+        }
+    }
+
+    static func nativeUIApplicationEvidenceName(_ evidence: NativeUIApplicationLaunchEvidence, language: AppLanguage) -> String {
+        switch (evidence, language) {
+        case (.notRun, .zhHans): "未运行"
+        case (.observed, .zhHans): "已观察到启动"
+        case (.passed, .zhHans): "启动通过"
+        case (.failed, .zhHans): "启动失败"
+        case (.notRun, .en): "Not run"
+        case (.observed, .en): "Launch observed"
+        case (.passed, .en): "Launch passed"
+        case (.failed, .en): "Launch failed"
+        }
+    }
+
+    static func nativeUIApplicationEvidenceDetail(_ detail: String, language: AppLanguage) -> String {
+        switch (detail, language) {
+        case ("passed-smoke-browser-workload", .zhHans):
+            "浏览器页面、TLS、UTF-8、Canvas 与 CSS Grid 工作负载通过"
+        case ("passed-smoke-core-workload", .zhHans):
+            "文档核心工作负载与导出结果通过"
+        case ("passed-smoke-rendered-content", .zhHans):
+            "页面结构、资源加载与窗口像素渲染通过"
+        case ("observed-smoke-launch", .zhHans):
+            "窗口进程保持运行，尚缺功能或渲染证明"
+        case ("not-run-smoke-session-locked", .zhHans):
+            "macOS 已锁屏，等待解锁后进行窗口与交互验收"
+        case (_, .zhHans) where detail.hasPrefix("observed-"):
+            "应用保持运行，尚缺功能或渲染证明"
+        case (_, .zhHans) where detail.hasPrefix("failed-"):
+            "最近一次启动失败，请查看日志"
+        case (_, .zhHans) where detail.hasPrefix("passed-"):
+            "最近一次受管启动正常完成"
+        case ("passed-smoke-browser-workload", .en):
+            "Browser page, TLS, UTF-8, Canvas, and CSS Grid workload passed"
+        case ("passed-smoke-core-workload", .en):
+            "Document core workload and exported result passed"
+        case ("passed-smoke-rendered-content", .en):
+            "Page structure, resources, and rendered window pixels passed"
+        case ("observed-smoke-launch", .en):
+            "The process stayed alive; functional or rendered-content proof is still missing"
+        case ("not-run-smoke-session-locked", .en):
+            "macOS is locked; window and interaction acceptance is waiting for an unlocked session"
+        case (_, .en) where detail.hasPrefix("observed-"):
+            "The application stayed alive; functional or rendered-content proof is still missing"
+        case (_, .en) where detail.hasPrefix("failed-"):
+            "The latest launch failed; inspect its log"
+        case (_, .en) where detail.hasPrefix("passed-"):
+            "The latest managed launch completed successfully"
+        default:
+            detail
         }
     }
 
@@ -1291,6 +1485,15 @@ enum AppText {
         case .openLogFile: "打开日志文件"
         case .terminatedPid: "已停止 %@，PID %@"
         case .terminatedBottleProcesses: "已停止 %@ 容器中的 Wine 进程"
+        case .stopBottleProcesses: "停止容器全部进程"
+        case .stoppingBottleProcesses: "正在停止 %@ 容器中的全部进程"
+        case .stoppedBottleProcesses: "已停止 %@ 容器中的 %d 个进程"
+        case .stoppedBottleProcessesPartial: "%@ 容器已停止 %d 个进程，仍有 %d 个进程未退出"
+        case .restartBottle: "重启容器"
+        case .restartingBottle: "正在重启 %@ 容器"
+        case .restartedBottle: "已重启 %@ 容器"
+        case .restartBottleIncomplete: "%@ 容器未能完全重启，仍有 %d 个进程"
+        case .cleanedOrphanedProcesses: "已自动清理 %d 个孤立 Wine 进程"
         case .refreshDesktop: "刷新窗口"
         case .dropInstallerTitle: "释放以安装"
         case .dropInstallerHelp: "支持 .exe 和 .msi；32 位安装器会自动切换到 WoW64 引擎"
@@ -1365,6 +1568,9 @@ enum AppText {
         case .logs: "日志"
         case .delete: "删除"
         case .graphicsPreset: "图形预设"
+        case .nativeUIIntegration: "Mac 原生集成"
+        case .applyingNativeUIIntegration: "正在应用 Mac 原生集成"
+        case .appliedNativeUIIntegration: "已应用 Mac 原生集成：%@"
         case .defaultGameBottle: "默认游戏容器"
         case .gptkStatus: "GPTK/D3DMetal"
         case .gptkAvailable: "可用"
@@ -1373,6 +1579,48 @@ enum AppText {
         case .createBottle: "新建容器"
         case .diagnosticSubtitle: "Vulkan、TLS、32 位 WoW64、D3D、XAudio2"
         case .runProbeSuite: "运行测试套件"
+        case .nativeUIProbe: "Mac 原生 UI 探针"
+        case .nativeUIProbeSubtitle: "验证消息框、文件对话框和任务对话框是否按当前容器预设路由到 macOS。"
+        case .nativeUIProbeSessionUnlocked: "macOS 会话已解锁，可以进行窗口验收"
+        case .nativeUIProbeSessionLocked: "macOS 会话已锁定，解锁后才能运行窗口验收"
+        case .nativeUIProbeSessionUnavailable: "无法读取 macOS 图形会话状态"
+        case .nativeUIBridgeStatus: "桥接模块：Cocoa %@ · x86_64 %@ · i686 %@"
+        case .nativeUIBridgeReady: "就绪"
+        case .nativeUIBridgeIncomplete: "不完整"
+        case .nativeUIBridgeUnavailable: "不适用"
+        case .nativeUIProbeAssets: "探针资产：x86_64 %@ · i686 %@"
+        case .nativeUIProbeArchitecture: "探针架构"
+        case .nativeUIProbeAvailable: "可用"
+        case .nativeUIProbeMissingShort: "缺失"
+        case .nativeUIProbeMissing: "缺少原生 UI 探针；请先构建 Tools/build-native-ui-probe.sh。"
+        case .nativeUIProbeCurrentBottle: "测试容器"
+        case .runningNativeUIProbe: "正在运行原生 UI 探针：%@"
+        case .nativeUIProbePassed: "原生 UI 探针通过：%@"
+        case .nativeUIProbeCancelled: "原生 UI 探针已取消：%@"
+        case .nativeUIProbeLastRun: "最近一次原生 UI 运行"
+        case .noNativeUIProbeRun: "暂无原生 UI 探针结果"
+        case .nativeUIApplicationMatrix: "真实应用兼容矩阵"
+        case .nativeUIApplicationMatrixSubtitle: "汇总当前容器与隔离测试会话中的 Steam、浏览器、办公软件和联想应用商店证据。进程保持运行只算已观察，功能或渲染验证后才算通过。"
+        case .nativeUIApplicationMatrixSummary: "%d 个应用 · %d 当前容器已安装 · %d 验收通过 · %d 未验证"
+        case .nativeUIApplicationInstalled: "已安装"
+        case .nativeUIApplicationRecipeAvailable: "配方可用"
+        case .nativeUIApplicationInstallerAvailable: "安装器可用"
+        case .nativeUIApplicationUnavailable: "待准备"
+        case .nativeUIApplicationNotRun: "未运行"
+        case .nativeUIApplicationObserved: "仅观察到启动"
+        case .nativeUIApplicationPassed: "验收通过"
+        case .nativeUIApplicationFailed: "启动失败"
+        case .nativeUIApplicationRun: "启动"
+        case .nativeUIApplicationRunDiagnostics: "诊断启动"
+        case .nativeUIApplicationInstall: "安装"
+        case .nativeUIApplicationSelectInstaller: "选择安装器"
+        case .nativeUIApplicationPreset: "原生 UI 预设"
+        case .nativeUIApplicationNeedsInstall: "%@ 尚未安装或未生成 launcher"
+        case .noNativeUIApplicationMatrix: "暂无可审计的真实应用矩阵"
+        case .runRepresentativeAcceptance: "执行代表性验收"
+        case .runningRepresentativeAcceptance: "正在验收 Steam、HoYoPlay、浏览器和办公软件"
+        case .representativeAcceptanceSummary: "代表性验收：通过 %d/%d · 待处理 %d"
+        case .representativeAcceptanceFinished: "代表性验收完成：通过 %d/%d"
         case .result: "结果"
         case .exitCode: "退出码"
         case .log: "日志"
@@ -1424,6 +1672,7 @@ enum AppText {
         case .exportRecommendedProbeScript: "导出建议探针脚本"
         case .exportLogMaintenanceScript: "导出维护脚本"
         case .archiveCleanupLogs: "归档候选日志"
+        case .cleanHistoricalLogs: "清理历史失败日志"
         case .exportSoftwareAdaptationRunbook: "导出适配手册"
         case .exportSoftwareAdaptationQueueCSV: "导出适配队列"
         case .exportSoftwareAdaptationProbeScript: "导出探针脚本"
@@ -1439,6 +1688,7 @@ enum AppText {
         case .exportHostEnvironmentCSV: "导出环境"
         case .exportingLogMaintenanceScript: "正在导出日志维护脚本"
         case .archivingCleanupLogs: "正在归档候选日志"
+        case .cleaningHistoricalLogs: "正在清理历史失败日志"
         case .exportingLogIssueReport: "正在导出日志归因报告"
         case .exportingRecommendedProbeScript: "正在导出建议探针脚本"
         case .exportingSoftwareAdaptationRunbook: "正在导出软件适配手册"
@@ -1453,6 +1703,7 @@ enum AppText {
         case .logMaintenanceScriptExported: "已导出日志维护脚本：%@"
         case .cleanupLogsArchived: "已归档 %d 个日志到 %@"
         case .noCleanupLogsToArchive: "没有需要归档的日志"
+        case .historicalLogsCleaned: "已清理 %d 个历史失败日志（可在 Archive 中恢复）"
         case .softwareAdaptationRunbookExported: "已导出软件适配手册：%@"
         case .softwareAdaptationQueueCSVExported: "已导出软件适配队列：%@"
         case .softwareAdaptationProbeScriptExported: "已导出适配探针脚本：%@"
@@ -1667,6 +1918,8 @@ enum AppText {
         case .launching: "正在启动 %@"
         case .launchingWithDiagnostics: "正在诊断启动 %@"
         case .runningCommand: "正在运行命令"
+        case .keepSystemAwake: "保持系统清醒"
+        case .preventScreenLockHint: "运行时防止休眠与熄屏，完成后自动恢复。"
         case .deleting: "正在删除 %@"
         case .runningDiagnostics: "正在运行诊断"
         case .exportingCapabilityReport: "正在导出能力报告"
@@ -1829,6 +2082,15 @@ enum AppText {
         case .openLogFile: "Open Log File"
         case .terminatedPid: "Stopped %@, PID %@"
         case .terminatedBottleProcesses: "Stopped Wine processes in %@"
+        case .stopBottleProcesses: "Stop Container Processes"
+        case .stoppingBottleProcesses: "Stopping all processes in %@"
+        case .stoppedBottleProcesses: "Stopped %@: %d processes"
+        case .stoppedBottleProcessesPartial: "Stopped %@: %d processes; %d remain"
+        case .restartBottle: "Restart Container"
+        case .restartingBottle: "Restarting %@"
+        case .restartedBottle: "Restarted %@"
+        case .restartBottleIncomplete: "%@ could not restart completely; %d processes remain"
+        case .cleanedOrphanedProcesses: "Automatically cleaned %d orphaned Wine processes"
         case .refreshDesktop: "Refresh Windows"
         case .dropInstallerTitle: "Release to Install"
         case .dropInstallerHelp: "Supports .exe and .msi; 32-bit installers automatically use the WoW64 engine"
@@ -1903,6 +2165,9 @@ enum AppText {
         case .logs: "Logs"
         case .delete: "Delete"
         case .graphicsPreset: "Graphics Preset"
+        case .nativeUIIntegration: "Mac Native Integration"
+        case .applyingNativeUIIntegration: "Applying Mac native integration"
+        case .appliedNativeUIIntegration: "Applied Mac native integration: %@"
         case .defaultGameBottle: "Default Game Bottle"
         case .gptkStatus: "GPTK/D3DMetal"
         case .gptkAvailable: "Available"
@@ -1911,6 +2176,48 @@ enum AppText {
         case .createBottle: "Create Bottle"
         case .diagnosticSubtitle: "Vulkan, TLS, 32-bit WoW64, D3D, XAudio2"
         case .runProbeSuite: "Run Probe Suite"
+        case .nativeUIProbe: "Mac Native UI Probes"
+        case .nativeUIProbeSubtitle: "Verify that message boxes, file dialogs, and task dialogs route to macOS under the current bottle preset."
+        case .nativeUIProbeSessionUnlocked: "The macOS session is unlocked and ready for window acceptance"
+        case .nativeUIProbeSessionLocked: "The macOS session is locked; unlock it before running window acceptance"
+        case .nativeUIProbeSessionUnavailable: "The macOS GUI session state is unavailable"
+        case .nativeUIBridgeStatus: "Bridge modules: Cocoa %@ · x86_64 %@ · i686 %@"
+        case .nativeUIBridgeReady: "Ready"
+        case .nativeUIBridgeIncomplete: "Incomplete"
+        case .nativeUIBridgeUnavailable: "N/A"
+        case .nativeUIProbeAssets: "Probe assets: x86_64 %@ · i686 %@"
+        case .nativeUIProbeArchitecture: "Probe Architecture"
+        case .nativeUIProbeAvailable: "Available"
+        case .nativeUIProbeMissingShort: "Missing"
+        case .nativeUIProbeMissing: "Native UI probe binaries are missing; build Tools/build-native-ui-probe.sh first."
+        case .nativeUIProbeCurrentBottle: "Test Bottle"
+        case .runningNativeUIProbe: "Running native UI probe: %@"
+        case .nativeUIProbePassed: "Native UI probe passed: %@"
+        case .nativeUIProbeCancelled: "Native UI probe cancelled: %@"
+        case .nativeUIProbeLastRun: "Latest Native UI Run"
+        case .noNativeUIProbeRun: "No native UI probe result yet"
+        case .nativeUIApplicationMatrix: "Real Application Compatibility Matrix"
+        case .nativeUIApplicationMatrixSubtitle: "Combines evidence from the current bottle and isolated smoke sessions for Steam, browsers, office apps, and Lenovo App Store. Staying alive is observed; functional or rendered-content proof is required to pass."
+        case .nativeUIApplicationMatrixSummary: "%d apps · %d installed here · %d accepted · %d unverified"
+        case .nativeUIApplicationInstalled: "Installed"
+        case .nativeUIApplicationRecipeAvailable: "Recipe available"
+        case .nativeUIApplicationInstallerAvailable: "Installer available"
+        case .nativeUIApplicationUnavailable: "Needs preparation"
+        case .nativeUIApplicationNotRun: "Not run"
+        case .nativeUIApplicationObserved: "Launch only observed"
+        case .nativeUIApplicationPassed: "Accepted"
+        case .nativeUIApplicationFailed: "Launch failed"
+        case .nativeUIApplicationRun: "Run"
+        case .nativeUIApplicationRunDiagnostics: "Diagnostic launch"
+        case .nativeUIApplicationInstall: "Install"
+        case .nativeUIApplicationSelectInstaller: "Choose installer"
+        case .nativeUIApplicationPreset: "Native UI preset"
+        case .nativeUIApplicationNeedsInstall: "%@ is not installed or has no generated launcher"
+        case .noNativeUIApplicationMatrix: "No auditable real-application matrix yet"
+        case .runRepresentativeAcceptance: "Run Representative Acceptance"
+        case .runningRepresentativeAcceptance: "Running Steam, HoYoPlay, browser, and office acceptance"
+        case .representativeAcceptanceSummary: "Representative acceptance: %d/%d passed · %d pending"
+        case .representativeAcceptanceFinished: "Representative acceptance finished: %d/%d passed"
         case .result: "Result"
         case .exitCode: "Exit Code"
         case .log: "Log"
@@ -1962,6 +2269,7 @@ enum AppText {
         case .exportRecommendedProbeScript: "Export Probe Script"
         case .exportLogMaintenanceScript: "Export Maintenance Script"
         case .archiveCleanupLogs: "Archive Cleanup Logs"
+        case .cleanHistoricalLogs: "Clean Historical Failures"
         case .exportSoftwareAdaptationRunbook: "Export Runbook"
         case .exportSoftwareAdaptationQueueCSV: "Export Queue"
         case .exportSoftwareAdaptationProbeScript: "Export Probe Script"
@@ -1977,6 +2285,7 @@ enum AppText {
         case .exportHostEnvironmentCSV: "Export Environment"
         case .exportingLogMaintenanceScript: "Exporting log maintenance script"
         case .archivingCleanupLogs: "Archiving cleanup logs"
+        case .cleaningHistoricalLogs: "Cleaning historical failure logs"
         case .exportingLogIssueReport: "Exporting log triage report"
         case .exportingRecommendedProbeScript: "Exporting recommended probe script"
         case .exportingSoftwareAdaptationRunbook: "Exporting software adaptation runbook"
@@ -1991,6 +2300,7 @@ enum AppText {
         case .logMaintenanceScriptExported: "Exported log maintenance script: %@"
         case .cleanupLogsArchived: "Archived %d logs to %@"
         case .noCleanupLogsToArchive: "No logs need archiving"
+        case .historicalLogsCleaned: "Cleaned %d historical failure logs; recoverable from Archive"
         case .softwareAdaptationRunbookExported: "Exported software adaptation runbook: %@"
         case .softwareAdaptationQueueCSVExported: "Exported software adaptation queue: %@"
         case .softwareAdaptationProbeScriptExported: "Exported adaptation probe script: %@"
@@ -2205,6 +2515,8 @@ enum AppText {
         case .launching: "Launching %@"
         case .launchingWithDiagnostics: "Launching %@ with diagnostics"
         case .runningCommand: "Running command"
+        case .keepSystemAwake: "Keep system awake"
+        case .preventScreenLockHint: "Keeps display and system awake while the process starts."
         case .deleting: "Deleting %@"
         case .runningDiagnostics: "Running diagnostics"
         case .exportingCapabilityReport: "Exporting capability report"

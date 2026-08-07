@@ -20,6 +20,14 @@ public struct BottleService {
     public static let networkListManagerInprocSection = "Software\\\\Classes\\\\CLSID\\\\{DCB00C01-570F-4A9B-8D69-199FDBA5723B}\\\\InprocServer32"
     public static let networkListManagerWow64ClassSection = "Software\\\\Classes\\\\Wow6432Node\\\\CLSID\\\\{DCB00C01-570F-4A9B-8D69-199FDBA5723B}"
     public static let networkListManagerWow64InprocSection = "Software\\\\Classes\\\\Wow6432Node\\\\CLSID\\\\{DCB00C01-570F-4A9B-8D69-199FDBA5723B}\\\\InprocServer32"
+    public static let fileOpenDialogClassSection = "Software\\\\Classes\\\\CLSID\\\\{DC1C5A9C-E88A-4DDE-A5A1-60F82A20AEF7}"
+    public static let fileOpenDialogInprocSection = "Software\\\\Classes\\\\CLSID\\\\{DC1C5A9C-E88A-4DDE-A5A1-60F82A20AEF7}\\\\InprocServer32"
+    public static let fileOpenDialogWow64ClassSection = "Software\\\\Classes\\\\Wow6432Node\\\\CLSID\\\\{DC1C5A9C-E88A-4DDE-A5A1-60F82A20AEF7}"
+    public static let fileOpenDialogWow64InprocSection = "Software\\\\Classes\\\\Wow6432Node\\\\CLSID\\\\{DC1C5A9C-E88A-4DDE-A5A1-60F82A20AEF7}\\\\InprocServer32"
+    public static let fileSaveDialogClassSection = "Software\\\\Classes\\\\CLSID\\\\{C0B4E2F3-BA21-4773-8DBA-335EC946EB8B}"
+    public static let fileSaveDialogInprocSection = "Software\\\\Classes\\\\CLSID\\\\{C0B4E2F3-BA21-4773-8DBA-335EC946EB8B}\\\\InprocServer32"
+    public static let fileSaveDialogWow64ClassSection = "Software\\\\Classes\\\\Wow6432Node\\\\CLSID\\\\{C0B4E2F3-BA21-4773-8DBA-335EC946EB8B}"
+    public static let fileSaveDialogWow64InprocSection = "Software\\\\Classes\\\\Wow6432Node\\\\CLSID\\\\{C0B4E2F3-BA21-4773-8DBA-335EC946EB8B}\\\\InprocServer32"
     public static let lenovoAppStoreLauncherId = "lenovo-app-store-pcyyb"
     public static let tencentAppStoreLauncherId = "tencent-app-store-androws"
     public static let sevenZipFileManagerLauncherId = "7zip-file-manager"
@@ -35,11 +43,12 @@ public struct BottleService {
     public static let portableAppsBackupLauncherId = "portableapps-backup"
     public static let portableAppsBackupRestoreLauncherId = "portableapps-backup-restore"
     public static let portableAppsUpdaterLauncherId = "portableapps-updater"
-    public static let renderingRepairSentinelName = ".macwin-rendering-repair-v18"
+    public static let renderingRepairSentinelName = ".macwin-rendering-repair-v22"
     public static let commonAppDataRegistrySentinelName = ".macwin-common-appdata-registry-v1"
     public static let fontRegistrySection = "Software\\\\Microsoft\\\\Windows NT\\\\CurrentVersion\\\\Fonts"
     public static let currentVersionFontRegistrySection = "Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Fonts"
     public static let fontSubstitutesRegistrySection = "Software\\\\Microsoft\\\\Windows NT\\\\CurrentVersion\\\\FontSubstitutes"
+    public static let fontLinkRegistrySection = "Software\\\\Microsoft\\\\Windows NT\\\\CurrentVersion\\\\FontLink\\\\SystemLink"
     public static let wineFontReplacementsRegistrySection = "Software\\\\Wine\\\\Fonts\\\\Replacements"
     public static let windowMetricsRegistrySection = "Control Panel\\\\Desktop\\\\WindowMetrics"
     public static let serviceProviderInterfaceSection = "Software\\\\Classes\\\\Interface\\\\{6D5140C1-7436-11CE-8034-00AA006009FA}"
@@ -1532,8 +1541,10 @@ public struct BottleService {
             )
             repaired = Self.registryTextWithMMDeviceRepairs(repaired)
             repaired = Self.registryTextWithNetworkListManagerRepairs(repaired)
+            repaired = Self.registryTextWithFileDialogRepairs(repaired)
             repaired = Self.registryTextWithCryptoProviderRepairs(repaired)
             repaired = Self.registryTextWithFontRepairs(repaired)
+            repaired = Self.registryTextWithFontLinkRepairs(repaired)
             repaired = Self.registryTextWithCOMProxyRepairs(repaired)
             repaired = Self.registryTextWithTaskSchedulerRepairs(repaired)
             repaired = Self.registryTextWithWinRTActivationRepairs(repaired)
@@ -1821,6 +1832,77 @@ public struct BottleService {
         return changed ? output.joined(separator: "\n") : text
     }
 
+    private static func registryText(
+        _ text: String,
+        settingMultiString valueName: String,
+        values: [String],
+        inSection sectionName: String
+    ) -> String {
+        let encodedValues = values.map { registryEscapedString($0) }.joined(separator: "\\0")
+        let valueLine = "\"\(valueName)\"=str(7):\"\(encodedValues)\\0\""
+        var output: [String] = []
+        var isInTargetSection = false
+        var foundTargetSection = false
+        var wroteValueInTargetSection = false
+        var skipsReplacedValueContinuation = false
+        var changed = false
+
+        func finishTargetSectionIfNeeded() {
+            if isInTargetSection, !wroteValueInTargetSection {
+                output.append(valueLine)
+                wroteValueInTargetSection = true
+                changed = true
+            }
+        }
+
+        for line in text.components(separatedBy: .newlines) {
+            if skipsReplacedValueContinuation {
+                if Self.isRegistryContinuationLine(line) {
+                    skipsReplacedValueContinuation = line.hasSuffix("\\")
+                    changed = true
+                    continue
+                }
+                skipsReplacedValueContinuation = false
+            }
+
+            if let currentSection = registrySectionName(line) {
+                finishTargetSectionIfNeeded()
+                isInTargetSection = currentSection == sectionName
+                if isInTargetSection {
+                    foundTargetSection = true
+                    wroteValueInTargetSection = false
+                }
+                output.append(line)
+                continue
+            }
+
+            if isInTargetSection, line.hasPrefix("\"\(valueName)\"=") {
+                output.append(valueLine)
+                wroteValueInTargetSection = true
+                if line != valueLine {
+                    changed = true
+                }
+                skipsReplacedValueContinuation = line.hasSuffix("\\")
+                continue
+            }
+
+            output.append(line)
+        }
+
+        finishTargetSectionIfNeeded()
+
+        if !foundTargetSection {
+            if output.last?.isEmpty == false {
+                output.append("")
+            }
+            output.append("[\(sectionName)]")
+            output.append(valueLine)
+            changed = true
+        }
+
+        return changed ? output.joined(separator: "\n") : text
+    }
+
     public static func registryTextWithFontRepairs(_ text: String) -> String {
         var repaired = text
         for (valueName, value) in Self.fontRegistryValues {
@@ -1862,6 +1944,17 @@ public struct BottleService {
             )
         }
         return repaired
+    }
+
+    public static func registryTextWithFontLinkRepairs(_ text: String) -> String {
+        Self.fontLinkValues.reduce(text) { repaired, entry in
+            Self.registryText(
+                repaired,
+                settingMultiString: entry.valueName,
+                values: entry.values,
+                inSection: Self.fontLinkRegistrySection
+            )
+        }
     }
 
     public static func registryTextWithWindowMetricsFontRepairs(_ text: String) -> String {
@@ -2351,6 +2444,56 @@ public struct BottleService {
         return repaired
     }
 
+    public static func registryTextWithFileDialogRepairs(_ text: String) -> String {
+        let registrations: [(classSection: String, inprocSection: String, className: String, modulePath: String)] = [
+            (
+                Self.fileOpenDialogClassSection,
+                Self.fileOpenDialogInprocSection,
+                "File Open Dialog",
+                "C:\\windows\\system32\\comdlg32.dll"
+            ),
+            (
+                Self.fileOpenDialogWow64ClassSection,
+                Self.fileOpenDialogWow64InprocSection,
+                "File Open Dialog",
+                "C:\\windows\\syswow64\\comdlg32.dll"
+            ),
+            (
+                Self.fileSaveDialogClassSection,
+                Self.fileSaveDialogInprocSection,
+                "File Save Dialog",
+                "C:\\windows\\system32\\comdlg32.dll"
+            ),
+            (
+                Self.fileSaveDialogWow64ClassSection,
+                Self.fileSaveDialogWow64InprocSection,
+                "File Save Dialog",
+                "C:\\windows\\syswow64\\comdlg32.dll"
+            )
+        ]
+
+        return registrations.reduce(text) { repaired, registration in
+            var result = Self.registryText(
+                repaired,
+                settingString: nil,
+                value: registration.className,
+                inSection: registration.classSection
+            )
+            result = Self.registryText(
+                result,
+                settingString: nil,
+                value: registration.modulePath,
+                inSection: registration.inprocSection
+            )
+            return Self.registryText(
+                result,
+                settingString: "ThreadingModel",
+                value: "Apartment",
+                inSection: registration.inprocSection
+            )
+        }
+    }
+
     public static func registryTextWithCryptoProviderRepairs(_ text: String) -> String {
         var repaired = text
         let providers: [(name: String, type: UInt32, typeSection: String, typeName: String)] = [
@@ -2537,6 +2680,21 @@ public struct BottleService {
             "Arial Unicode MS",
             "sans-serif"
         ]
+        let arialBlackFallbackFamilies = [
+            "Arial Black",
+            "Arial",
+            "Tahoma",
+            "PingFang SC",
+            "Hiragino Sans GB",
+            "Heiti SC",
+            "Noto Sans SC",
+            "Noto Sans CJK SC",
+            "Source Han Sans SC",
+            "SimHei",
+            "SimSun",
+            "Arial Unicode MS",
+            "sans-serif"
+        ]
         let cjkFallbackFamilies = [
             "PingFang SC",
             "Hiragino Sans GB",
@@ -2559,6 +2717,7 @@ public struct BottleService {
             "Segoe UI",
             "Microsoft YaHei UI",
             "Microsoft YaHei",
+            "Arial Black",
             "Arial",
             "Tahoma",
             "Inter",
@@ -2609,6 +2768,8 @@ public struct BottleService {
             let fallbackFamilies: [String]
             if cjkAliasFamilies.contains(family) {
                 fallbackFamilies = cjkFallbackFamilies
+            } else if family == "Arial Black" {
+                fallbackFamilies = arialBlackFallbackFamilies
             } else if family == "Arial" {
                 fallbackFamilies = arialFallbackFamilies
             } else {
@@ -2696,6 +2857,18 @@ public struct BottleService {
         for (key, value) in preset.environment(engine: engine) {
             updated.envOverrides[key] = value
         }
+        updated.updatedAt = Date()
+        try saveBottle(updated)
+        return updated
+    }
+
+    @discardableResult
+    public func applyNativeUIIntegrationPreset(
+        _ preset: NativeUIIntegrationPreset,
+        to bottle: BottleManifest
+    ) throws -> BottleManifest {
+        var updated = bottle
+        updated.envOverrides[NativeUIIntegrationPreset.environmentKey] = preset.environmentValue
         updated.updatedAt = Date()
         try saveBottle(updated)
         return updated
@@ -2823,6 +2996,7 @@ public struct BottleService {
 
     public static func highPerformanceEnvOverrides(engine: EngineManifest) -> [String: String] {
         var env = GraphicsPreset.wineD3DVulkan.environment(engine: engine)
+        env[NativeUIIntegrationPreset.environmentKey] = NativeUIIntegrationPreset.automatic.environmentValue
         env["WINEDEBUG"] = "-all"
         return env
     }
@@ -2991,6 +3165,7 @@ public struct BottleService {
         "wow64.dll",
         "wow64cpu.dll",
         "wow64win.dll",
+        "dwrite.dll",
         "vulkan-1.dll",
         "winevulkan.dll",
         "opengl32.dll",
@@ -3034,6 +3209,7 @@ public struct BottleService {
         ("credui", "credui.dll"),
         ("cryptui", "cryptui.dll"),
         ("dcomp", "dcomp.dll"),
+        ("dwrite", "dwrite.dll"),
         ("esent", "esent.dll"),
         ("iphlpapi", "iphlpapi.dll"),
         ("kerberos", "kerberos.dll"),
@@ -3217,8 +3393,20 @@ public struct BottleService {
     private static let obsoleteFontSubstituteValueNames: Set<String> = [
         "PingFang SC",
         "Arial",
+        "Arial Black",
         "Arial Bold",
         "Tahoma"
+    ]
+
+    private static let fontLinkValues: [(valueName: String, values: [String])] = [
+        ("Arial", ["Noto Sans SC (TrueType).otf"]),
+        ("Arial Black", ["Noto Sans SC (TrueType).otf"]),
+        ("Arial Bold", ["Noto Sans SC Bold (TrueType).otf", "Noto Sans SC (TrueType).otf"]),
+        ("Segoe UI", ["Noto Sans SC (TrueType).otf"]),
+        ("Segoe UI Bold", ["Noto Sans SC Bold (TrueType).otf", "Noto Sans SC (TrueType).otf"]),
+        ("Tahoma", ["Noto Sans SC (TrueType).otf"]),
+        ("Tahoma Bold", ["Noto Sans SC Bold (TrueType).otf", "Noto Sans SC (TrueType).otf"]),
+        ("System", ["Noto Sans SC (TrueType).otf"])
     ]
 
     private static let windowMetricsFontValueNames = [

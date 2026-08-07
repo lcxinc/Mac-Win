@@ -5,6 +5,7 @@ public struct CapabilityReport: Codable, Equatable, Sendable {
     public var generatedAt: Date
     public var rootPath: String
     public var hostEnvironment: HostEnvironmentReport?
+    public var hostGUISession: HostGUISessionReport?
     public var engines: [CapabilityEngineReport]
     public var bottles: [CapabilityBottleReport]
     public var bottleHealth: BottleHealthAuditReport
@@ -29,12 +30,17 @@ public struct CapabilityReport: Codable, Equatable, Sendable {
     public var runtimeProcesses: RuntimeProcessAuditReport?
     public var runtimeApplications: RuntimeApplicationAuditReport?
     public var diagnostics: CapabilityDiagnosticsReport?
+    public var nativeUIBridgeHealth: NativeUIBridgeHealthReport?
+    public var nativeUIProbeArtifacts: NativeUIProbeArtifactReport?
+    public var nativeUIProbeHistory: NativeUIProbeHistoryReport?
+    public var nativeUIApplicationMatrix: NativeUIApplicationMatrixReport?
 
     public init(
         schemaVersion: Int = 1,
         generatedAt: Date,
         rootPath: String,
         hostEnvironment: HostEnvironmentReport? = nil,
+        hostGUISession: HostGUISessionReport? = nil,
         engines: [CapabilityEngineReport],
         bottles: [CapabilityBottleReport],
         bottleHealth: BottleHealthAuditReport,
@@ -58,12 +64,17 @@ public struct CapabilityReport: Codable, Equatable, Sendable {
         logs: CapabilityLogReport,
         runtimeProcesses: RuntimeProcessAuditReport? = nil,
         runtimeApplications: RuntimeApplicationAuditReport? = nil,
-        diagnostics: CapabilityDiagnosticsReport?
+        diagnostics: CapabilityDiagnosticsReport?,
+        nativeUIBridgeHealth: NativeUIBridgeHealthReport? = nil,
+        nativeUIProbeArtifacts: NativeUIProbeArtifactReport? = nil,
+        nativeUIProbeHistory: NativeUIProbeHistoryReport? = nil,
+        nativeUIApplicationMatrix: NativeUIApplicationMatrixReport? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.generatedAt = generatedAt
         self.rootPath = rootPath
         self.hostEnvironment = hostEnvironment
+        self.hostGUISession = hostGUISession
         self.engines = engines
         self.bottles = bottles
         self.bottleHealth = bottleHealth
@@ -88,6 +99,10 @@ public struct CapabilityReport: Codable, Equatable, Sendable {
         self.runtimeProcesses = runtimeProcesses
         self.runtimeApplications = runtimeApplications
         self.diagnostics = diagnostics
+        self.nativeUIBridgeHealth = nativeUIBridgeHealth
+        self.nativeUIProbeArtifacts = nativeUIProbeArtifacts
+        self.nativeUIProbeHistory = nativeUIProbeHistory
+        self.nativeUIApplicationMatrix = nativeUIApplicationMatrix
     }
 }
 
@@ -206,6 +221,11 @@ public struct CapabilityReportService {
     public var runtimeApplicationAuditService: RuntimeApplicationAuditService
     public var bottleHealthAuditService: BottleHealthAuditService
     public var hostEnvironmentService: HostEnvironmentService
+    public var hostGUISessionService: HostGUISessionService
+    public var nativeUIBridgeHealthService: NativeUIBridgeHealthService
+    public var nativeUIProbeService: NativeUIProbeService
+    public var nativeUIProbeHistoryService: NativeUIProbeHistoryService
+    public var nativeUIApplicationMatrixService: NativeUIApplicationMatrixService
 
     public init(
         paths: MacWinPaths = MacWinPaths(),
@@ -228,7 +248,12 @@ public struct CapabilityReportService {
         runtimeProcessSnapshotService: RuntimeProcessSnapshotService? = nil,
         runtimeApplicationAuditService: RuntimeApplicationAuditService = RuntimeApplicationAuditService(),
         bottleHealthAuditService: BottleHealthAuditService? = nil,
-        hostEnvironmentService: HostEnvironmentService? = nil
+        hostEnvironmentService: HostEnvironmentService? = nil,
+        hostGUISessionService: HostGUISessionService = HostGUISessionService(),
+        nativeUIBridgeHealthService: NativeUIBridgeHealthService? = nil,
+        nativeUIProbeService: NativeUIProbeService? = nil,
+        nativeUIProbeHistoryService: NativeUIProbeHistoryService? = nil,
+        nativeUIApplicationMatrixService: NativeUIApplicationMatrixService? = nil
     ) {
         self.paths = paths
         self.fileManager = fileManager
@@ -252,6 +277,12 @@ public struct CapabilityReportService {
         self.runtimeApplicationAuditService = runtimeApplicationAuditService
         self.bottleHealthAuditService = bottleHealthAuditService ?? BottleHealthAuditService(paths: paths, fileManager: fileManager)
         self.hostEnvironmentService = hostEnvironmentService ?? HostEnvironmentService(paths: paths, fileManager: fileManager)
+        self.hostGUISessionService = hostGUISessionService
+        self.nativeUIBridgeHealthService = nativeUIBridgeHealthService
+            ?? NativeUIBridgeHealthService(fileManager: fileManager)
+        self.nativeUIProbeService = nativeUIProbeService ?? NativeUIProbeService(paths: paths, fileManager: fileManager)
+        self.nativeUIProbeHistoryService = nativeUIProbeHistoryService ?? NativeUIProbeHistoryService(paths: paths, fileManager: fileManager)
+        self.nativeUIApplicationMatrixService = nativeUIApplicationMatrixService ?? NativeUIApplicationMatrixService(paths: paths, fileManager: fileManager)
     }
 
     public func makeReport(
@@ -273,6 +304,10 @@ public struct CapabilityReportService {
             bottles: bottles
         )
         let softwareSmokeRuns = try? softwareSmokeRunReportService.summary(limit: logLimit)
+        // The application matrix only needs the recent evidence already
+        // loaded for the capability report. Re-reading every historical smoke
+        // directory makes startup scale with the lifetime of the installation.
+        let nativeUIApplicationSmokeReports = softwareSmokeRuns?.reports ?? []
         let logs = SoftwareSmokeEvidenceResolver.currentLogReport(
             logReport(recentLogs),
             smokeReports: softwareSmokeRuns?.reports ?? []
@@ -281,6 +316,19 @@ public struct CapabilityReportService {
         let installerAssets = installerAssetService.report(recipes: recipes)
         let installerDownloadHistory = installerDownloadHistoryService.report(limit: logLimit)
         let diagnostics = diagnosticReport.map(diagnosticsReport)
+        let nativeUIBridgeHealth = nativeUIBridgeHealthService.report(
+            engines: engines,
+            generatedAt: generatedAt
+        )
+        let nativeUIProbeArtifacts = nativeUIProbeService.artifactReport(generatedAt: generatedAt)
+        let nativeUIProbeHistory = nativeUIProbeHistoryService.report(limit: logLimit)
+        let nativeUIApplicationMatrix = nativeUIApplicationMatrixService.report(
+            bottles: bottles,
+            recipes: recipes,
+            launchHistory: launchHistory,
+            smokeReports: nativeUIApplicationSmokeReports,
+            generatedAt: generatedAt
+        )
         let testCoverage = TestCoverageReport.make(assetReport: testAssets, runHistory: testRunHistory)
         let testExecutionPlan = testExecutionPlanService.makePlan(
             assetReport: testAssets,
@@ -319,6 +367,7 @@ public struct CapabilityReportService {
                 recipes: recipes,
                 recentLogCount: recentLogs.count
             ),
+            hostGUISession: hostGUISessionService.report(generatedAt: generatedAt),
             engines: engines.map(engineReport),
             bottles: bottles.map(bottleReport),
             bottleHealth: bottleHealthAuditService.report(bottles: bottles),
@@ -350,7 +399,11 @@ public struct CapabilityReportService {
             logs: logs,
             runtimeProcesses: runtimeProcessAuditService.makeReport(),
             runtimeApplications: runtimeApplicationAuditService.makeReport(),
-            diagnostics: diagnostics
+            diagnostics: diagnostics,
+            nativeUIBridgeHealth: nativeUIBridgeHealth,
+            nativeUIProbeArtifacts: nativeUIProbeArtifacts,
+            nativeUIProbeHistory: nativeUIProbeHistory,
+            nativeUIApplicationMatrix: nativeUIApplicationMatrix
         )
     }
 

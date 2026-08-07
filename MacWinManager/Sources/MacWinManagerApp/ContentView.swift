@@ -284,6 +284,7 @@ struct UnifiedTitleBar: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .contentShape(Rectangle())
                 .accessibilityHidden(true)
+                .zIndex(-1)
 
             HStack(spacing: 0) {
                 HStack(spacing: 9) {
@@ -1115,6 +1116,10 @@ struct BottleDetailView: View {
                         GraphicsPresetSelector(bottle: bottle)
                     }
 
+                    SectionPanel(title: store.text(.nativeUIIntegration)) {
+                        NativeUIIntegrationSelector(bottle: bottle)
+                    }
+
                     SectionPanel(title: store.text(.runCommand)) {
                         TextField(store.text(.executablePlaceholder), text: $command)
                             .textFieldStyle(.roundedBorder)
@@ -1162,6 +1167,18 @@ struct BottleDetailView: View {
                                 Task { await store.scanInstalledApps(in: bottle) }
                             } label: {
                                 Label(store.text(.scanInstalledApps), systemImage: "sparkle.magnifyingglass")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            Button {
+                                Task { await store.stopBottleProcesses(bottle) }
+                            } label: {
+                                Label(store.text(.stopBottleProcesses), systemImage: "stop.circle")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            Button {
+                                Task { await store.restartBottle(bottle) }
+                            } label: {
+                                Label(store.text(.restartBottle), systemImage: "arrow.clockwise.circle")
                                     .frame(maxWidth: .infinity)
                             }
                             Button(role: .destructive) {
@@ -1291,6 +1308,47 @@ struct GraphicsPresetSelector: View {
     }
 }
 
+struct NativeUIIntegrationSelector: View {
+    @EnvironmentObject private var store: MacWinStore
+    var bottle: BottleManifest
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(NativeUIIntegrationPreset.allCases, id: \.self) { preset in
+                let selected = store.nativeUIIntegrationPreset(for: currentBottle) == preset
+                Button {
+                    Task { await store.applyNativeUIIntegrationPreset(preset, to: currentBottle) }
+                } label: {
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: selected ? "largecircle.fill.circle" : "circle")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(selected ? Color.accentColor : Color.secondary)
+                            .frame(width: 20, height: 20)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(AppText.nativeUIIntegrationPresetName(preset, language: store.language))
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.primary)
+                            Text(AppText.nativeUIIntegrationPresetHelp(preset, language: store.language))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.vertical, 4)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(selected)
+            }
+        }
+    }
+
+    private var currentBottle: BottleManifest {
+        store.bottles.first(where: { $0.id == bottle.id }) ?? bottle
+    }
+}
+
 struct DiagnosticsView: View {
     @EnvironmentObject private var store: MacWinStore
 
@@ -1335,8 +1393,10 @@ struct DiagnosticsView: View {
             .padding(.bottom, 12)
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
+                LazyVStack(alignment: .leading, spacing: 14) {
                     SupportTriageSummarySection()
+                    NativeUIProbeSection()
+                    NativeUIApplicationMatrixSection()
                     TestAssetSummarySection()
                     BottleHealthSummarySection()
                     RuntimeProcessSummarySection()
@@ -1404,6 +1464,9 @@ struct DiagnosticsView: View {
                 .padding(.bottom, 24)
             }
         }
+        .onAppear {
+            store.refreshDiagnosticsPage()
+        }
     }
 
     private func diagnosticDetail(_ item: DiagnosticItem) -> String {
@@ -1425,6 +1488,489 @@ struct DiagnosticsView: View {
             return "通过 \(passed)/\(items.count)" + (failed > 0 ? " · 失败 \(failed)" : "") + (skipped > 0 ? " · 跳过 \(skipped)" : "")
         }
         return "passed \(passed)/\(items.count)" + (failed > 0 ? " · failed \(failed)" : "") + (skipped > 0 ? " · skipped \(skipped)" : "")
+    }
+}
+
+struct NativeUIProbeSection: View {
+    @EnvironmentObject private var store: MacWinStore
+    @State private var architecture: WindowsExecutableArchitecture = .x86_64
+
+    private let modeColumns = [GridItem(.adaptive(minimum: 190), spacing: 8)]
+
+    var body: some View {
+        SectionPanel(title: store.text(.nativeUIProbe)) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(store.text(.nativeUIProbeSubtitle))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack(spacing: 10) {
+                    Image(systemName: sessionIcon)
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(sessionColor)
+                        .frame(width: 22)
+                    Text(sessionStatusText)
+                        .font(.subheadline.weight(.semibold))
+                        Spacer(minLength: 0)
+                    }
+
+                if let bridge = selectedBridgeEngineReport {
+                    HStack(spacing: 10) {
+                        Image(systemName: bridge.isReady ? "checkmark.shield.fill" : "exclamationmark.shield.fill")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(bridge.isReady ? .green : .orange)
+                            .frame(width: 22)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(bridge.engineName)
+                                .font(.subheadline.weight(.semibold))
+                            Text(store.text(
+                                .nativeUIBridgeStatus,
+                                bridgeStatus(bridge.hostComponent.isReady),
+                                bridgeStatus(bridge.architecture(.x86_64)?.isReady),
+                                bridgeStatus(bridge.architecture(.i386)?.isReady)
+                            ))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                }
+
+                HStack(spacing: 10) {
+                    Image(systemName: artifactIcon)
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(artifactColor)
+                        .frame(width: 22)
+                    Text(store.text(
+                        .nativeUIProbeAssets,
+                        store.nativeUIProbeArtifactReport.x86_64Path == nil ? store.text(.nativeUIProbeMissingShort) : store.text(.nativeUIProbeAvailable),
+                        store.nativeUIProbeArtifactReport.i386Path == nil ? store.text(.nativeUIProbeMissingShort) : store.text(.nativeUIProbeAvailable)
+                    ))
+                    .font(.subheadline.weight(.semibold))
+                    Spacer(minLength: 0)
+                    Picker("Architecture", selection: $architecture) {
+                        Text("x86_64").tag(WindowsExecutableArchitecture.x86_64)
+                        Text("i686 / WoW64").tag(WindowsExecutableArchitecture.i386)
+                    }
+                    .labelsHidden()
+                    .frame(width: 145)
+                    .accessibilityLabel(store.text(.nativeUIProbeArchitecture))
+                    .accessibilityIdentifier("native-ui-probe-architecture")
+                    Button {
+                        store.refreshNativeUIProbeState()
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .buttonStyle(.borderless)
+                    .help(store.text(.refreshLogs))
+                    .accessibilityLabel(store.text(.refreshLogs))
+                    .accessibilityIdentifier("native-ui-probe-refresh")
+                }
+
+                if let bottle = store.selectedBottle ?? store.defaultPerformanceBottle {
+                    HStack(spacing: 10) {
+                        Label(store.text(.nativeUIProbeCurrentBottle), systemImage: "shippingbox")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Picker(store.text(.nativeUIProbeCurrentBottle), selection: Binding(
+                            get: { store.selectedBottleId ?? bottle.id },
+                            set: { store.selectedBottleId = $0 }
+                        )) {
+                            ForEach(store.bottles) { candidate in
+                                Text(candidate.name).tag(candidate.id)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(maxWidth: 250)
+                        Spacer(minLength: 0)
+                        Text(AppText.nativeUIIntegrationPresetName(
+                            NativeUIIntegrationPreset.current(in: bottle),
+                            language: store.language
+                        ))
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    }
+                }
+
+                if !store.nativeUIProbeArtifactReport.isReady {
+                    Label(store.text(.nativeUIProbeMissing), systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                } else {
+                    LazyVGrid(columns: modeColumns, alignment: .leading, spacing: 8) {
+                        ForEach(NativeUIProbeMode.allCases) { mode in
+                            let modeName = AppText.nativeUIProbeModeName(mode, language: store.language)
+                            Button {
+                                Task { await store.runNativeUIProbe(mode: mode, architecture: architecture) }
+                            } label: {
+                                Label(
+                                    modeName,
+                                    systemImage: mode.isModern ? "macwindow" : "rectangle.and.paperclip"
+                                )
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .controlSize(.small)
+                            .disabled(!store.canRunNativeUIProbe(mode: mode, architecture: architecture))
+                            .accessibilityLabel(modeName)
+                            .accessibilityIdentifier("native-ui-probe-\(mode.rawValue)")
+                        }
+                    }
+                    .accessibilityElement(children: .contain)
+                }
+
+                if let report = store.nativeUIProbeLastRunReport {
+                    Divider()
+                    HStack(spacing: 8) {
+                        Image(systemName: runIcon(report.status))
+                            .foregroundStyle(runColor(report.status))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(AppText.nativeUIProbeModeName(report.mode, language: store.language))
+                                .font(.caption.weight(.semibold))
+                            Text("\(report.bottleName) · \(report.architecture.rawValue) · \(report.nativeUIPreset.rawValue)")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 0)
+                        Text(report.endedAt, style: .relative)
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                        Button {
+                            store.openNativeUIProbeLog(report)
+                        } label: {
+                            Image(systemName: "doc.text")
+                        }
+                        .buttonStyle(.borderless)
+                        .help(store.text(.openLogFile))
+                    }
+                } else {
+                    Label(store.text(.noNativeUIProbeRun), systemImage: "clock.badge.questionmark")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("native-ui-probe-section")
+    }
+
+    private var artifactIcon: String {
+        store.nativeUIProbeArtifactReport.isReady ? "checkmark.seal.fill" : "exclamationmark.triangle.fill"
+    }
+
+    private var sessionStatusText: String {
+        switch store.hostGUISessionReport.state {
+        case .unlocked: store.text(.nativeUIProbeSessionUnlocked)
+        case .locked: store.text(.nativeUIProbeSessionLocked)
+        case .unavailable: store.text(.nativeUIProbeSessionUnavailable)
+        }
+    }
+
+    private var sessionIcon: String {
+        switch store.hostGUISessionReport.state {
+        case .unlocked: "lock.open.fill"
+        case .locked: "lock.fill"
+        case .unavailable: "questionmark.diamond.fill"
+        }
+    }
+
+    private var sessionColor: Color {
+        switch store.hostGUISessionReport.state {
+        case .unlocked: .green
+        case .locked: .orange
+        case .unavailable: .secondary
+        }
+    }
+
+    private var selectedBridgeEngineReport: NativeUIBridgeEngineReport? {
+        guard let bottle = store.selectedBottle ?? store.defaultPerformanceBottle else { return nil }
+        return store.nativeUIBridgeHealthReport.engines.first { $0.engineId == bottle.engineId }
+    }
+
+    private func bridgeStatus(_ ready: Bool?) -> String {
+        guard let ready else { return store.text(.nativeUIBridgeUnavailable) }
+        return store.text(ready ? .nativeUIBridgeReady : .nativeUIBridgeIncomplete)
+    }
+
+    private var artifactColor: Color {
+        store.nativeUIProbeArtifactReport.isReady ? .green : .orange
+    }
+
+    private func runIcon(_ status: NativeUIProbeRunStatus) -> String {
+        switch status {
+        case .passed: "checkmark.circle.fill"
+        case .cancelled: "slash.circle"
+        case .failed: "xmark.octagon.fill"
+        }
+    }
+
+    private func runColor(_ status: NativeUIProbeRunStatus) -> Color {
+        switch status {
+        case .passed: .green
+        case .cancelled: .orange
+        case .failed: .red
+        }
+    }
+}
+
+struct NativeUIApplicationMatrixSection: View {
+    @EnvironmentObject private var store: MacWinStore
+
+    var body: some View {
+        let report = store.nativeUIApplicationMatrixReport
+        SectionPanel(title: store.text(.nativeUIApplicationMatrix)) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(store.text(.nativeUIApplicationMatrixSubtitle))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack(spacing: 10) {
+                    Image(systemName: report.failedCount > 0 ? "exclamationmark.triangle.fill" : "checkmark.seal.fill")
+                        .foregroundStyle(report.failedCount > 0 ? .orange : .green)
+                    Text(store.text(
+                        .nativeUIApplicationMatrixSummary,
+                        report.entryCount,
+                        report.installedCount,
+                        report.passedCount,
+                        report.unverifiedCount
+                    ))
+                    .font(.subheadline.weight(.semibold))
+                    Spacer(minLength: 0)
+                    Button {
+                        Task { await store.runRepresentativeSoftwareAcceptance() }
+                    } label: {
+                        Label(store.text(.runRepresentativeAcceptance), systemImage: "play.circle")
+                    }
+                    .controlSize(.small)
+                }
+
+                if store.representativeAcceptanceReport.targetCount > 0 {
+                    RepresentativeAcceptanceSummary(report: store.representativeAcceptanceReport)
+                }
+
+                if report.entries.isEmpty {
+                    Label(store.text(.noNativeUIApplicationMatrix), systemImage: "shippingbox")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ForEach(NativeUIApplicationMatrixFamily.allCases) { family in
+                            let entries = report.entries.filter { $0.family == family }
+                            if !entries.isEmpty {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text(AppText.nativeUIApplicationFamilyName(family, language: store.language))
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(.secondary)
+                                    ForEach(entries) { entry in
+                                        NativeUIApplicationMatrixRow(entry: entry)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct NativeUIApplicationMatrixRow: View {
+    @EnvironmentObject private var store: MacWinStore
+    var entry: NativeUIApplicationMatrixEntry
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: iconName)
+                    .foregroundStyle(iconColor)
+                    .frame(width: 20)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(entry.name)
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(1)
+                    Text("\(entry.publisher) · \(entry.category)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    if let exePath = entry.exePath {
+                        Text(exePath)
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    } else {
+                        Text(entry.availabilityDetail)
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 8)
+                VStack(alignment: .trailing, spacing: 5) {
+                    HStack(spacing: 6) {
+                        MatrixBadge(
+                            title: AppText.nativeUIApplicationAvailabilityName(entry.availability, language: store.language),
+                            color: availabilityColor
+                        )
+                        MatrixBadge(
+                            title: AppText.nativeUIApplicationEvidenceName(entry.launchEvidence, language: store.language),
+                            color: evidenceColor
+                        )
+                    }
+                    if let bottleName = entry.bottleName {
+                        Text(bottleName)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+            }
+
+            HStack(spacing: 8) {
+                if let currentPreset = entry.currentPreset,
+                   let bottleId = entry.bottleId,
+                   let bottle = store.bottles.first(where: { $0.id == bottleId }) {
+                    Menu {
+                        ForEach(entry.presetOptions, id: \.self) { preset in
+                            Button {
+                                Task { await store.applyNativeUIIntegrationPreset(preset, to: bottle) }
+                            } label: {
+                                Label(
+                                    AppText.nativeUIIntegrationPresetName(preset, language: store.language),
+                                    systemImage: preset == currentPreset ? "checkmark" : ""
+                                )
+                            }
+                        }
+                    } label: {
+                        Label(
+                            "\(store.text(.nativeUIApplicationPreset)): \(AppText.nativeUIIntegrationPresetName(currentPreset, language: store.language))",
+                            systemImage: "slider.horizontal.3"
+                        )
+                    }
+                    .menuStyle(.borderlessButton)
+                    .controlSize(.small)
+                }
+                if entry.launcherId != nil {
+                    Button {
+                        Task { await store.runNativeUIApplication(entry) }
+                    } label: {
+                        Label(store.text(.nativeUIApplicationRun), systemImage: "play.fill")
+                    }
+                    .controlSize(.small)
+                    Button {
+                        Task { await store.runNativeUIApplication(entry, withDiagnostics: true) }
+                    } label: {
+                        Label(store.text(.nativeUIApplicationRunDiagnostics), systemImage: "stethoscope")
+                    }
+                    .controlSize(.small)
+                } else if let recipeId = entry.recipeId,
+                          entry.recipeAvailable,
+                          let recipe = store.recipes.first(where: { $0.id == recipeId }) {
+                    if recipe.installer.mode == .localFile, !entry.installerAvailable {
+                        Button {
+                            store.selection = .market
+                        } label: {
+                            Label(store.text(.nativeUIApplicationSelectInstaller), systemImage: "folder")
+                        }
+                        .controlSize(.small)
+                    } else {
+                        Button {
+                            Task { await store.install(recipe: recipe) }
+                        } label: {
+                            Label(store.text(.nativeUIApplicationInstall), systemImage: "arrow.down.circle")
+                        }
+                        .controlSize(.small)
+                    }
+                }
+                if let logPath = entry.latestLaunchLogPath {
+                    Button {
+                        NSWorkspace.shared.open(URL(fileURLWithPath: logPath))
+                    } label: {
+                        Image(systemName: "doc.text")
+                    }
+                    .buttonStyle(.borderless)
+                    .help(store.text(.openLogFile))
+                }
+                Spacer(minLength: 0)
+                if let latestLaunchAt = entry.latestLaunchAt {
+                    Text(latestLaunchAt, style: .relative)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+
+            if entry.launchEvidence != .notRun || entry.evidenceDetail == "not-run-smoke-session-locked" {
+                Label(
+                    AppText.nativeUIApplicationEvidenceDetail(entry.evidenceDetail, language: store.language),
+                    systemImage: entry.evidenceDetail == "not-run-smoke-session-locked"
+                        ? "lock"
+                        : (entry.launchEvidence == .passed ? "checkmark.seal" : "eye")
+                )
+                .font(.caption2)
+                .foregroundStyle(entry.launchEvidence == .failed ? Color.red : Color.secondary)
+                .lineLimit(2)
+            }
+
+            if !entry.warnings.isEmpty {
+                Label(entry.warnings.first ?? "", systemImage: "exclamationmark.triangle")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .lineLimit(2)
+            }
+        }
+        .padding(10)
+        .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var iconName: String {
+        switch entry.family {
+        case .hoyoPlay: "gamecontroller.fill"
+        case .steam: "gamecontroller"
+        case .browser: "safari"
+        case .office: "doc.richtext"
+        case .lenovoAppStore: "bag"
+        }
+    }
+
+    private var iconColor: Color {
+        switch entry.launchEvidence {
+        case .passed: .green
+        case .failed: .red
+        case .observed: .orange
+        case .notRun: .blue
+        }
+    }
+
+    private var availabilityColor: Color {
+        switch entry.availability {
+        case .installed: .green
+        case .recipeAvailable: .blue
+        case .installerAvailable: .orange
+        case .unavailable: .secondary
+        }
+    }
+
+    private var evidenceColor: Color {
+        switch entry.launchEvidence {
+        case .passed: .green
+        case .failed: .red
+        case .observed: .orange
+        case .notRun: .secondary
+        }
+    }
+}
+
+struct MatrixBadge: View {
+    var title: String
+    var color: Color
+
+    var body: some View {
+        Text(title)
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(color)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(color.opacity(0.12), in: Capsule())
     }
 }
 
@@ -1638,7 +2184,7 @@ struct DiagnosticArtifactIndexSection: View {
 
                     LazyVGrid(columns: metricColumns, spacing: 8) {
                         DiagnosticArtifactMetric(kind: .log, systemImage: "doc.text", tint: .blue)
-                        DiagnosticArtifactMetric(kind: .report, systemImage: "doc.richtext", tint: .purple)
+                        DiagnosticArtifactMetric(kind: .report, systemImage: "doc.richtext", tint: .indigo)
                         DiagnosticArtifactMetric(kind: .table, systemImage: "tablecells", tint: .green)
                         DiagnosticArtifactMetric(kind: .script, systemImage: "terminal", tint: .orange)
                         DiagnosticArtifactMetric(kind: .bundle, systemImage: "shippingbox", tint: .teal)
@@ -1652,9 +2198,6 @@ struct DiagnosticArtifactIndexSection: View {
                     }
                 }
             }
-        }
-        .onAppear {
-            store.refreshDiagnosticArtifacts()
         }
     }
 }
@@ -1755,7 +2298,7 @@ struct DiagnosticArtifactRow: View {
     private var tint: Color {
         switch artifact.kind {
         case .log: .blue
-        case .report: .purple
+        case .report: .indigo
         case .table: .green
         case .script: .orange
         case .bundle: .teal
@@ -2063,7 +2606,7 @@ struct BottleHealthSummarySection: View {
                         title: store.text(.staleLaunchers),
                         value: "\(report.staleLauncherCount)",
                         systemImage: "text.badge.xmark",
-                        tint: .purple
+                        tint: .teal
                     )
                     SoftwarePlanMetric(
                         title: store.text(.incompleteProfiles),
@@ -2411,7 +2954,7 @@ struct RuntimeProcessEntryRow: View {
         case .lenovoAppStore:
             .green
         case .windowsExecutable:
-            .purple
+            .mint
         case .wineHost:
             .secondary
         }
@@ -2502,7 +3045,7 @@ struct TestCoverageSummarySection: View {
                             title: store.text(.coverageMissing),
                             value: "\(report.missingRequiredExecutableCount)",
                             systemImage: "tray.and.arrow.down.fill",
-                            tint: .purple
+                            tint: .orange
                         )
                         SoftwarePlanMetric(
                             title: store.text(.verifiedCategories),
@@ -3219,10 +3762,10 @@ struct InstallerAssetRow: View {
                     if item.requiresWin32Installer {
                         Text(store.text(.requiresWin32))
                             .font(.caption.weight(.semibold))
-                            .foregroundStyle(.purple)
+                                .foregroundStyle(.orange)
                             .padding(.horizontal, 7)
                             .padding(.vertical, 2)
-                            .background(Color.purple.opacity(0.10), in: Capsule())
+                            .background(Color.orange.opacity(0.10), in: Capsule())
                     }
                     Spacer(minLength: 0)
                 }
@@ -3305,7 +3848,7 @@ struct LocalInstallerCandidateRow: View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: item.architecture?.is32Bit == true ? "square.stack.3d.down.forward.fill" : "doc.badge.gearshape")
                 .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(item.architecture?.is32Bit == true ? .purple : .blue)
+                .foregroundStyle(item.architecture?.is32Bit == true ? .orange : .blue)
                 .frame(width: 22, height: 22)
 
             VStack(alignment: .leading, spacing: 4) {
@@ -3315,7 +3858,7 @@ struct LocalInstallerCandidateRow: View {
                         .lineLimit(1)
                     Text(architectureText)
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(item.architecture?.is32Bit == true ? .purple : .secondary)
+                        .foregroundStyle(item.architecture?.is32Bit == true ? .orange : .secondary)
                         .padding(.horizontal, 7)
                         .padding(.vertical, 2)
                         .background(Color.primary.opacity(0.06), in: Capsule())
@@ -3899,7 +4442,7 @@ struct SoftwareSampleCatalogRow: View {
         case .alreadyInstalled:
             .blue
         case .externalExecutable:
-            .purple
+            .orange
         }
     }
 }
@@ -3966,6 +4509,56 @@ struct SoftwareSampleLogCorrelationSection: View {
                 Label(store.text(.noSoftwareSampleLogCorrelation), systemImage: "link.badge.plus")
                     .foregroundStyle(.secondary)
             }
+        }
+    }
+}
+
+private struct RepresentativeAcceptanceSummary: View {
+    @EnvironmentObject private var store: MacWinStore
+    var report: RepresentativeSoftwareAcceptanceReport
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(store.text(.representativeAcceptanceSummary, report.passedCount, report.targetCount, report.pendingCount))
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            ForEach(report.entries) { entry in
+                HStack(spacing: 8) {
+                    Image(systemName: icon(for: entry.state))
+                        .foregroundStyle(color(for: entry.state))
+                        .frame(width: 18)
+                    Text(entry.name)
+                        .font(.caption.weight(.semibold))
+                        .lineLimit(1)
+                    Spacer(minLength: 8)
+                    Text(entry.nextAction)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+        }
+        .padding(10)
+        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func icon(for state: RepresentativeAcceptanceState) -> String {
+        switch state {
+        case .passed: "checkmark.seal.fill"
+        case .failed: "xmark.octagon.fill"
+        case .needsFunctionalProof: "eye"
+        case .needsInstall: "arrow.down.circle"
+        case .needsLaunch: "play.circle"
+        case .unavailable: "questionmark.circle"
+        }
+    }
+
+    private func color(for state: RepresentativeAcceptanceState) -> Color {
+        switch state {
+        case .passed: .green
+        case .failed: .red
+        case .needsFunctionalProof, .needsInstall, .needsLaunch: .orange
+        case .unavailable: .secondary
         }
     }
 }
@@ -5333,10 +5926,10 @@ struct SoftwareTestPlanRow: View {
                     if entry.requiresWin32 {
                         Text(store.text(.requiresWin32))
                             .font(.caption.weight(.semibold))
-                            .foregroundStyle(.purple)
+                            .foregroundStyle(.orange)
                             .padding(.horizontal, 7)
                             .padding(.vertical, 2)
-                            .background(Color.purple.opacity(0.10), in: Capsule())
+                            .background(Color.orange.opacity(0.10), in: Capsule())
                     }
                     Spacer(minLength: 0)
                 }
@@ -5579,9 +6172,6 @@ struct LogIssueSummarySection: View {
                 }
             }
         }
-        .onAppear {
-            store.refreshRecentLogs()
-        }
     }
 }
 
@@ -5613,6 +6203,12 @@ struct LogMaintenanceSection: View {
                         }
                         .controlSize(.small)
                         .disabled(report.cleanupCandidateCount == 0)
+                        Button {
+                            store.cleanHistoricalLogs()
+                        } label: {
+                            Label(store.text(.cleanHistoricalLogs), systemImage: "clock.arrow.circlepath")
+                        }
+                        .controlSize(.small)
                         Button {
                             store.exportLogMaintenanceScript()
                         } label: {
@@ -5689,9 +6285,6 @@ struct LogMaintenanceSection: View {
                 Label(store.text(.noRecentLogs), systemImage: "doc.text")
                     .foregroundStyle(.secondary)
             }
-        }
-        .onAppear {
-            store.refreshRecentLogs()
         }
     }
 
@@ -6047,9 +6640,6 @@ struct RecentLogsSection: View {
                 }
             }
         }
-        .onAppear {
-            store.refreshRecentLogs()
-        }
     }
 
     private static func formattedByteCount(_ byteCount: Int64) -> String {
@@ -6158,6 +6748,19 @@ struct SettingsView: View {
                         .pickerStyle(.segmented)
                     }
 
+                    SectionPanel(title: store.text(.keepSystemAwake)) {
+                        Toggle(isOn: Binding(get: {
+                            store.preventScreenLockWhileRunning
+                        }, set: { enabled in
+                            store.setPreventScreenLockWhileRunning(enabled)
+                        })) {
+                            Text(store.text(.keepSystemAwake))
+                        }
+                        Text(store.text(.preventScreenLockHint))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
                     SectionPanel(title: store.text(.engine)) {
                         if let engine = store.engines.first {
                             LabeledContent(store.text(.name), value: engine.name)
@@ -6248,7 +6851,7 @@ struct SectionPanel<Content: View>: View {
         VStack(alignment: .leading, spacing: 10) {
             Text(title)
                 .font(.headline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.primary)
             VStack(alignment: .leading, spacing: 10) {
                 content
             }

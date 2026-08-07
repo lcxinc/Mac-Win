@@ -64,6 +64,15 @@ struct ExternalExecutableRequest: Identifiable, Equatable {
     var iconURL: URL?
 }
 
+private struct BackgroundReportRefresh: Sendable {
+    var recentLogs: [LogFileItem]
+    var logIssueReport: LogIssueReport
+    var logMaintenanceReport: LogMaintenanceReport
+    var diagnosticArtifactIndexReport: DiagnosticArtifactIndexReport
+    var capabilityReport: CapabilityReport
+    var foundationStatusSnapshot: FoundationStatusSnapshot
+}
+
 @MainActor
 final class MacWinStore: ObservableObject {
     static let shared = MacWinStore()
@@ -71,6 +80,7 @@ final class MacWinStore: ObservableObject {
     @Published var selection: SidebarSection = .desktop
     @Published var workspaceMode: WorkspaceMode = .apps
     @Published var language: AppLanguage = AppLanguage.load()
+    @Published var preventScreenLockWhileRunning = UserDefaults.standard.bool(forKey: "MacWinPreventScreenLockWhileRunning")
     @Published var engines: [EngineManifest] = []
     @Published var bottles: [BottleManifest] = []
     @Published var recipes: [RecipeManifest] = []
@@ -83,6 +93,13 @@ final class MacWinStore: ObservableObject {
         recordsPath: MacWinPaths().logsDirectory.appendingPathComponent("DiagnosticRecords", isDirectory: true).path,
         records: []
     )
+    @Published var nativeUIProbeArtifactReport = NativeUIProbeService().artifactReport()
+    @Published var nativeUIProbeHistoryReport = NativeUIProbeHistoryService().report()
+    @Published var nativeUIProbeLastRunReport: NativeUIProbeRunReport?
+    @Published var hostGUISessionReport = HostGUISessionService().report()
+    @Published var nativeUIBridgeHealthReport = NativeUIBridgeHealthReport.empty
+    @Published var nativeUIApplicationMatrixReport = NativeUIApplicationMatrixReport.empty(rootPath: MacWinPaths().root.path)
+    @Published var representativeAcceptanceReport = RepresentativeSoftwareAcceptanceReport.empty(rootPath: MacWinPaths().root.path)
     @Published var lastError: String?
     @Published var runningItems: [RunningDesktopItem] = []
     @Published var recentLogs: [LogFileItem] = []
@@ -148,6 +165,7 @@ final class MacWinStore: ObservableObject {
         entries: [],
         findings: []
     )
+    @Published var bottleRuntimeReports: [String: BottleRuntimeReport] = [:]
     @Published var foundationStatusSnapshot: FoundationStatusSnapshot?
 
     let paths: MacWinPaths
@@ -158,6 +176,11 @@ final class MacWinStore: ObservableObject {
     private let installHistoryService: InstallHistoryService
     private let diagnosticsService: DiagnosticsService
     private let diagnosticsHistoryService: DiagnosticsHistoryService
+    private let hostGUISessionService: HostGUISessionService
+    private let nativeUIBridgeHealthService: NativeUIBridgeHealthService
+    private let nativeUIProbeService: NativeUIProbeService
+    private let nativeUIProbeHistoryService: NativeUIProbeHistoryService
+    private let nativeUIApplicationMatrixService: NativeUIApplicationMatrixService
     private let diagnosticArtifactIndexService: DiagnosticArtifactIndexService
     private let logService: LogService
     private let capabilityReportService: CapabilityReportService
@@ -170,13 +193,17 @@ final class MacWinStore: ObservableObject {
     private let softwareCollectionHistoryService: SoftwareCollectionHistoryService
     private let supportBundleService: SupportBundleService
     private let testSessionArchiveService: TestSessionArchiveService
+    private let screenAwakeController = ScreenAwakeController()
     private var didCompleteInitialBootstrap = false
     private var isBootstrapping = false
     private var suppressFoundationStatusSnapshot = false
     private var softwareActionRecipeIdsInFlight = Set<String>()
+    private var installRecipeIdsInFlight = Set<String>()
     private var launchKeysInFlight = Set<String>()
     private var queuedExternalExecutables: [ExternalExecutableRequest] = []
     private var externalExecutableOpenQueueWatcherTask: Task<Void, Never>?
+    private var bottleRuntimeCleanupTask: Task<Void, Never>?
+    private var reportRefreshTask: Task<Void, Never>?
 
     init(paths: MacWinPaths = MacWinPaths()) {
         self.paths = paths
@@ -185,8 +212,17 @@ final class MacWinStore: ObservableObject {
         self.runner = WineRunner(paths: paths)
         self.installService = InstallService(paths: paths)
         self.installHistoryService = InstallHistoryService(paths: paths)
-        self.diagnosticsService = DiagnosticsService(paths: paths)
+        let hostGUISessionService = HostGUISessionService()
+        self.hostGUISessionService = hostGUISessionService
+        self.diagnosticsService = DiagnosticsService(
+            paths: paths,
+            hostGUISessionService: hostGUISessionService
+        )
         self.diagnosticsHistoryService = DiagnosticsHistoryService(paths: paths)
+        self.nativeUIBridgeHealthService = NativeUIBridgeHealthService()
+        self.nativeUIProbeService = NativeUIProbeService(paths: paths)
+        self.nativeUIProbeHistoryService = NativeUIProbeHistoryService(paths: paths)
+        self.nativeUIApplicationMatrixService = NativeUIApplicationMatrixService(paths: paths)
         self.diagnosticArtifactIndexService = DiagnosticArtifactIndexService(paths: paths)
         self.logService = LogService(paths: paths)
         self.runtimeProcessAuditService = RuntimeProcessAuditService()
@@ -232,6 +268,28 @@ final class MacWinStore: ObservableObject {
         }
     }
 
+    func setPreventScreenLockWhileRunning(_ enabled: Bool) {
+        preventScreenLockWhileRunning = enabled
+        UserDefaults.standard.set(enabled, forKey: "MacWinPreventScreenLockWhileRunning")
+        if !enabled {
+            screenAwakeController.endSession()
+        }
+    }
+
+    private func runWithScreenAwake<T>(reason: String, _ operation: () async throws -> T) async throws -> T {
+        let shouldHoldAwake = preventScreenLockWhileRunning
+        if shouldHoldAwake {
+            screenAwakeController.beginSession(for: reason)
+        }
+        defer {
+            if shouldHoldAwake {
+                screenAwakeController.endSession()
+            }
+        }
+
+        return try await operation()
+    }
+
     func graphicsPreset(for bottle: BottleManifest) -> GraphicsPreset {
         GraphicsPreset.current(in: bottle)
     }
@@ -241,6 +299,10 @@ final class MacWinStore: ObservableObject {
             return false
         }
         return preset.isAvailable(engine: engine)
+    }
+
+    func nativeUIIntegrationPreset(for bottle: BottleManifest) -> NativeUIIntegrationPreset {
+        NativeUIIntegrationPreset.current(in: bottle)
     }
 
     func compatibilityProfile(for launcher: LauncherManifest) -> ApplicationCompatibilityProfile? {
@@ -267,6 +329,18 @@ final class MacWinStore: ObservableObject {
         }
     }
 
+    func applyNativeUIIntegrationPreset(_ preset: NativeUIIntegrationPreset, to bottle: BottleManifest) async {
+        setBusy(text(.applyingNativeUIIntegration))
+        do {
+            let updated = try bottleService.applyNativeUIIntegrationPreset(preset, to: bottle)
+            try reloadLocalState()
+            selectedBottleId = updated.id
+            finish(text(.appliedNativeUIIntegration, AppText.nativeUIIntegrationPresetName(preset, language: language)))
+        } catch {
+            fail(error)
+        }
+    }
+
     func bootstrapIfNeeded() async {
         guard !didCompleteInitialBootstrap, !isBootstrapping else { return }
         isBootstrapping = true
@@ -284,6 +358,10 @@ final class MacWinStore: ObservableObject {
             statusMessage = text(.preparingDefaultBottle)
             await Task.yield()
             _ = try ensureDefaultPerformanceBottle(engine: engine, runWineboot: false)
+            let historicalLogCleanup = try logService.archiveHistoricalFailures()
+            if historicalLogCleanup.archivedCount > 0 {
+                NSLog("MacWin archived historical failure logs count=\(historicalLogCleanup.archivedCount)")
+            }
             try reloadLocalState(refreshReports: false)
             suppressFoundationStatusSnapshot = false
             if !didCompleteInitialBootstrap {
@@ -313,6 +391,37 @@ final class MacWinStore: ObservableObject {
         }
     }
 
+    func startBottleRuntimeCleanupWatcher() {
+        guard bottleRuntimeCleanupTask == nil else { return }
+        bottleRuntimeCleanupTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.cleanupOrphanedBottleProcesses()
+                try? await Task.sleep(for: .seconds(15))
+            }
+        }
+    }
+
+    private func cleanupOrphanedBottleProcesses() async {
+        guard !isBusy, !bottles.isEmpty else { return }
+        let paths = paths
+        let bottles = bottles
+        let results = await Task.detached(priority: .utility) {
+            bottles.map { bottle in
+                BottleRuntimeService(paths: paths).cleanupOrphans(in: bottle)
+            }
+        }.value
+        let cleanedCount = results.map(\.stoppedCount).reduce(0, +)
+        guard cleanedCount > 0 else { return }
+        runtimeProcessAuditReport = runtimeProcessAuditService.makeReport()
+        bottleRuntimeReports = Dictionary(uniqueKeysWithValues: bottles.map { bottle in
+            (bottle.id, BottleRuntimeService(paths: paths).report(for: bottle))
+        })
+        refreshRunningItems()
+        refreshRecentLogs()
+        statusMessage = text(.cleanedOrphanedProcesses, cleanedCount)
+        lastError = nil
+    }
+
     func drainQueuedExternalExecutableOpens() async {
         let urls = MacWinExternalOpenQueue.drain()
         for url in urls {
@@ -324,6 +433,7 @@ final class MacWinStore: ObservableObject {
         engines = try registry.listEngines()
         bottles = try bottleService.listBottles()
         testAssetReport = testAssetService.report()
+        refreshNativeUIProbeState()
         if refreshReports {
             refreshDiagnosticHistory()
             refreshRecentLogs()
@@ -331,6 +441,149 @@ final class MacWinStore: ObservableObject {
         if selectedBottleId == nil {
             selectedBottleId = bottles.first?.id
         }
+    }
+
+    func refreshNativeUIProbeState() {
+        hostGUISessionReport = hostGUISessionService.report()
+        nativeUIBridgeHealthReport = nativeUIBridgeHealthService.report(engines: engines)
+        nativeUIProbeArtifactReport = nativeUIProbeService.artifactReport()
+        nativeUIProbeHistoryReport = nativeUIProbeHistoryService.report()
+        nativeUIProbeLastRunReport = nativeUIProbeHistoryReport.records.first
+    }
+
+    func stopBottleProcesses(_ bottle: BottleManifest) async {
+        guard let engine = engines.first(where: { $0.id == bottle.engineId }) ?? engines.first else {
+            fail(MacWinError.unsupportedEngine(text(.noEngineForBottle, bottle.name)))
+            return
+        }
+        setBusy(text(.stoppingBottleProcesses, bottle.name))
+        do {
+            let paths = paths
+            let result = try await Task.detached(priority: .userInitiated) {
+                try BottleRuntimeService(paths: paths).stopAll(in: bottle, engine: engine)
+            }.value
+            try reloadLocalState(refreshReports: false)
+            refreshRecentLogs()
+            bottleRuntimeReports[bottle.id] = BottleRuntimeService(paths: paths).report(for: bottle)
+            runningItems.removeAll { $0.bottleId == bottle.id }
+            if result.succeeded {
+                finish(text(.stoppedBottleProcesses, bottle.name, result.stoppedCount))
+            } else {
+                statusMessage = text(.stoppedBottleProcessesPartial, bottle.name, result.stoppedCount, result.remainingProcessCount)
+                lastError = nil
+                isBusy = false
+            }
+        } catch {
+            fail(error)
+        }
+    }
+
+    func restartBottle(_ bottle: BottleManifest) async {
+        guard let engine = engines.first(where: { $0.id == bottle.engineId }) ?? engines.first else {
+            fail(MacWinError.unsupportedEngine(text(.noEngineForBottle, bottle.name)))
+            return
+        }
+        setBusy(text(.restartingBottle, bottle.name))
+        do {
+            let paths = paths
+            let result = try await Task.detached(priority: .userInitiated) {
+                try BottleRuntimeService(paths: paths).restart(bottle: bottle, engine: engine)
+            }.value
+            try reloadLocalState(refreshReports: false)
+            refreshRecentLogs()
+            bottleRuntimeReports[bottle.id] = BottleRuntimeService(paths: paths).report(for: bottle)
+            runningItems.removeAll { $0.bottleId == bottle.id }
+            if result.restarted {
+                finish(text(.restartedBottle, bottle.name))
+            } else {
+                statusMessage = text(.restartBottleIncomplete, bottle.name, result.remainingProcessCount)
+                lastError = nil
+                isBusy = false
+            }
+        } catch {
+            fail(error)
+        }
+    }
+
+    func cleanupAllBottleRuntimeProcessesForShutdown() {
+        for bottle in bottles {
+            guard let engine = engines.first(where: { $0.id == bottle.engineId }) ?? engines.first else { continue }
+            do {
+                _ = try BottleRuntimeService(paths: paths).stopAll(in: bottle, engine: engine)
+            } catch {
+                NSLog("MacWin bottle shutdown cleanup failed bottle=\(bottle.id) error=\(error.localizedDescription)")
+            }
+        }
+    }
+
+    func runNativeUIApplication(_ entry: NativeUIApplicationMatrixEntry, withDiagnostics: Bool = false) async {
+        guard let bottleId = entry.bottleId,
+              let launcherId = entry.launcherId,
+              let bottle = bottles.first(where: { $0.id == bottleId }),
+              let launcher = bottle.installedApps.first(where: { $0.id == launcherId }) else {
+            statusMessage = text(.nativeUIApplicationNeedsInstall, entry.name)
+            lastError = nil
+            return
+        }
+        if withDiagnostics {
+            await runLauncherWithDiagnostics(launcher, in: bottle)
+        } else {
+            await runLauncher(launcher, in: bottle)
+        }
+    }
+
+    func runRepresentativeSoftwareAcceptance() async {
+        guard !isBusy else { return }
+        setBusy(text(.runningRepresentativeAcceptance))
+        let targets = nativeUIApplicationMatrixReport.entries.filter {
+            RepresentativeSoftwareAcceptanceService.targetSampleIds.contains($0.sampleId)
+        }
+        for target in targets {
+            if let bottleId = target.bottleId,
+               let launcherId = target.launcherId,
+               let bottle = bottles.first(where: { $0.id == bottleId }),
+               let launcher = bottle.installedApps.first(where: { $0.id == launcherId }) {
+                await runLauncherWithDiagnostics(launcher, in: bottle)
+                refreshRepresentativeAcceptanceReport()
+                continue
+            }
+
+            guard let recipeId = target.recipeId,
+                  let recipe = recipes.first(where: { $0.id == recipeId }),
+                  recipe.disabledReason == nil,
+                  target.recipeAvailable,
+                  recipe.installer.mode != .localFile || target.installerPath != nil else {
+                continue
+            }
+            let localInstaller = target.installerPath.map(URL.init(fileURLWithPath:))
+            await install(recipe: recipe, localInstaller: localInstaller)
+            refreshRepresentativeAcceptanceReport()
+            guard let refreshed = nativeUIApplicationMatrixReport.entries.first(where: { $0.sampleId == target.sampleId }),
+                  let bottleId = refreshed.bottleId,
+                  let launcherId = refreshed.launcherId,
+                  let bottle = bottles.first(where: { $0.id == bottleId }),
+                  let launcher = bottle.installedApps.first(where: { $0.id == launcherId }) else {
+                continue
+            }
+            await runLauncherWithDiagnostics(launcher, in: bottle)
+            refreshRepresentativeAcceptanceReport()
+        }
+        refreshRepresentativeAcceptanceReport()
+        finish(text(.representativeAcceptanceFinished, representativeAcceptanceReport.passedCount, representativeAcceptanceReport.targetCount))
+    }
+
+    private func refreshRepresentativeAcceptanceReport() {
+        let launchHistory = LaunchHistoryService(paths: paths).report(limit: 120)
+        let smokeReports = (try? SoftwareSmokeRunReportService(paths: paths).reports(limit: 120)) ?? []
+        nativeUIApplicationMatrixReport = nativeUIApplicationMatrixService.report(
+            bottles: bottles,
+            recipes: recipes,
+            launchHistory: launchHistory,
+            smokeReports: smokeReports
+        )
+        let service = RepresentativeSoftwareAcceptanceService(paths: paths)
+        representativeAcceptanceReport = service.report(matrix: nativeUIApplicationMatrixReport)
+        _ = try? service.save(representativeAcceptanceReport)
     }
 
     func loadBundledCatalog(refreshReports: Bool = true) throws {
@@ -466,16 +719,37 @@ final class MacWinStore: ObservableObject {
             fail(MacWinError.unsupportedEngine(text(.noEngineRegistered)))
             return
         }
+        guard !installRecipeIdsInFlight.contains(recipe.id) else {
+            statusMessage = text(.actionAlreadyInProgress, recipe.name)
+            lastError = nil
+            return
+        }
+        installRecipeIdsInFlight.insert(recipe.id)
+        defer { installRecipeIdsInFlight.remove(recipe.id) }
         setBusy(text(.installing, recipe.name))
         do {
-            let bottle = try ensureDefaultPerformanceBottle(engine: engine)
-            let source = localInstaller.map(InstallerSource.localFile)
-                ?? (recipe.installer.mode == .alreadyInstalled ? .existingInstallation : nil)
-            let task = try installService.install(recipe: recipe, bottle: bottle, engine: engine, installerSource: source)
-            try reloadLocalState()
-            selectedBottleId = bottle.id
-            selection = .bottles
-            finish(task.state == .succeeded ? text(.installedIntoDefaultBottle, recipe.name) : task.progressText)
+            try await runWithScreenAwake(reason: "MacWin install recipe: \(recipe.name)") {
+                let bottle = try ensureDefaultPerformanceBottle(engine: engine)
+                let source = localInstaller.map(InstallerSource.localFile)
+                    ?? (recipe.installer.mode == .alreadyInstalled ? .existingInstallation : nil)
+                let installPaths = paths
+                let task = try await Task.detached(priority: .userInitiated) {
+                    try InstallService(paths: installPaths).install(
+                        recipe: recipe,
+                        bottle: bottle,
+                        engine: engine,
+                        installerSource: source
+                    )
+                }.value
+                try reloadLocalState()
+                selectedBottleId = bottle.id
+                selection = .bottles
+                if task.state == .succeeded, task.progressText.hasPrefix("Already installed") {
+                    finish(task.progressText)
+                } else {
+                    finish(task.state == .succeeded ? text(.installedIntoDefaultBottle, recipe.name) : task.progressText)
+                }
+            }
         } catch {
             fail(error)
         }
@@ -494,32 +768,31 @@ final class MacWinStore: ObservableObject {
         let logName = "\(bottle.id)-\(launcher.id).log"
         setBusy(text(.launching, launcher.displayName))
         do {
-            let preparedBottle = try prepareBottle(bottle, for: engine)
-            let effectiveLauncher = try refreshedLauncher(launcher, in: preparedBottle)
-            try resetRenderingCachesIfNeeded(for: effectiveLauncher, in: preparedBottle)
-            try reloadLocalState()
-            if finishIfRuntimeAlreadyRunning(executable: effectiveLauncher.exePath, displayName: effectiveLauncher.displayName) {
-                return
-            }
-            let result = try runner.launchDetached(
-                WineRunRequest(
-                    exe: effectiveLauncher.exePath,
-                    args: effectiveLauncher.args,
-                    bottle: preparedBottle,
-                    engine: engine,
-                    envOverrides: effectiveLauncher.envOverrides,
-                    logName: logName
+            try await runWithScreenAwake(reason: "MacWin run launcher: \(launcher.displayName)") {
+                if finishIfRuntimeAlreadyRunning(executable: launcher.exePath, displayName: launcher.displayName) {
+                    return
+                }
+                let launchPaths = paths
+                let launch = try await Task.detached(priority: .userInitiated) {
+                    try Self.prepareAndLaunchLauncher(
+                        paths: launchPaths,
+                        bottle: bottle,
+                        engine: engine,
+                        launcher: launcher,
+                        logName: logName
+                    )
+                }.value
+                try reloadLocalState()
+                trackRunningItem(
+                    title: launch.launcher.displayName,
+                    bottle: launch.bottle,
+                    processIdentifier: launch.result.processIdentifier,
+                    logName: logName,
+                    launchKey: launchKey
                 )
-            )
-            trackRunningItem(
-                title: effectiveLauncher.displayName,
-                bottle: preparedBottle,
-                processIdentifier: result.processIdentifier,
-                logName: logName,
-                launchKey: launchKey
-            )
-            refreshRecentLogs()
-            finish(text(.launchedPid, effectiveLauncher.displayName, "\(result.processIdentifier)"))
+                refreshRecentLogs()
+                finish(text(.launchedPid, launch.launcher.displayName, "\(launch.result.processIdentifier)"))
+            }
         } catch {
             fail(error)
         }
@@ -536,40 +809,38 @@ final class MacWinStore: ObservableObject {
         }
         defer { endLaunch(launchKey: launchKey) }
         let logName = "\(bottle.id)-\(launcher.id)-diagnostic-\(UUID().uuidString.prefix(8)).log"
-        var diagnosticEnv = launcher.envOverrides
-        diagnosticEnv["MACWIN_DIAGNOSTIC_LAUNCH"] = "1"
-        diagnosticEnv["WINEDEBUG"] = Self.diagnosticWineDebug
+        let diagnosticEnvOverrides = [
+            "MACWIN_DIAGNOSTIC_LAUNCH": "1",
+            "WINEDEBUG": Self.diagnosticWineDebug
+        ]
         setBusy(text(.launchingWithDiagnostics, launcher.displayName))
         do {
-            let preparedBottle = try prepareBottle(bottle, for: engine)
-            let effectiveLauncher = try refreshedLauncher(launcher, in: preparedBottle)
-            diagnosticEnv = effectiveLauncher.envOverrides
-            diagnosticEnv["MACWIN_DIAGNOSTIC_LAUNCH"] = "1"
-            diagnosticEnv["WINEDEBUG"] = Self.diagnosticWineDebug
-            try resetRenderingCachesIfNeeded(for: effectiveLauncher, in: preparedBottle)
-            try reloadLocalState()
-            if finishIfRuntimeAlreadyRunning(executable: effectiveLauncher.exePath, displayName: effectiveLauncher.displayName) {
-                return
-            }
-            let result = try runner.launchDetached(
-                WineRunRequest(
-                    exe: effectiveLauncher.exePath,
-                    args: effectiveLauncher.args,
-                    bottle: preparedBottle,
-                    engine: engine,
-                    envOverrides: diagnosticEnv,
-                    logName: logName
+            try await runWithScreenAwake(reason: "MacWin run diagnostic launcher: \(launcher.displayName)") {
+                if finishIfRuntimeAlreadyRunning(executable: launcher.exePath, displayName: launcher.displayName) {
+                    return
+                }
+                let launchPaths = paths
+                let launch = try await Task.detached(priority: .userInitiated) {
+                    try Self.prepareAndLaunchLauncher(
+                        paths: launchPaths,
+                        bottle: bottle,
+                        engine: engine,
+                        launcher: launcher,
+                        logName: logName,
+                        additionalEnvOverrides: diagnosticEnvOverrides
+                    )
+                }.value
+                try reloadLocalState()
+                trackRunningItem(
+                    title: text(.diagnosticLaunchTitle, launch.launcher.displayName),
+                    bottle: launch.bottle,
+                    processIdentifier: launch.result.processIdentifier,
+                    logName: logName,
+                    launchKey: launchKey
                 )
-            )
-            trackRunningItem(
-                title: text(.diagnosticLaunchTitle, effectiveLauncher.displayName),
-                bottle: preparedBottle,
-                processIdentifier: result.processIdentifier,
-                logName: logName,
-                launchKey: launchKey
-            )
-            refreshRecentLogs()
-            finish(text(.launchedPid, text(.diagnosticLaunchTitle, effectiveLauncher.displayName), "\(result.processIdentifier)"))
+                refreshRecentLogs()
+                finish(text(.launchedPid, text(.diagnosticLaunchTitle, launch.launcher.displayName), "\(launch.result.processIdentifier)"))
+            }
         } catch {
             fail(error)
         }
@@ -647,32 +918,34 @@ final class MacWinStore: ObservableObject {
         }
         setBusy(diagnostics ? text(.launchingWithDiagnostics, request.displayName) : text(.launching, request.displayName))
         do {
-            let preparedBottle = try prepareBottle(bottle, for: engine)
-            try resetRenderingCachesIfNeeded(for: externalLauncher, in: preparedBottle)
-            try reloadLocalState()
-            if finishIfRuntimeAlreadyRunning(executable: request.url.path, displayName: request.displayName) {
-                return
-            }
-            let result = try runner.launchDetached(
-                WineRunRequest(
-                    exe: request.url.path,
-                    args: externalLauncher.args,
-                    bottle: preparedBottle,
-                    engine: engine,
-                    envOverrides: env,
-                    logName: logName
+            try await runWithScreenAwake(reason: "MacWin run external executable: \(request.displayName)") {
+                let preparedBottle = try prepareBottle(bottle, for: engine)
+                try resetRenderingCachesIfNeeded(for: externalLauncher, in: preparedBottle)
+                try reloadLocalState()
+                if finishIfRuntimeAlreadyRunning(executable: request.url.path, displayName: request.displayName) {
+                    return
+                }
+                let result = try runner.launchDetached(
+                    WineRunRequest(
+                        exe: request.url.path,
+                        args: externalLauncher.args,
+                        bottle: preparedBottle,
+                        engine: engine,
+                        envOverrides: env,
+                        logName: logName
+                    )
                 )
-            )
-            trackRunningItem(
-                title: diagnostics ? text(.diagnosticLaunchTitle, request.displayName) : request.displayName,
-                bottle: preparedBottle,
-                processIdentifier: result.processIdentifier,
-                logName: logName,
-                launchKey: launchKey
-            )
-            dismissPendingExternalExecutable()
-            refreshRecentLogs()
-            finish(text(.launchedPid, request.displayName, "\(result.processIdentifier)"))
+                trackRunningItem(
+                    title: diagnostics ? text(.diagnosticLaunchTitle, request.displayName) : request.displayName,
+                    bottle: preparedBottle,
+                    processIdentifier: result.processIdentifier,
+                    logName: logName,
+                    launchKey: launchKey
+                )
+                dismissPendingExternalExecutable()
+                refreshRecentLogs()
+                finish(text(.launchedPid, request.displayName, "\(result.processIdentifier)"))
+            }
         } catch {
             fail(error)
         }
@@ -691,32 +964,34 @@ final class MacWinStore: ObservableObject {
         let logName = "\(bottle.id)-run-command.log"
         setBusy(text(.runningCommand))
         do {
-            let preparedBottle = try prepareBottle(bottle, for: engine)
-            let commandLauncher = profiledCommandLauncher(exe: exe, args: args, in: preparedBottle)
-            try resetRenderingCachesIfNeeded(for: commandLauncher, in: preparedBottle)
-            try reloadLocalState()
-            if finishIfRuntimeAlreadyRunning(executable: commandLauncher.exePath, displayName: commandLauncher.displayName) {
-                return
-            }
-            let result = try runner.launchDetached(
-                WineRunRequest(
-                    exe: commandLauncher.exePath,
-                    args: commandLauncher.args,
-                    bottle: preparedBottle,
-                    engine: engine,
-                    envOverrides: commandLauncher.envOverrides,
-                    logName: logName
+            try await runWithScreenAwake(reason: "MacWin run command: \(exe)") {
+                let preparedBottle = try prepareBottle(bottle, for: engine)
+                let commandLauncher = profiledCommandLauncher(exe: exe, args: args, in: preparedBottle)
+                try resetRenderingCachesIfNeeded(for: commandLauncher, in: preparedBottle)
+                try reloadLocalState()
+                if finishIfRuntimeAlreadyRunning(executable: commandLauncher.exePath, displayName: commandLauncher.displayName) {
+                    return
+                }
+                let result = try runner.launchDetached(
+                    WineRunRequest(
+                        exe: commandLauncher.exePath,
+                        args: commandLauncher.args,
+                        bottle: preparedBottle,
+                        engine: engine,
+                        envOverrides: commandLauncher.envOverrides,
+                        logName: logName
+                    )
                 )
-            )
-            trackRunningItem(
-                title: commandLauncher.displayName,
-                bottle: preparedBottle,
-                processIdentifier: result.processIdentifier,
-                logName: logName,
-                launchKey: launchKey
-            )
-            refreshRecentLogs()
-            finish(text(.startedPid, "\(result.processIdentifier)"))
+                trackRunningItem(
+                    title: commandLauncher.displayName,
+                    bottle: preparedBottle,
+                    processIdentifier: result.processIdentifier,
+                    logName: logName,
+                    launchKey: launchKey
+                )
+                refreshRecentLogs()
+                finish(text(.startedPid, "\(result.processIdentifier)"))
+            }
         } catch {
             fail(error)
         }
@@ -798,36 +1073,38 @@ final class MacWinStore: ObservableObject {
         defer { endLaunch(launchKey: launchKey) }
         setBusy(text(.installingDroppedInstaller, fileName))
         do {
-            let preparedBottle = try prepareBottle(bottle, for: engine)
-            try reloadLocalState()
-            if finishIfRuntimeAlreadyRunning(executable: command, displayName: fileName) {
-                return
-            }
-            let result = try runner.launchDetached(
-                WineRunRequest(
-                    exe: command,
-                    args: arguments,
-                    bottle: preparedBottle,
-                    engine: engine,
-                    logName: logName
+            try await runWithScreenAwake(reason: "MacWin run dropped installer: \(fileName)") {
+                let preparedBottle = try prepareBottle(bottle, for: engine)
+                try reloadLocalState()
+                if finishIfRuntimeAlreadyRunning(executable: command, displayName: fileName) {
+                    return
+                }
+                let result = try runner.launchDetached(
+                    WineRunRequest(
+                        exe: command,
+                        args: arguments,
+                        bottle: preparedBottle,
+                        engine: engine,
+                        logName: logName
+                    )
                 )
-            )
-            recordLocalInstallerLaunch(
-                fileName: fileName,
-                sourceURL: cachedInstallerURL,
-                bottle: preparedBottle,
-                logName: logName,
-                processIdentifier: result.processIdentifier
-            )
-            trackRunningItem(
-                title: fileName,
-                bottle: preparedBottle,
-                processIdentifier: result.processIdentifier,
-                logName: logName,
-                launchKey: launchKey
-            )
-            refreshRecentLogs()
-            finish(text(.droppedInstallerStarted, fileName, "\(result.processIdentifier)"))
+                recordLocalInstallerLaunch(
+                    fileName: fileName,
+                    sourceURL: cachedInstallerURL,
+                    bottle: preparedBottle,
+                    logName: logName,
+                    processIdentifier: result.processIdentifier
+                )
+                trackRunningItem(
+                    title: fileName,
+                    bottle: preparedBottle,
+                    processIdentifier: result.processIdentifier,
+                    logName: logName,
+                    launchKey: launchKey
+                )
+                refreshRecentLogs()
+                finish(text(.droppedInstallerStarted, fileName, "\(result.processIdentifier)"))
+            }
         } catch {
             fail(error)
         }
@@ -874,38 +1151,40 @@ final class MacWinStore: ObservableObject {
         defer { endLaunch(launchKey: launchKey) }
         setBusy(text(.installingDroppedInstaller, fileName))
         do {
-            let bottle = try ensureDefaultPerformanceBottle(engine: engine)
-            let preparedBottle = try prepareBottle(bottle, for: engine)
-            try reloadLocalState()
-            selectedBottleId = preparedBottle.id
-            if finishIfRuntimeAlreadyRunning(executable: command, displayName: fileName) {
-                return
-            }
-            let result = try runner.launchDetached(
-                WineRunRequest(
-                    exe: command,
-                    args: arguments,
-                    bottle: preparedBottle,
-                    engine: engine,
-                    logName: logName
+            try await runWithScreenAwake(reason: "MacWin run cached installer: \(fileName)") {
+                let bottle = try ensureDefaultPerformanceBottle(engine: engine)
+                let preparedBottle = try prepareBottle(bottle, for: engine)
+                try reloadLocalState()
+                selectedBottleId = preparedBottle.id
+                if finishIfRuntimeAlreadyRunning(executable: command, displayName: fileName) {
+                    return
+                }
+                let result = try runner.launchDetached(
+                    WineRunRequest(
+                        exe: command,
+                        args: arguments,
+                        bottle: preparedBottle,
+                        engine: engine,
+                        logName: logName
+                    )
                 )
-            )
-            recordLocalInstallerLaunch(
-                fileName: fileName,
-                sourceURL: installerURL,
-                bottle: preparedBottle,
-                logName: logName,
-                processIdentifier: result.processIdentifier
-            )
-            trackRunningItem(
-                title: fileName,
-                bottle: preparedBottle,
-                processIdentifier: result.processIdentifier,
-                logName: logName,
-                launchKey: launchKey
-            )
-            refreshRecentLogs()
-            finish(text(.droppedInstallerStarted, fileName, "\(result.processIdentifier)"))
+                recordLocalInstallerLaunch(
+                    fileName: fileName,
+                    sourceURL: installerURL,
+                    bottle: preparedBottle,
+                    logName: logName,
+                    processIdentifier: result.processIdentifier
+                )
+                trackRunningItem(
+                    title: fileName,
+                    bottle: preparedBottle,
+                    processIdentifier: result.processIdentifier,
+                    logName: logName,
+                    launchKey: launchKey
+                )
+                refreshRecentLogs()
+                finish(text(.droppedInstallerStarted, fileName, "\(result.processIdentifier)"))
+            }
         } catch {
             fail(error)
         }
@@ -931,25 +1210,27 @@ final class MacWinStore: ObservableObject {
         }
         setBusy(text(.preparingDesktop))
         do {
-            let preparedBottle = try bottleService.bootstrapWinePrefixIfNeeded(bottle: bottle, engine: engine)
-            try reloadLocalState()
-            selectedBottleId = preparedBottle.id
-            statusMessage = text(.launching, text(.windows11Desktop))
-            if finishIfRuntimeAlreadyRunning(executable: "C:\\windows\\system32\\explorer.exe", displayName: text(.windows11Desktop)) {
-                return
+            try await runWithScreenAwake(reason: "MacWin launch Windows 11 desktop") {
+                let preparedBottle = try bottleService.bootstrapWinePrefixIfNeeded(bottle: bottle, engine: engine)
+                try reloadLocalState()
+                selectedBottleId = preparedBottle.id
+                statusMessage = text(.launching, text(.windows11Desktop))
+                if finishIfRuntimeAlreadyRunning(executable: "C:\\windows\\system32\\explorer.exe", displayName: text(.windows11Desktop)) {
+                    return
+                }
+                let result = try runner.launchDetached(
+                    runner.windows11DesktopRequest(bottle: preparedBottle, engine: engine)
+                )
+                trackRunningItem(
+                    title: text(.windows11Desktop),
+                    bottle: preparedBottle,
+                    processIdentifier: result.processIdentifier,
+                    logName: "\(preparedBottle.id)-windows11-desktop.log",
+                    launchKey: launchKey
+                )
+                refreshRecentLogs()
+                finish(text(.launchedPid, text(.windows11Desktop), "\(result.processIdentifier)"))
             }
-            let result = try runner.launchDetached(
-                runner.windows11DesktopRequest(bottle: preparedBottle, engine: engine)
-            )
-            trackRunningItem(
-                title: text(.windows11Desktop),
-                bottle: preparedBottle,
-                processIdentifier: result.processIdentifier,
-                logName: "\(preparedBottle.id)-windows11-desktop.log",
-                launchKey: launchKey
-            )
-            refreshRecentLogs()
-            finish(text(.launchedPid, text(.windows11Desktop), "\(result.processIdentifier)"))
         } catch {
             fail(error)
         }
@@ -960,18 +1241,9 @@ final class MacWinStore: ObservableObject {
     }
 
     func terminateRunningItem(_ item: RunningDesktopItem) {
-        if let bottle = bottles.first(where: { $0.id == item.bottleId }),
-           let engine = engines.first(where: { $0.id == item.engineId }) ?? engines.first(where: { $0.id == bottle.engineId }) {
-            do {
-                _ = try runner.terminateBottle(bottle: bottle, engine: engine)
-                runningItems.removeAll { $0.bottleId == item.bottleId }
-                refreshRecentLogs()
-                statusMessage = text(.terminatedBottleProcesses, item.bottleName)
-                lastError = nil
-                return
-            } catch {
-                lastError = localizedError(error)
-            }
+        if let bottle = bottles.first(where: { $0.id == item.bottleId }) {
+            Task { await stopBottleProcesses(bottle) }
+            return
         }
 
         _ = kill(item.processIdentifier, SIGTERM)
@@ -988,6 +1260,19 @@ final class MacWinStore: ObservableObject {
     func deleteBottle(_ bottle: BottleManifest) async {
         setBusy(text(.deleting, bottle.name))
         do {
+            if let engine = engines.first(where: { $0.id == bottle.engineId }) ?? engines.first {
+                let paths = paths
+                let stopResult = try await Task.detached(priority: .userInitiated) {
+                    try BottleRuntimeService(paths: paths).stopAll(in: bottle, engine: engine)
+                }.value
+                guard stopResult.succeeded else {
+                    statusMessage = text(.stoppedBottleProcessesPartial, bottle.name, stopResult.stoppedCount, stopResult.remainingProcessCount)
+                    lastError = nil
+                    isBusy = false
+                    return
+                }
+                runningItems.removeAll { $0.bottleId == bottle.id }
+            }
             try bottleService.deleteBottle(bottle)
             try reloadLocalState()
             selectedBottleId = bottles.first?.id
@@ -1004,15 +1289,120 @@ final class MacWinStore: ObservableObject {
         }
         setBusy(text(.runningDiagnostics))
         do {
-            let bottle = try bottleService.bootstrapWinePrefixIfNeeded(
-                bottle: ensureDiagnosticsBottle(engine: engine),
-                engine: engine
-            )
-            let report = try diagnosticsService.runProbeSuite(engine: engine, bottle: bottle)
-            _ = try diagnosticsHistoryService.save(report: report, scope: .suite, engine: engine, bottle: bottle)
-            diagnosticReport = report
-            try reloadLocalState()
+            let paths = paths
+            let existingBottle = bottles.first(where: { $0.name == "Diagnostics" })
+            let run = try await Task.detached(priority: .userInitiated) {
+                let bottleService = BottleService(paths: paths)
+                let bottle = try existingBottle ?? bottleService.createBottle(
+                    name: "Diagnostics",
+                    template: BottleTemplate(windowsVersion: "win11", arch: .win64),
+                    engine: engine,
+                    runWineboot: true
+                )
+                let preparedBottle = try bottleService.bootstrapWinePrefixIfNeeded(
+                    bottle: bottle,
+                    engine: engine
+                )
+                let report = try DiagnosticsService(paths: paths).runProbeSuite(
+                    engine: engine,
+                    bottle: preparedBottle
+                )
+                _ = try DiagnosticsHistoryService(paths: paths).save(
+                    report: report,
+                    scope: .suite,
+                    engine: engine,
+                    bottle: preparedBottle
+                )
+                return DetachedDiagnosticsRun(bottle: preparedBottle, report: report)
+            }.value
+
+            diagnosticReport = run.report
+            try reloadLocalState(refreshReports: false)
+            refreshDiagnosticHistory()
+            refreshRecentLogs()
             finish(diagnosticReport?.exitCode == 0 ? text(.diagnosticsPassed) : text(.diagnosticsFinishedWithFailures))
+        } catch {
+            fail(error)
+        }
+    }
+
+    func canRunNativeUIProbe(
+        mode _: NativeUIProbeMode,
+        architecture: WindowsExecutableArchitecture = .x86_64
+    ) -> Bool {
+        guard hostGUISessionReport.isInteractive else { return false }
+        guard nativeUIProbeService.executable(for: architecture) != nil else { return false }
+        let targetEngine = selectedBottle
+            .flatMap { bottle in engines.first(where: { $0.id == bottle.engineId }) }
+            ?? preferredEngine()
+        if architecture == .i386 {
+            return targetEngine?.supportsWin32 == true
+        }
+        return targetEngine != nil
+    }
+
+    func runNativeUIProbe(
+        mode: NativeUIProbeMode,
+        architecture: WindowsExecutableArchitecture = .x86_64
+    ) async {
+        refreshNativeUIProbeState()
+        guard hostGUISessionReport.isInteractive else {
+            statusMessage = text(.nativeUIProbeSessionLocked)
+            lastError = nil
+            return
+        }
+        guard canRunNativeUIProbe(mode: mode, architecture: architecture) else {
+            fail(MacWinError.missingFile("Native UI probe or compatible engine is unavailable."))
+            return
+        }
+        guard let fallbackEngine = preferredEngine() else {
+            fail(MacWinError.unsupportedEngine(text(.noEngineRegistered)))
+            return
+        }
+
+        let targetBottle: BottleManifest
+        let targetEngine: EngineManifest
+        do {
+            if let selectedBottle,
+               let selectedEngine = engines.first(where: { $0.id == selectedBottle.engineId }) {
+                targetBottle = try bottleService.bootstrapWinePrefixIfNeeded(
+                    bottle: selectedBottle,
+                    engine: selectedEngine
+                )
+                targetEngine = selectedEngine
+            } else {
+                targetBottle = try bottleService.bootstrapWinePrefixIfNeeded(
+                    bottle: ensureDiagnosticsBottle(engine: fallbackEngine),
+                    engine: fallbackEngine
+                )
+                targetEngine = fallbackEngine
+            }
+        } catch {
+            fail(error)
+            return
+        }
+
+        setBusy(text(.runningNativeUIProbe, AppText.nativeUIProbeModeName(mode, language: language)))
+        do {
+            let report = try diagnosticsService.runNativeUIProbe(
+                mode: mode,
+                architecture: architecture,
+                engine: targetEngine,
+                bottle: targetBottle,
+                probeService: nativeUIProbeService
+            )
+            _ = try nativeUIProbeHistoryService.save(report)
+            nativeUIProbeLastRunReport = report
+            refreshNativeUIProbeState()
+            try reloadLocalState()
+            switch report.status {
+            case .passed:
+                finish(text(.nativeUIProbePassed, AppText.nativeUIProbeModeName(mode, language: language)))
+            case .cancelled:
+                finish(text(.nativeUIProbeCancelled, AppText.nativeUIProbeModeName(mode, language: language)))
+            case .failed:
+                finish(text(.diagnosticsFinishedWithFailures))
+            }
         } catch {
             fail(error)
         }
@@ -1134,6 +1524,16 @@ final class MacWinStore: ObservableObject {
         NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
+    func openNativeUIProbeLog(_ report: NativeUIProbeRunReport) {
+        guard !report.logPath.isEmpty else { return }
+        NSWorkspace.shared.open(URL(fileURLWithPath: report.logPath))
+    }
+
+    func revealNativeUIProbeLog(_ report: NativeUIProbeRunReport) {
+        guard !report.logPath.isEmpty else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: report.logPath)])
+    }
+
     func openDiagnosticArtifact(_ artifact: DiagnosticArtifactItem) {
         NSWorkspace.shared.open(URL(fileURLWithPath: artifact.path))
     }
@@ -1246,11 +1646,67 @@ final class MacWinStore: ObservableObject {
     }
 
     func refreshRecentLogs() {
-        recentLogs = logService.recentLogs()
-        logIssueReport = LogService.issueReport(logs: recentLogs)
-        logMaintenanceReport = logService.maintenanceReport()
-        diagnosticArtifactIndexReport = diagnosticArtifactIndexService.report(limit: 80)
-        refreshSoftwareTestPlan()
+        reportRefreshTask?.cancel()
+        let paths = paths
+        let engines = engines
+        let bottles = bottles
+        let recipes = recipes
+        let diagnosticReport = diagnosticReport
+        let testAssetRoot = testAssetService.root
+        reportRefreshTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(50))
+            guard !Task.isCancelled else { return }
+
+            let result = await Task.detached(priority: .utility) {
+                let fileManager = FileManager.default
+                let logService = LogService(paths: paths, fileManager: fileManager)
+                let recentLogs = logService.recentLogs()
+                let capabilityReport = CapabilityReportService(
+                    paths: paths,
+                    fileManager: fileManager,
+                    testAssetService: TestAssetService(root: testAssetRoot, fileManager: fileManager)
+                ).makeReport(
+                    engines: engines,
+                    bottles: bottles,
+                    recipes: recipes,
+                    diagnosticReport: diagnosticReport
+                )
+                let foundationStatusSnapshotService = FoundationStatusSnapshotService(
+                    paths: paths,
+                    fileManager: fileManager
+                )
+                let foundationStatusSnapshot = foundationStatusSnapshotService.makeSnapshot(report: capabilityReport)
+                do {
+                    _ = try foundationStatusSnapshotService.exportSnapshot(report: capabilityReport)
+                } catch {
+                    // A failed background snapshot must not block the live report refresh.
+                }
+                return BackgroundReportRefresh(
+                    recentLogs: recentLogs,
+                    logIssueReport: LogService.issueReport(logs: recentLogs),
+                    logMaintenanceReport: logService.maintenanceReport(),
+                    diagnosticArtifactIndexReport: DiagnosticArtifactIndexService(
+                        paths: paths,
+                        fileManager: fileManager
+                    ).report(limit: 80),
+                    capabilityReport: capabilityReport,
+                    foundationStatusSnapshot: foundationStatusSnapshot
+                )
+            }.value
+
+            guard !Task.isCancelled, let self else { return }
+            self.recentLogs = result.recentLogs
+            self.logIssueReport = result.logIssueReport
+            self.logMaintenanceReport = result.logMaintenanceReport
+            self.diagnosticArtifactIndexReport = result.diagnosticArtifactIndexReport
+            self.applyCapabilityReport(result.capabilityReport)
+            self.foundationStatusSnapshot = result.foundationStatusSnapshot
+        }
+    }
+
+    func refreshDiagnosticsPage() {
+        refreshDiagnosticHistory()
+        refreshRecentLogs()
     }
 
     func refreshDiagnosticArtifacts() {
@@ -1284,6 +1740,11 @@ final class MacWinStore: ObservableObject {
             recipes: recipes,
             diagnosticReport: diagnosticReport
         )
+        applyCapabilityReport(report)
+        refreshFoundationStatusSnapshot(from: report)
+    }
+
+    private func applyCapabilityReport(_ report: CapabilityReport) {
         softwareTestPlanReport = report.softwareTestPlan
         softwareSmokeMatrixReport = report.softwareSmokeMatrix
         softwareSampleCatalogReport = report.softwareSampleCatalog
@@ -1292,6 +1753,23 @@ final class MacWinStore: ObservableObject {
             generatedAt: report.generatedAt
         )
         softwareSampleLogCorrelationReport = report.softwareSampleLogCorrelation
+        nativeUIBridgeHealthReport = report.nativeUIBridgeHealth ?? nativeUIBridgeHealthService.report(
+            engines: engines,
+            generatedAt: report.generatedAt
+        )
+        nativeUIApplicationMatrixReport = report.nativeUIApplicationMatrix ?? nativeUIApplicationMatrixService.report(
+            bottles: bottles,
+            recipes: recipes,
+            launchHistory: report.launchHistory,
+            smokeReports: report.softwareSmokeRuns?.reports ?? [],
+            generatedAt: report.generatedAt
+        )
+        let representativeAcceptanceService = RepresentativeSoftwareAcceptanceService(paths: paths)
+        representativeAcceptanceReport = representativeAcceptanceService.report(
+            matrix: nativeUIApplicationMatrixReport,
+            generatedAt: report.generatedAt
+        )
+        _ = try? representativeAcceptanceService.save(representativeAcceptanceReport)
         softwareCollectionReport = makeSoftwareCollectionReport(from: report)
         softwareCollectionAcceptanceReport = SoftwareCollectionAcceptanceService().report(
             collection: softwareCollectionReport,
@@ -1316,7 +1794,6 @@ final class MacWinStore: ObservableObject {
         )
         testCoverageReport = report.testCoverage
         testExecutionPlanReport = report.testExecutionPlan
-        refreshFoundationStatusSnapshot(from: report)
     }
 
     private func refreshFoundationStatusSnapshot(from report: CapabilityReport? = nil) {
@@ -2226,6 +2703,18 @@ final class MacWinStore: ObservableObject {
         }
     }
 
+    func cleanHistoricalLogs() {
+        setBusy(text(.cleaningHistoricalLogs))
+        do {
+            try paths.ensureBaseDirectories()
+            let result = try logService.archiveHistoricalFailures()
+            refreshRecentLogs()
+            finish(text(.historicalLogsCleaned, result.archivedCount))
+        } catch {
+            fail(error)
+        }
+    }
+
     func exportLogIssueReport() {
         setBusy(text(.exportingLogIssueReport))
         do {
@@ -2386,6 +2875,80 @@ final class MacWinStore: ObservableObject {
             name: text(.highPerformanceBottleName),
             engine: engine,
             runWineboot: runWineboot
+        )
+    }
+
+    private struct DetachedLauncherLaunch: Sendable {
+        var bottle: BottleManifest
+        var launcher: LauncherManifest
+        var result: WineLaunchResult
+    }
+
+    private struct DetachedDiagnosticsRun: Sendable {
+        var bottle: BottleManifest
+        var report: DiagnosticReport
+    }
+
+    nonisolated private static func prepareAndLaunchLauncher(
+        paths: MacWinPaths,
+        bottle: BottleManifest,
+        engine: EngineManifest,
+        launcher: LauncherManifest,
+        logName: String,
+        additionalEnvOverrides: [String: String] = [:]
+    ) throws -> DetachedLauncherLaunch {
+        let bottleService = BottleService(paths: paths)
+        let template = BottleTemplate(windowsVersion: bottle.windowsVersion, arch: bottle.arch)
+        let envOverrides = bottle.id == BottleService.highPerformanceBottleId
+            ? BottleService.highPerformanceEnvOverrides(engine: engine)
+            : bottle.envOverrides
+        let preparedBottle = try bottleService.ensureBottle(
+            id: bottle.id,
+            name: bottle.name,
+            template: template,
+            engine: engine,
+            envOverrides: envOverrides,
+            enforceEnvOverrides: false
+        )
+        let refreshedBottle = try bottleService.bottle(id: bottle.id) ?? preparedBottle
+        var effectiveLauncher = refreshedBottle.installedApps.first(where: { $0.id == launcher.id }) ?? launcher
+        if let profile = ApplicationCompatibilityProfile.current(in: effectiveLauncher)
+            ?? ApplicationCompatibilityProfile.matched(
+                launcherId: effectiveLauncher.id,
+                displayName: effectiveLauncher.displayName,
+                exePath: effectiveLauncher.exePath
+            ) {
+            let migratedLauncher = profile.applied(to: effectiveLauncher)
+            if migratedLauncher != effectiveLauncher {
+                _ = try bottleService.updateLauncher(migratedLauncher, in: refreshedBottle)
+                effectiveLauncher = migratedLauncher
+            }
+        }
+
+        let hasTextRepair = effectiveLauncher.envOverrides["MACWIN_TEXT_RENDERING_REPAIR"] == "1"
+            || effectiveLauncher.envOverrides["MACWIN_HOYOPLAY_TEXT_REPAIR"] == "1"
+            || effectiveLauncher.envOverrides["MACWIN_STEAMWEBHELPER_FORCE_OPAQUE"] == "1"
+            || effectiveLauncher.envOverrides["MACWIN_LENOVO_BLACK_SCREEN_REPAIR"] == "1"
+        if hasTextRepair {
+            try bottleService.resetWebViewRenderingCaches(for: preparedBottle)
+        }
+
+        var launchEnvOverrides = effectiveLauncher.envOverrides
+        launchEnvOverrides.merge(additionalEnvOverrides) { _, override in override }
+        let result = try WineRunner(paths: paths).launchDetached(
+            WineRunRequest(
+                exe: effectiveLauncher.exePath,
+                args: effectiveLauncher.args,
+                bottle: preparedBottle,
+                engine: engine,
+                envOverrides: launchEnvOverrides,
+                logName: logName
+            )
+        )
+        return DetachedLauncherLaunch(
+            bottle: preparedBottle,
+            launcher: effectiveLauncher,
+            result: result
         )
     }
 
@@ -2635,6 +3198,8 @@ final class MacWinStore: ObservableObject {
             return text(.processFailed, "\(exitCode)", command)
         case .processLaunchFailed(let reason):
             return text(.unableToLaunchProcess, reason)
+        case .guiSessionLocked:
+            return text(.nativeUIProbeSessionLocked)
         case .runtimeUnavailable(let processIdentifiers):
             return text(.wineRuntimeUnavailable, processIdentifiers.map(String.init).joined(separator: ", "))
         case .catalogSignatureInvalid:

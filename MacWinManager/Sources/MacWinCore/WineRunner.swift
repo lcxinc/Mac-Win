@@ -1074,6 +1074,18 @@ public struct WineRunner {
     }
 
     private static func isInteractiveWineExecutable(_ lowercasedExecutable: String) -> Bool {
+        let normalizedExecutable = lowercasedExecutable.replacingOccurrences(of: "/", with: "\\")
+        let executableName = normalizedExecutable
+            .split(separator: "\\")
+            .last
+            .map(String.init) ?? normalizedExecutable
+        let executableStem = executableName.hasSuffix(".exe")
+            ? String(executableName.dropLast(4))
+            : executableName
+        if ["reg", "regedit", "wineboot", "wineserver"].contains(executableStem) {
+            return false
+        }
+
         let nonInteractiveTokens = [
             "\\reg.exe",
             "/reg.exe",

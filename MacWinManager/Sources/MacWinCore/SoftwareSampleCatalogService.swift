@@ -1200,6 +1200,7 @@ public struct SoftwareSampleCatalogService {
             category: "Browser",
             purpose: "Gecko browser coverage for non-Chromium rendering, TLS, fonts, IME, file picker, and updater behavior.",
             installSource: .localInstaller,
+            catalogRecipeId: "firefox",
             installerFileNames: [
                 "Firefox_Setup_152.0.1.exe",
                 "Firefox_Setup_152.0.1.msi",
@@ -1342,6 +1343,7 @@ public struct SoftwareSampleCatalogService {
             category: "Office Suite",
             purpose: "Large MSI office suite coverage for document windows, fonts, CJK text, file dialogs, OLE-style integration, and printing code paths.",
             installSource: .localInstaller,
+            catalogRecipeId: "libreoffice",
             installerFileNames: [
                 "LibreOffice_26.2.4_Win_x86-64.msi",
                 "LibreOffice_26.2.4_Win_x86-64_helppack_zh-CN.msi"

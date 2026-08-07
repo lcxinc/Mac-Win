@@ -876,6 +876,63 @@ public struct LogService {
         try Self.archiveCleanupCandidates(report: report, generatedAt: generatedAt, fileManager: fileManager)
     }
 
+    /// Archives completed failure/attention logs outside the active status window.
+    /// The archive is recoverable and is excluded from live status reports.
+    public func archiveHistoricalFailures(
+        olderThan age: TimeInterval = 24 * 60 * 60,
+        generatedAt: Date = Date()
+    ) throws -> LogMaintenanceArchiveResult {
+        let logs = Self.recentLogs(
+            in: paths.logsDirectory,
+            limit: Int.max,
+            fileManager: fileManager
+        )
+        let cutoff = generatedAt.addingTimeInterval(-max(age, 0))
+        let candidates = logs.compactMap { log -> LogMaintenanceItem? in
+            guard log.modifiedAt < cutoff,
+                  log.summary.health == .failed || log.summary.health == .attention else {
+                return nil
+            }
+            if let context = log.launchContext, context.endedAt == nil || context.state == "running" {
+                return nil
+            }
+            return LogMaintenanceItem(
+                name: log.name,
+                path: log.url.path,
+                modifiedAt: log.modifiedAt,
+                byteCount: log.byteCount,
+                reasons: ["historical-failure"]
+            )
+        }
+        guard !candidates.isEmpty else {
+            return LogMaintenanceArchiveResult(
+                archivePath: paths.logsDirectory.appendingPathComponent("Archive", isDirectory: true).path,
+                archivedCount: 0,
+                archivedBytes: 0,
+                archivedItems: []
+            )
+        }
+
+        let report = LogMaintenanceReport(
+            logsPath: paths.logsDirectory.path,
+            generatedAt: generatedAt,
+            policy: LogMaintenancePolicy(staleAgeDays: max(Int(age / (24 * 60 * 60)), 0), largeLogBytes: Int64.max),
+            totalLogCount: candidates.count,
+            totalLogBytes: candidates.map(\.byteCount).reduce(0, +),
+            staleLogCount: candidates.count,
+            staleLogBytes: candidates.map(\.byteCount).reduce(0, +),
+            largeLogCount: 0,
+            largeLogBytes: 0,
+            cleanupCandidateCount: candidates.count,
+            cleanupCandidateBytes: candidates.map(\.byteCount).reduce(0, +),
+            newestLogModifiedAt: candidates.map(\.modifiedAt).max(),
+            oldestLogModifiedAt: candidates.map(\.modifiedAt).min(),
+            cleanupCandidates: candidates,
+            recommendations: []
+        )
+        return try archiveCleanupCandidates(report: report, generatedAt: generatedAt)
+    }
+
     public static func recentLogs(
         in directory: URL,
         limit: Int = 24,

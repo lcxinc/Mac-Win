@@ -748,7 +748,7 @@ struct AppLauncherView: View {
                 systemImage: "slider.horizontal.3",
                 category: .utilities,
                 action: .runBuiltin(bottle, "winecfg", []),
-                tint: .purple
+                tint: .indigo
             ),
             AppLauncherItem(
                 id: "regedit",

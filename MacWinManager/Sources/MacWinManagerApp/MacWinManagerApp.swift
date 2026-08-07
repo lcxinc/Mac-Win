@@ -67,6 +67,11 @@ final class MacWinAppDelegate: NSObject, NSApplicationDelegate {
         false
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        guard MacWinLaunchCoordinator.shared.isPrimaryInstance else { return }
+        MacWinStore.shared.cleanupAllBottleRuntimeProcessesForShutdown()
+    }
+
     private func revealMainWindow(in application: NSApplication, attemptsRemaining: Int) {
         guard attemptsRemaining > 0 else {
             createFallbackMainWindow(in: application)
@@ -357,6 +362,10 @@ enum MacWinCommandLineTool {
             runSupportTriageExport()
             exit(0)
         }
+        if arguments.contains("--export-native-ui-bridge-health") {
+            runNativeUIBridgeHealthExport()
+            exit(0)
+        }
         if arguments.contains("--stop-wine-virtual-desktops") {
             runRuntimeProcessTermination(mode: .wineVirtualDesktops)
             exit(0)
@@ -367,6 +376,10 @@ enum MacWinCommandLineTool {
         }
         if arguments.contains("--stop-all-runtime-processes") {
             runRuntimeProcessTermination(mode: .all)
+            exit(0)
+        }
+        if arguments.contains("--export-representative-acceptance") {
+            runRepresentativeAcceptanceExport()
             exit(0)
         }
 
@@ -415,12 +428,38 @@ enum MacWinCommandLineTool {
           --export-software-sample-coverage
           --export-runtime-processes
           --export-support-triage
+          --export-native-ui-bridge-health
           --stop-wine-virtual-desktops
           --stop-detached-runtime-processes
           --stop-all-runtime-processes
           --export-foundation-status
           --export-foundation-readiness
+          --export-representative-acceptance
         """)
+    }
+
+    private static func runRepresentativeAcceptanceExport() {
+        do {
+            let paths = MacWinPaths()
+            let engines = try EngineRegistry(paths: paths).listEngines()
+            let bottles = try BottleService(paths: paths).listBottles()
+            let recipes = try loadRecipes(paths: paths)
+            let capability = CapabilityReportService(paths: paths).makeReport(
+                engines: engines,
+                bottles: bottles,
+                recipes: recipes
+            )
+            let matrix = capability.nativeUIApplicationMatrix
+                ?? NativeUIApplicationMatrixReport.empty(rootPath: paths.root.path)
+            let service = RepresentativeSoftwareAcceptanceService(paths: paths)
+            let report = service.report(matrix: matrix)
+            let url = try service.save(report)
+            print(url.path)
+            exit(0)
+        } catch {
+            fputs("MacWin representative acceptance export failed: \(error.localizedDescription)\n", stderr)
+            exit(1)
+        }
     }
 
     private static func runRecipeInstall(arguments: [String], optionIndex: Int) {
@@ -1187,6 +1226,33 @@ enum MacWinCommandLineTool {
         }
     }
 
+    private static func runNativeUIBridgeHealthExport() {
+        do {
+            let paths = MacWinPaths()
+            try paths.ensureBaseDirectories()
+            let generatedAt = Date()
+            let engines = try EngineRegistry(paths: paths).listEngines()
+            let report = NativeUIBridgeHealthService().report(
+                engines: engines,
+                generatedAt: generatedAt
+            )
+            let directory = paths.logsDirectory.appendingPathComponent("NativeUIBridge", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let timestampURL = directory.appendingPathComponent(
+                "native-ui-bridge-health-\(compactTimestamp(generatedAt)).json"
+            )
+            let latestURL = directory.appendingPathComponent("native-ui-bridge-health-latest.json")
+            let store = JSONStore()
+            try store.save(report, to: timestampURL)
+            try store.save(report, to: latestURL)
+            print(timestampURL.path)
+            print(latestURL.path)
+        } catch {
+            fputs("MacWin native UI bridge health export failed: \(error.localizedDescription)\n", stderr)
+            exit(1)
+        }
+    }
+
     private static func makeCapabilityReport(paths: MacWinPaths, logLimit: Int = 24) throws -> CapabilityReport {
         try paths.ensureBaseDirectories()
         let engines = try EngineRegistry(paths: paths).listEngines()
@@ -1436,6 +1502,7 @@ private struct MacWinRootView: View {
                 await store.bootstrapIfNeeded()
                 await store.drainQueuedExternalExecutableOpens()
                 store.startExternalExecutableOpenQueueWatcher()
+                store.startBottleRuntimeCleanupWatcher()
             }
     }
 }

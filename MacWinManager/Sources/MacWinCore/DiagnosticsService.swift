@@ -90,10 +90,76 @@ public struct DiagnosticsService {
 
     public var paths: MacWinPaths
     public var fileManager: FileManager
+    public var wineRunner: WineRunner
+    public var hostGUISessionService: HostGUISessionService
 
-    public init(paths: MacWinPaths = MacWinPaths(), fileManager: FileManager = .default) {
+    public init(
+        paths: MacWinPaths = MacWinPaths(),
+        fileManager: FileManager = .default,
+        wineRunner: WineRunner? = nil,
+        hostGUISessionService: HostGUISessionService = HostGUISessionService()
+    ) {
         self.paths = paths
         self.fileManager = fileManager
+        self.wineRunner = wineRunner ?? WineRunner(paths: paths, fileManager: fileManager)
+        self.hostGUISessionService = hostGUISessionService
+    }
+
+    public func runNativeUIProbe(
+        mode: NativeUIProbeMode,
+        architecture: WindowsExecutableArchitecture = .x86_64,
+        engine: EngineManifest,
+        bottle: BottleManifest,
+        probeService: NativeUIProbeService? = nil
+    ) throws -> NativeUIProbeRunReport {
+        guard hostGUISessionService.report().isInteractive else {
+            throw MacWinError.guiSessionLocked
+        }
+        let probeService = probeService ?? NativeUIProbeService(paths: paths)
+        guard architecture != .i386 || engine.supportsWin32 else {
+            throw MacWinError.unsupportedEngine("Native UI 32-bit probe requires a WoW64-capable engine.")
+        }
+        guard let executable = probeService.executable(for: architecture) else {
+            throw MacWinError.missingFile(
+                "native-ui-probe-\(architecture == .i386 ? "i686" : "x86_64").exe"
+            )
+        }
+
+        let startedAt = Date()
+        let result = try wineRunner.run(
+            WineRunRequest(
+                exe: executable.path,
+                args: [mode.argument],
+                bottle: bottle,
+                engine: engine,
+                logName: "native-ui-\(bottle.id)-\(mode.rawValue)-\(architecture.rawValue)-\(UUID().uuidString.prefix(8)).log"
+            )
+        )
+        let endedAt = Date()
+        let status: NativeUIProbeRunStatus
+        switch result.exitCode {
+        case 0:
+            status = .passed
+        case 2:
+            status = .cancelled
+        default:
+            status = .failed
+        }
+        return NativeUIProbeRunReport(
+            mode: mode,
+            architecture: architecture,
+            executablePath: executable.path,
+            bottleId: bottle.id,
+            bottleName: bottle.name,
+            engineId: engine.id,
+            nativeUIPreset: NativeUIIntegrationPreset.current(in: bottle),
+            status: status,
+            exitCode: result.exitCode,
+            logPath: result.logURL.path,
+            output: result.output,
+            startedAt: startedAt,
+            endedAt: endedAt
+        )
     }
 
     public func runProbeSuite(
