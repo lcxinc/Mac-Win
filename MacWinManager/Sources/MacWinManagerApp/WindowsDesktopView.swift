@@ -1,7 +1,12 @@
 import AppKit
 import MacWinCore
+import ImageIO
 import SwiftUI
 import UniformTypeIdentifiers
+
+private extension Color {
+    static let macWinSecondaryText = Color(nsColor: .secondaryLabelColor)
+}
 
 struct WindowsDesktopView: View {
     @EnvironmentObject private var store: MacWinStore
@@ -176,8 +181,7 @@ struct WindowsDesktopView: View {
             }
         }
         .font(.subheadline)
-        .foregroundStyle(.white)
-        .shadow(color: .black.opacity(0.24), radius: 4, y: 1)
+        .foregroundStyle(.primary)
         .padding(.horizontal, 26)
         .padding(.top, 22)
         .padding(.bottom, 8)
@@ -376,18 +380,19 @@ struct ImmersiveWorkspaceView: View {
                                             Spacer()
                                             Button {
                                                 store.refreshRunningItems()
-                                            } label: {
-                                                Image(systemName: "arrow.clockwise")
-                                                    .frame(width: 28, height: 26)
-                                            }
-                                            .buttonStyle(.plain)
-                                            .help(store.text(.refreshDesktop))
-                                        }
+            } label: {
+                Image(systemName: "arrow.clockwise")
+                    .frame(width: 28, height: 26)
+            }
+            .buttonStyle(.plain)
+            .contentShape(Rectangle())
+            .help(store.text(.refreshDesktop))
+        }
 
                                         if store.runningItems.isEmpty {
                                             Text(store.text(.noRunningApps))
                                                 .font(.callout)
-                                                .foregroundStyle(.secondary)
+                                                .foregroundStyle(Color.macWinSecondaryText)
                                                 .frame(maxWidth: .infinity, minHeight: 86)
                                         } else {
                                             VStack(spacing: 8) {
@@ -422,7 +427,7 @@ struct ImmersiveWorkspaceView: View {
                                         if launchers.isEmpty {
                                             Text(store.text(.noLaunchersYet))
                                                 .font(.callout)
-                                                .foregroundStyle(.secondary)
+                                                .foregroundStyle(Color.macWinSecondaryText)
                                                 .frame(maxWidth: .infinity, minHeight: 112)
                                         } else {
                                             LazyVGrid(columns: columns, alignment: .leading, spacing: 22) {
@@ -452,7 +457,7 @@ struct ImmersiveWorkspaceView: View {
                                                 .font(.title3.weight(.semibold))
                                                 .lineLimit(2)
                                             Text("\(bottle.windowsVersion) · \(bottle.arch.rawValue)")
-                                                .foregroundStyle(.secondary)
+                                                .foregroundStyle(Color.macWinSecondaryText)
                                         }
 
                                         Divider()
@@ -460,7 +465,7 @@ struct ImmersiveWorkspaceView: View {
                                         if let engine = engine(for: bottle) {
                                             Label(engine.wineVersion, systemImage: "cpu")
                                                 .font(.subheadline.weight(.semibold))
-                                                .foregroundStyle(.secondary)
+                                                .foregroundStyle(Color.macWinSecondaryText)
                                                 .lineLimit(1)
                                         }
 
@@ -531,12 +536,12 @@ struct ImmersiveWorkspaceView: View {
                 .font(.system(size: 30, weight: .bold))
             Text(store.text(.desktopSubtitle))
                 .font(.title3)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.macWinSecondaryText)
                 .lineLimit(1)
             Spacer()
             Label(bottle.name, systemImage: "shippingbox")
                 .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.macWinSecondaryText)
                 .lineLimit(1)
         }
         .padding(.top, 4)
@@ -664,12 +669,12 @@ struct AppLauncherView: View {
                 .font(.system(size: 28, weight: .semibold))
             Text(store.text(.appLauncherSubtitle))
                 .font(.callout)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.macWinSecondaryText)
                 .lineLimit(1)
             Spacer()
             Label(bottle.name, systemImage: "shippingbox")
                 .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.macWinSecondaryText)
                 .lineLimit(1)
         }
         .padding(.horizontal, 28)
@@ -1003,6 +1008,7 @@ private struct ImmersiveToolButton: View {
             .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 8))
         }
         .buttonStyle(.plain)
+        .contentShape(Rectangle())
     }
 }
 
@@ -1020,9 +1026,8 @@ private struct NativePanel<Content: View>: View {
             .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
             .overlay {
                 RoundedRectangle(cornerRadius: 8)
-                    .stroke(Color.white.opacity(0.58), lineWidth: 1)
+                    .stroke(Color(nsColor: .separatorColor).opacity(0.72), lineWidth: 1)
             }
-            .shadow(color: .black.opacity(0.07), radius: 18, y: 8)
     }
 }
 
@@ -1042,21 +1047,19 @@ struct LauncherIconView: View {
                     .interpolation(.high)
                     .scaledToFit()
                     .padding(size * 0.04)
-                    .shadow(color: .black.opacity(0.16), radius: size * 0.08, y: size * 0.035)
             } else if let builtInIcon {
                 Image(nsImage: builtInIcon)
                     .resizable()
                     .interpolation(.high)
                     .scaledToFit()
-                    .shadow(color: .black.opacity(0.12), radius: size * 0.08, y: size * 0.035)
+                    .padding(size * 0.03)
             } else {
                 ZStack {
                     RoundedRectangle(cornerRadius: min(size * 0.23, 18), style: .continuous)
                         .fill(iconShellBackground)
-                        .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
                         .overlay {
                             RoundedRectangle(cornerRadius: min(size * 0.23, 18), style: .continuous)
-                                .stroke(Color.white.opacity(0.72), lineWidth: 0.8)
+                                .stroke(Color(nsColor: .separatorColor).opacity(0.72), lineWidth: 0.8)
                         }
 
                     MacWinFallbackIcon(systemImage: systemImage, tint: tint, size: size)
@@ -1069,7 +1072,54 @@ struct LauncherIconView: View {
 
     private var extractedIcon: NSImage? {
         guard let iconPath else { return nil }
-        return NSImage(contentsOf: URL(fileURLWithPath: iconPath))
+        return Self.imageFromIconPath(iconPath)
+    }
+
+    private static func imageFromIconPath(_ iconPath: String) -> NSImage? {
+        let url = URL(fileURLWithPath: iconPath)
+
+        if let iconImage = NSImage(contentsOf: url) {
+            return iconImage
+        }
+
+        guard let data = try? Data(contentsOf: url),
+              let iconImage = imageFromICOData(data) else {
+            return nil
+        }
+        return iconImage
+    }
+
+    private static func imageFromICOData(_ data: Data) -> NSImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
+            return nil
+        }
+
+        let count = CGImageSourceGetCount(source)
+        guard count > 0 else { return nil }
+
+        var selectedImage: CGImage?
+        var selectedArea = 0
+
+        for index in 0..<count {
+            guard let cgImage = CGImageSourceCreateImageAtIndex(source, index, nil) else {
+                continue
+            }
+
+            let area = Int(cgImage.width) * Int(cgImage.height)
+            if area > selectedArea {
+                selectedArea = area
+                selectedImage = cgImage
+            }
+        }
+
+        guard let cgImage = selectedImage ?? CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+            return nil
+        }
+
+        return NSImage(
+            cgImage: cgImage,
+            size: CGSize(width: CGFloat(cgImage.width), height: CGFloat(cgImage.height))
+        )
     }
 
     private var builtInIcon: NSImage? {
@@ -1087,8 +1137,8 @@ struct LauncherIconView: View {
     private var iconShellBackground: LinearGradient {
         LinearGradient(
             colors: [
-                Color.white.opacity(0.95),
-                Color(nsColor: .controlBackgroundColor).opacity(0.95)
+                Color(nsColor: .windowBackgroundColor).opacity(0.95),
+                Color(nsColor: .controlBackgroundColor).opacity(0.9)
             ],
             startPoint: .topLeading,
             endPoint: .bottomTrailing
@@ -1193,9 +1243,9 @@ private struct MacWinFallbackIcon: View {
                 .fill(
                     LinearGradient(
                         colors: [
-                            Color.white.opacity(0.92),
+                            Color(nsColor: .controlBackgroundColor).opacity(0.92),
                             tint.opacity(0.18),
-                            Color(red: 0.95, green: 0.97, blue: 1.0)
+                            Color(nsColor: .underPageBackgroundColor)
                         ],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
@@ -1261,82 +1311,103 @@ private struct InstallerDropOverlay: View {
         VStack(spacing: 12) {
             Image(systemName: "tray.and.arrow.down.fill")
                 .font(.system(size: 42, weight: .semibold))
-                .foregroundStyle(.white)
+                .foregroundStyle(.primary)
                 .frame(width: 72, height: 72)
-                .background(Color.white.opacity(0.18), in: RoundedRectangle(cornerRadius: 8))
+                .background(Color(nsColor: .controlBackgroundColor).opacity(0.2), in: RoundedRectangle(cornerRadius: 8))
 
             Text(store.text(.dropInstallerTitle))
                 .font(.system(size: 30, weight: .bold))
-                .foregroundStyle(.white)
+                .foregroundStyle(.primary)
 
             Text(store.text(.dropInstallerHelp))
                 .font(.headline)
-                .foregroundStyle(.white.opacity(0.84))
+                .foregroundStyle(Color.macWinSecondaryText)
                 .multilineTextAlignment(.center)
                 .lineLimit(2)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.black.opacity(0.42), in: RoundedRectangle(cornerRadius: 8))
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
         .overlay {
             RoundedRectangle(cornerRadius: 8)
-                .stroke(.white.opacity(0.72), style: StrokeStyle(lineWidth: 2, dash: [10, 7]))
+                .stroke(Color(nsColor: .separatorColor).opacity(0.58), style: StrokeStyle(lineWidth: 1.2, dash: [10, 7]))
         }
     }
 }
 
 private struct WindowsDesktopWallpaper: View {
+    @Environment(\.colorScheme) private var colorScheme
+
     var body: some View {
         ZStack {
-            LinearGradient(
-                colors: [
-                    Color(red: 0.08, green: 0.32, blue: 0.52),
-                    Color(red: 0.10, green: 0.48, blue: 0.58),
-                    Color(red: 0.58, green: 0.72, blue: 0.68)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
+            ZStack {
+                if colorScheme == .dark {
+                    LinearGradient(
+                        colors: [
+                            Color(nsColor: .windowBackgroundColor),
+                            Color(nsColor: .controlBackgroundColor).opacity(0.72),
+                            Color(nsColor: .textBackgroundColor)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                } else {
+                    LinearGradient(
+                        colors: [
+                            Color(nsColor: .controlBackgroundColor),
+                            Color(nsColor: .underPageBackgroundColor).opacity(0.84),
+                            Color(nsColor: .windowBackgroundColor)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                }
+
+                RadialGradient(
+                    colors: [
+                        Color(nsColor: .controlAccentColor).opacity(0.18),
+                        Color.clear
+                    ],
+                    center: .topLeading,
+                    startRadius: 12,
+                    endRadius: 520
+                )
+            }
+
+            Rectangle()
+                .fill(.ultraThinMaterial)
+                .blendMode(.softLight)
+                .allowsHitTesting(false)
 
             VStack {
                 HStack {
-                    WindowsPaneShape()
-                        .fill(.white.opacity(0.22))
-                        .frame(width: 260, height: 190)
-                        .rotationEffect(.degrees(-8))
-                        .blur(radius: 0.2)
+                    Group {
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(.tertiary)
+                            .frame(width: 320, height: 36)
+                            .overlay(
+                                HStack {
+                                    Capsule()
+                                        .frame(width: 8, height: 8)
+                                    Capsule()
+                                        .frame(width: 8, height: 8)
+                                    Capsule()
+                                        .frame(width: 8, height: 8)
+                                    Spacer()
+                                }
+                                .foregroundStyle(Color.macWinSecondaryText.opacity(0.9))
+                                .padding(.horizontal, 10)
+                            )
+                            .opacity(0.35)
+                            .blur(radius: 1)
+                        Spacer()
+                    }
+                    .padding(.horizontal, 32)
+                    .padding(.top, 14)
                     Spacer()
                 }
                 Spacer()
             }
-            .padding(52)
-
-            VStack {
-                Spacer()
-                Rectangle()
-                    .fill(.white.opacity(0.10))
-                    .frame(height: 120)
-                    .blur(radius: 32)
-            }
         }
-    }
-}
-
-private struct WindowsPaneShape: Shape {
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        let gap: CGFloat = min(rect.width, rect.height) * 0.045
-        let halfWidth = (rect.width - gap) / 2
-        let halfHeight = (rect.height - gap) / 2
-        let panes = [
-            CGRect(x: 0, y: 0, width: halfWidth, height: halfHeight),
-            CGRect(x: halfWidth + gap, y: 0, width: halfWidth, height: halfHeight),
-            CGRect(x: 0, y: halfHeight + gap, width: halfWidth, height: halfHeight),
-            CGRect(x: halfWidth + gap, y: halfHeight + gap, width: halfWidth, height: halfHeight)
-        ]
-        for pane in panes {
-            path.addRoundedRect(in: pane, cornerSize: CGSize(width: 4, height: 4))
-        }
-        return path
     }
 }
 
@@ -1370,8 +1441,7 @@ private struct DesktopShortcutButton: View {
             VStack(spacing: 7) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 8)
-                        .fill(.white.opacity(0.92))
-                        .shadow(color: .black.opacity(0.14), radius: 8, y: 3)
+                        .fill(Color(nsColor: .controlBackgroundColor).opacity(0.92))
                     Image(systemName: shortcut.systemImage)
                         .font(.system(size: 26, weight: .semibold))
                         .foregroundStyle(shortcut.tint)
@@ -1381,11 +1451,10 @@ private struct DesktopShortcutButton: View {
                 Text(shortcut.title)
                     .font(.system(size: 12, weight: .semibold))
                     .multilineTextAlignment(.center)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.78)
-                    .foregroundStyle(.white)
-                    .shadow(color: .black.opacity(0.48), radius: 3, y: 1)
-                    .frame(width: 100, height: 30, alignment: .top)
+                .lineLimit(2)
+                .minimumScaleFactor(0.78)
+                .foregroundStyle(Color(nsColor: .labelColor))
+                .frame(width: 100, height: 30, alignment: .top)
             }
             .frame(width: 106, height: 92, alignment: .top)
             .contentShape(Rectangle())
@@ -1421,7 +1490,7 @@ private struct StartMenuPanel: View {
                 Spacer()
                 Text(bottle.name)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinSecondaryText)
                     .lineLimit(1)
             }
 
@@ -1431,11 +1500,11 @@ private struct StartMenuPanel: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text(store.text(.pinned))
                     .font(.headline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinSecondaryText)
 
                 if filteredLaunchers.isEmpty {
                     Text(store.text(.noDesktopApps))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.macWinSecondaryText)
                         .frame(maxWidth: .infinity, minHeight: 60, alignment: .center)
                 } else {
                     LazyVGrid(columns: gridColumns, alignment: .leading, spacing: 10) {
@@ -1454,7 +1523,7 @@ private struct StartMenuPanel: View {
                 HStack {
                     Text(store.text(.runningApps))
                         .font(.headline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.macWinSecondaryText)
                     Spacer()
                     Button {
                         store.refreshRunningItems()
@@ -1462,13 +1531,14 @@ private struct StartMenuPanel: View {
                         Image(systemName: "arrow.clockwise")
                     }
                     .buttonStyle(.borderless)
+                    .contentShape(Rectangle())
                     .help(store.text(.refreshDesktop))
                 }
 
                 if runningItems.isEmpty {
                     Text(store.text(.noRunningApps))
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.macWinSecondaryText)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.vertical, 4)
                 } else {
@@ -1490,7 +1560,7 @@ private struct StartMenuPanel: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text(store.text(.quickAccess))
                     .font(.headline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinSecondaryText)
 
                 LazyVGrid(columns: gridColumns, alignment: .leading, spacing: 10) {
                     StartMenuAppButton(title: store.text(.thisPC), systemImage: "desktopcomputer") {
@@ -1519,7 +1589,7 @@ private struct StartMenuPanel: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text(store.text(.runCommand))
                     .font(.headline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinSecondaryText)
                 HStack(spacing: 8) {
                     TextField(store.text(.executablePlaceholder), text: $command)
                         .textFieldStyle(.roundedBorder)
@@ -1539,7 +1609,10 @@ private struct StartMenuPanel: View {
         .padding(18)
         .frame(width: 620)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
-        .shadow(color: .black.opacity(0.28), radius: 24, y: 10)
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color(nsColor: .separatorColor).opacity(0.24), lineWidth: 1)
+        }
     }
 
     private var filteredLaunchers: [LauncherManifest] {
@@ -1567,7 +1640,7 @@ private struct RunningProcessRow: View {
                     .lineLimit(1)
                 Text("\(store.text(.pid)) \(item.processIdentifier) · \(item.bottleName)")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinSecondaryText)
                     .lineLimit(1)
             }
             Spacer()
@@ -1575,11 +1648,13 @@ private struct RunningProcessRow: View {
                 Image(systemName: "doc.text")
             }
             .buttonStyle(.borderless)
+            .contentShape(Rectangle())
             .help(store.text(.openLogFile))
             Button(role: .destructive, action: terminate) {
                 Image(systemName: "stop.fill")
             }
             .buttonStyle(.borderless)
+            .contentShape(Rectangle())
             .help(store.text(.stop))
         }
         .padding(.horizontal, 10)
@@ -1611,7 +1686,7 @@ private struct StartMenuAppButton: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
+        .background(Color.primary.opacity(0.03), in: RoundedRectangle(cornerRadius: 8))
     }
 }
 
@@ -1640,6 +1715,7 @@ private struct WindowsTaskbar: View {
             .buttonStyle(.plain)
             .background(isStartMenuOpen ? Color.accentColor.opacity(0.18) : Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
             .help(store.text(.startMenu))
+            .contentShape(RoundedRectangle(cornerRadius: 8))
 
             Button(action: openSearch) {
                 Label(store.text(.searchApps), systemImage: "magnifyingglass")
@@ -1650,6 +1726,7 @@ private struct WindowsTaskbar: View {
             .buttonStyle(.plain)
             .padding(.horizontal, 10)
             .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+            .contentShape(RoundedRectangle(cornerRadius: 8))
 
             ForEach(launchers) { launcher in
                 Button {
@@ -1662,9 +1739,12 @@ private struct WindowsTaskbar: View {
                 .buttonStyle(.plain)
                 .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
                 .help(launcher.displayName)
+                .contentShape(RoundedRectangle(cornerRadius: 8))
             }
 
             ForEach(runningItems.prefix(5)) { item in
+                let helpLabel = "\(item.title) · \(store.text(.pid)) \(item.processIdentifier)"
+
                 Button {
                     openRunningLog(item)
                 } label: {
@@ -1680,7 +1760,8 @@ private struct WindowsTaskbar: View {
                 }
                 .buttonStyle(.plain)
                 .background(Color.green.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
-                .help("\(item.title) · \(store.text(.pid)) \(item.processIdentifier)")
+                .help(helpLabel)
+                .contentShape(RoundedRectangle(cornerRadius: 8))
                 .contextMenu {
                     Button(store.text(.openLogFile)) {
                         openRunningLog(item)
@@ -1701,11 +1782,12 @@ private struct WindowsTaskbar: View {
             }
             .buttonStyle(.plain)
             .help(store.text(.refreshDesktop))
+            .contentShape(RoundedRectangle(cornerRadius: 8))
 
             Label(bottle.windowsVersion.uppercased(), systemImage: "shippingbox")
                 .font(.caption)
                 .lineLimit(1)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.macWinSecondaryText)
 
             Button(action: openLogs) {
                 Image(systemName: "doc.text")
@@ -1713,6 +1795,7 @@ private struct WindowsTaskbar: View {
             }
             .buttonStyle(.plain)
             .help(store.text(.logs))
+            .contentShape(RoundedRectangle(cornerRadius: 8))
 
             Button(action: openSettings) {
                 Image(systemName: "gearshape")
@@ -1720,6 +1803,7 @@ private struct WindowsTaskbar: View {
             }
             .buttonStyle(.plain)
             .help(store.text(.settings))
+            .contentShape(RoundedRectangle(cornerRadius: 8))
 
             Text(Self.timeString)
                 .font(.caption.monospacedDigit())
@@ -1729,7 +1813,10 @@ private struct WindowsTaskbar: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
-        .shadow(color: .black.opacity(0.18), radius: 16, y: 8)
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color(nsColor: .separatorColor).opacity(0.2), lineWidth: 0.6)
+        }
     }
 
     private static var timeString: String {
