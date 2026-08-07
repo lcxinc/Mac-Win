@@ -1710,6 +1710,7 @@ private struct WindowsTaskbar: View {
             .buttonStyle(.plain)
             .background(isStartMenuOpen ? Color.accentColor.opacity(0.18) : Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
             .help(store.text(.startMenu))
+            .contentShape(RoundedRectangle(cornerRadius: 8))
 
             Button(action: openSearch) {
                 Label(store.text(.searchApps), systemImage: "magnifyingglass")
@@ -1720,6 +1721,7 @@ private struct WindowsTaskbar: View {
             .buttonStyle(.plain)
             .padding(.horizontal, 10)
             .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+            .contentShape(RoundedRectangle(cornerRadius: 8))
 
             ForEach(launchers) { launcher in
                 Button {
@@ -1732,6 +1734,7 @@ private struct WindowsTaskbar: View {
                 .buttonStyle(.plain)
                 .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
                 .help(launcher.displayName)
+                .contentShape(RoundedRectangle(cornerRadius: 8))
             }
 
             ForEach(runningItems.prefix(5)) { item in
@@ -1753,6 +1756,7 @@ private struct WindowsTaskbar: View {
                 .buttonStyle(.plain)
                 .background(Color.green.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
                 .help(helpLabel)
+                .contentShape(RoundedRectangle(cornerRadius: 8))
                 .contextMenu {
                     Button(store.text(.openLogFile)) {
                         openRunningLog(item)
@@ -1773,6 +1777,7 @@ private struct WindowsTaskbar: View {
             }
             .buttonStyle(.plain)
             .help(store.text(.refreshDesktop))
+            .contentShape(RoundedRectangle(cornerRadius: 8))
 
             Label(bottle.windowsVersion.uppercased(), systemImage: "shippingbox")
                 .font(.caption)
@@ -1785,6 +1790,7 @@ private struct WindowsTaskbar: View {
             }
             .buttonStyle(.plain)
             .help(store.text(.logs))
+            .contentShape(RoundedRectangle(cornerRadius: 8))
 
             Button(action: openSettings) {
                 Image(systemName: "gearshape")
@@ -1792,6 +1798,7 @@ private struct WindowsTaskbar: View {
             }
             .buttonStyle(.plain)
             .help(store.text(.settings))
+            .contentShape(RoundedRectangle(cornerRadius: 8))
 
             Text(Self.timeString)
                 .font(.caption.monospacedDigit())
