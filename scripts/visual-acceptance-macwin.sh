@@ -116,9 +116,14 @@ if ! /usr/bin/swift "$SCRIPT_DIR/capture-macos-window.swift" "$window_id" "$SCRE
   exit 3
 fi
 
-/usr/bin/python3 "$SCRIPT_DIR/analyze-window-image.py" "$SCREENSHOT_PATH" "$ANALYSIS_JSON" >/dev/null
+if ! /usr/bin/python3 "$SCRIPT_DIR/analyze-window-image.py" "$SCREENSHOT_PATH" "$ANALYSIS_JSON" >/dev/null; then
+  emit_status failed "analysis_failed"
+  echo "elapsed_seconds=$elapsed"
+  exit 4
+fi
 
-python3 - "$SCREENSHOT_PATH" <<'PY'
+analysis_tmp="$OUTPUT_DIR/macwin-visual-analysis-report.txt"
+python3 - "$SCREENSHOT_PATH" > "$analysis_tmp" <<'PY'
 import struct
 import zlib
 import sys
@@ -130,8 +135,8 @@ with open(path, "rb") as handle:
     data = handle.read()
 
 if data[:8] != b"\x89PNG\r\n\x1a\n":
-    print("visual_acceptance_status=failed")
-    print("reason=invalid_png")
+    print("analysis_status=fail")
+    print("analysis_reason=invalid_png")
     sys.exit(3)
 
 position = 8
@@ -200,8 +205,8 @@ for row in rows:
         pixels.append((row[i], row[i + 1], row[i + 2], row[i + 3]))
 
 if not pixels:
-    print("visual_acceptance_status=failed")
-    print("reason=no_pixels")
+    print("analysis_status=fail")
+    print("analysis_reason=no_pixels")
     sys.exit(4)
 
 dominant_ratio = Counter(pixels)[pixels[0]] / len(pixels)
@@ -227,13 +232,13 @@ status = (
     else "fail"
 )
 
-print(f"visual_acceptance_status={status}")
+print(f"analysis_status={status}")
 print(f"resolution={width}x{height}")
 print(f"dominant_ratio={dominant_ratio:.6f}")
 print(f"center_color_std={center_std:.4f}")
 
 if status != "pass":
-    print("reason=low_variance_or_small_capture")
+    print("analysis_reason=low_variance_or_small_capture")
     sys.exit(5)
 PY
 
@@ -248,11 +253,33 @@ print(data.get("classification", "unknown"))
 PY
 )"
 fi
+
+analysis_status="$(grep '^analysis_status=' "$analysis_tmp" | tail -n 1 | cut -d= -f2- || true)"
+analysis_reason="$(grep '^analysis_reason=' "$analysis_tmp" | tail -n 1 | cut -d= -f2- || true)"
+analysis_resolution="$(grep '^resolution=' "$analysis_tmp" | tail -n 1 | cut -d= -f2- || true)"
+analysis_dominant="$(grep '^dominant_ratio=' "$analysis_tmp" | tail -n 1 | cut -d= -f2- || true)"
+analysis_center_std="$(grep '^center_color_std=' "$analysis_tmp" | tail -n 1 | cut -d= -f2- || true)"
+
+if [ -z "$analysis_status" ]; then
+  emit_status failed "analysis_parse_failed"
+  echo "elapsed_seconds=$elapsed"
+  exit 7
+fi
+
+echo "visual_acceptance_status=$analysis_status"
+if [ -n "$analysis_reason" ]; then
+  echo "reason=$analysis_reason"
+fi
+echo "resolution=$analysis_resolution"
+echo "dominant_ratio=$analysis_dominant"
+echo "center_color_std=$analysis_center_std"
+echo "analysis_json=$ANALYSIS_JSON"
+echo "analysis_classification=${classification:-unknown}"
 echo "window_id=$window_id"
 echo "screenshot=$SCREENSHOT_PATH"
-echo "analysis_json=$ANALYSIS_JSON"
 echo "log_file=$log_file"
 echo "owner=$OWNER_NAME"
 echo "app_path=$APP_PATH"
-echo "analysis_classification=$classification"
 echo "elapsed_seconds=$elapsed"
+rm -f "$analysis_tmp"
+exit 0
