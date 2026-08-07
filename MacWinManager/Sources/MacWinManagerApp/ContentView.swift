@@ -3,6 +3,10 @@ import MacWinCore
 import SwiftUI
 import UniformTypeIdentifiers
 
+private extension Color {
+    static let macWinReadableSecondaryText = Color(nsColor: .secondaryLabelColor)
+}
+
 struct ContentView: View {
     @EnvironmentObject private var store: MacWinStore
     @State private var titlebarLeadingInset: CGFloat = 84
@@ -330,7 +334,7 @@ struct UnifiedTitleBar: View {
                                 .lineLimit(1)
                             Image(systemName: "chevron.down")
                                 .font(.system(size: 9, weight: .semibold))
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Color.macWinReadableSecondaryText)
                         }
                         .padding(.horizontal, 9)
                         .frame(minWidth: 104, maxWidth: 172, minHeight: 27)
@@ -365,7 +369,7 @@ struct UnifiedTitleBar: View {
                     if let engine = activeEngine {
                         Text(engine.wineVersion)
                             .font(.caption.weight(.medium))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.macWinReadableSecondaryText)
                             .lineLimit(1)
                             .fixedSize(horizontal: true, vertical: false)
                             .padding(.leading, 2)
@@ -443,7 +447,7 @@ private struct WorkspaceModeControl: View {
         } label: {
             Image(systemName: systemImage)
                 .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(isSelected ? Color(nsColor: .selectedControlTextColor) : Color.secondary)
+                .foregroundStyle(isSelected ? Color(nsColor: .selectedControlTextColor) : Color.macWinReadableSecondaryText)
                 .frame(width: 29, height: 22)
                 .contentShape(Rectangle())
                 .background {
@@ -464,7 +468,7 @@ private struct TitlebarIconButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 13, weight: .medium))
-            .foregroundStyle(isEnabled ? Color.primary : Color.secondary)
+            .foregroundStyle(isEnabled ? Color.primary : Color.macWinReadableSecondaryText)
             .frame(width: 28, height: 26)
             .contentShape(Rectangle())
             .background {
@@ -575,21 +579,22 @@ struct SidebarView: View {
                                 .font(.system(size: 14, weight: .regular))
                                 .lineLimit(1)
                             Spacer(minLength: 0)
-                        }
-                        .padding(.horizontal, 14)
-                        .frame(height: 34)
-                        .foregroundStyle(Color.primary)
-                        .background {
-                            if store.selection == section {
-                                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                    .fill(Color.accentColor.opacity(0.16))
-                            }
+                    }
+                    .padding(.horizontal, 14)
+                    .frame(height: 34)
+                    .foregroundStyle(Color.primary)
+                    .background {
+                        if store.selection == section {
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(Color.accentColor.opacity(0.16))
                         }
                     }
-                    .buttonStyle(.plain)
-                    .help(store.text(section.titleKey))
                 }
+                .buttonStyle(.plain)
+                .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .help(store.text(section.titleKey))
             }
+        }
             .padding(.horizontal, 10)
             .padding(.top, 14)
 
@@ -602,7 +607,7 @@ struct SidebarView: View {
                     .lineLimit(1)
             }
             .font(.caption)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(Color.macWinReadableSecondaryText)
             .padding(.horizontal, 18)
             .padding(.bottom, 14)
         }
@@ -622,10 +627,10 @@ struct StatusBar: View {
                 ProgressView()
                     .controlSize(.small)
             }
-            Text(store.lastError ?? store.statusMessage)
-                .font(.callout)
-                .lineLimit(1)
-                .foregroundStyle(store.lastError == nil ? Color.secondary : Color.red)
+                Text(store.lastError ?? store.statusMessage)
+                    .font(.callout)
+                    .lineLimit(1)
+                    .foregroundStyle(store.lastError == nil ? Color.macWinReadableSecondaryText : Color.red)
             Spacer()
             Button {
                 store.openLogs()
@@ -671,7 +676,7 @@ struct HomeView: View {
                                         .font(.headline)
                                     Text(bottle.name)
                                         .font(.subheadline)
-                                        .foregroundStyle(.secondary)
+                                        .foregroundStyle(Color.macWinReadableSecondaryText)
                                 }
                                 Spacer()
                                 Button {
@@ -710,7 +715,7 @@ struct HomeFoundationStatusCard: View {
                         Spacer()
                         Text(store.text(.foundationStatusSummary, stateTitle(snapshot.state), snapshot.blockerCount, snapshot.warningCount))
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.macWinReadableSecondaryText)
                     }
                     LazyVGrid(columns: columns, spacing: 10) {
                         SoftwarePlanMetric(
@@ -753,7 +758,7 @@ struct HomeFoundationStatusCard: View {
                                             .font(.subheadline.weight(.semibold))
                                         Text(finding.recommendedAction)
                                             .font(.caption)
-                                            .foregroundStyle(.secondary)
+                                            .foregroundStyle(Color.macWinReadableSecondaryText)
                                             .lineLimit(2)
                                     }
                                 } icon: {
@@ -766,7 +771,7 @@ struct HomeFoundationStatusCard: View {
                 }
             } else {
                 Label(store.text(.foundationStatusNoSnapshot), systemImage: "clock.arrow.circlepath")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinReadableSecondaryText)
             }
         }
     }
@@ -881,7 +886,7 @@ struct RecipeRow: View {
                 }
                 Text("\(recipe.publisher) · \(AppText.category(recipe.category, language: store.language))")
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinReadableSecondaryText)
                 if let disabledReason = disabledReason {
                     Text(disabledReason)
                         .font(.caption)
@@ -890,7 +895,7 @@ struct RecipeRow: View {
                 } else if let warning = recipe.warnings.first {
                     Text(warning)
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.macWinReadableSecondaryText)
                         .lineLimit(1)
                 }
             }
@@ -1016,7 +1021,7 @@ struct BottleRow: View {
                         .lineLimit(1)
                     Text(subtitle)
                         .font(.caption)
-                        .foregroundStyle(selected ? Color(nsColor: .selectedControlTextColor).opacity(0.86) : Color.secondary)
+                        .foregroundStyle(selected ? Color(nsColor: .selectedControlTextColor).opacity(0.86) : Color.macWinReadableSecondaryText)
                         .lineLimit(1)
                 }
                 Spacer(minLength: 0)
@@ -1027,6 +1032,7 @@ struct BottleRow: View {
             .background(selected ? Color.accentColor : Color.clear, in: RoundedRectangle(cornerRadius: 8))
         }
         .buttonStyle(.plain)
+        .contentShape(Rectangle())
     }
 
     private var subtitle: String {
@@ -1069,7 +1075,7 @@ struct BottleDetailView: View {
                         }
                         if bottle.installedApps.isEmpty {
                             Text(store.text(.noLaunchers))
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Color.macWinReadableSecondaryText)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         } else {
                             ForEach(bottle.installedApps) { launcher in
@@ -1097,7 +1103,7 @@ struct BottleDetailView: View {
                                             systemImage: "checkmark.shield"
                                         )
                                         .font(.caption)
-                                        .foregroundStyle(.secondary)
+                                        .foregroundStyle(Color.macWinReadableSecondaryText)
                                     }
                                 }
                                 if launcher.id != bottle.installedApps.last?.id {
@@ -1247,7 +1253,7 @@ struct GraphicsPresetSelector: View {
                     HStack(alignment: .top, spacing: 10) {
                         Image(systemName: selected ? "largecircle.fill.circle" : "circle")
                             .font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(selected ? Color.accentColor : Color.secondary)
+                            .foregroundStyle(selected ? Color.accentColor : Color.macWinReadableSecondaryText)
                             .frame(width: 20, height: 20)
 
                         VStack(alignment: .leading, spacing: 3) {
@@ -1267,7 +1273,7 @@ struct GraphicsPresetSelector: View {
 
                             Text(AppText.graphicsPresetHelp(preset, language: store.language))
                                 .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Color.macWinReadableSecondaryText)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                         Spacer(minLength: 0)
@@ -1284,7 +1290,7 @@ struct GraphicsPresetSelector: View {
                 HStack(spacing: 8) {
                     Text(store.text(.gptkStatus))
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.macWinReadableSecondaryText)
                     Text(GraphicsPreset.gptkD3DMetal.isAvailable(engine: engine) ? store.text(.gptkAvailable) : store.text(.gptkMissing))
                         .font(.caption)
                         .foregroundStyle(GraphicsPreset.gptkD3DMetal.isAvailable(engine: engine) ? .green : .orange)
@@ -1317,7 +1323,7 @@ struct NativeUIIntegrationSelector: View {
                     HStack(alignment: .top, spacing: 10) {
                         Image(systemName: selected ? "largecircle.fill.circle" : "circle")
                             .font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(selected ? Color.accentColor : Color.secondary)
+                            .foregroundStyle(selected ? Color.accentColor : Color.macWinReadableSecondaryText)
                             .frame(width: 20, height: 20)
                         VStack(alignment: .leading, spacing: 3) {
                             Text(AppText.nativeUIIntegrationPresetName(preset, language: store.language))
@@ -1325,7 +1331,7 @@ struct NativeUIIntegrationSelector: View {
                                 .foregroundStyle(.primary)
                             Text(AppText.nativeUIIntegrationPresetHelp(preset, language: store.language))
                                 .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Color.macWinReadableSecondaryText)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                         Spacer(minLength: 0)
@@ -1425,7 +1431,7 @@ struct DiagnosticsView: View {
                                             Spacer()
                                             Text(categorySummary(category, in: report))
                                                 .font(.caption)
-                                                .foregroundStyle(.secondary)
+                                                .foregroundStyle(Color.macWinReadableSecondaryText)
                                         }
                                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 260), spacing: 10)], spacing: 10) {
                                             ForEach(report.items.filter { $0.category == category }) { item in
@@ -1440,7 +1446,7 @@ struct DiagnosticsView: View {
                         SectionPanel(title: store.text(.result)) {
                             HStack {
                                 Text(store.text(.noDiagnosticRun))
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(Color.macWinReadableSecondaryText)
                                 Spacer()
                                 Button {
                                     Task { await store.runDiagnostics() }
@@ -1497,7 +1503,7 @@ struct NativeUIProbeSection: View {
             VStack(alignment: .leading, spacing: 12) {
                 Text(store.text(.nativeUIProbeSubtitle))
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinReadableSecondaryText)
                     .fixedSize(horizontal: false, vertical: true)
 
                 HStack(spacing: 10) {
@@ -1526,7 +1532,7 @@ struct NativeUIProbeSection: View {
                                 bridgeStatus(bridge.architecture(.i386)?.isReady)
                             ))
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.macWinReadableSecondaryText)
                         }
                         Spacer(minLength: 0)
                     }
@@ -1567,7 +1573,7 @@ struct NativeUIProbeSection: View {
                     HStack(spacing: 10) {
                         Label(store.text(.nativeUIProbeCurrentBottle), systemImage: "shippingbox")
                             .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.macWinReadableSecondaryText)
                         Picker(store.text(.nativeUIProbeCurrentBottle), selection: Binding(
                             get: { store.selectedBottleId ?? bottle.id },
                             set: { store.selectedBottleId = $0 }
@@ -1584,7 +1590,7 @@ struct NativeUIProbeSection: View {
                             language: store.language
                         ))
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.macWinReadableSecondaryText)
                     }
                 }
 
@@ -1624,7 +1630,7 @@ struct NativeUIProbeSection: View {
                                 .font(.caption.weight(.semibold))
                             Text("\(report.bottleName) · \(report.architecture.rawValue) · \(report.nativeUIPreset.rawValue)")
                                 .font(.caption2)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Color.macWinReadableSecondaryText)
                         }
                         Spacer(minLength: 0)
                         Text(report.endedAt, style: .relative)
@@ -1641,7 +1647,7 @@ struct NativeUIProbeSection: View {
                 } else {
                     Label(store.text(.noNativeUIProbeRun), systemImage: "clock.badge.questionmark")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.macWinReadableSecondaryText)
                 }
             }
         }
@@ -1717,7 +1723,7 @@ struct NativeUIApplicationMatrixSection: View {
             VStack(alignment: .leading, spacing: 12) {
                 Text(store.text(.nativeUIApplicationMatrixSubtitle))
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinReadableSecondaryText)
                     .fixedSize(horizontal: false, vertical: true)
 
                 HStack(spacing: 10) {
@@ -1747,7 +1753,7 @@ struct NativeUIApplicationMatrixSection: View {
                 if report.entries.isEmpty {
                     Label(store.text(.noNativeUIApplicationMatrix), systemImage: "shippingbox")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.macWinReadableSecondaryText)
                 } else {
                     VStack(alignment: .leading, spacing: 12) {
                         ForEach(NativeUIApplicationMatrixFamily.allCases) { family in
@@ -1756,7 +1762,7 @@ struct NativeUIApplicationMatrixSection: View {
                                 VStack(alignment: .leading, spacing: 8) {
                                     Text(AppText.nativeUIApplicationFamilyName(family, language: store.language))
                                         .font(.caption.weight(.semibold))
-                                        .foregroundStyle(.secondary)
+                                        .foregroundStyle(Color.macWinReadableSecondaryText)
                                     ForEach(entries) { entry in
                                         NativeUIApplicationMatrixRow(entry: entry)
                                     }
@@ -1786,7 +1792,7 @@ struct NativeUIApplicationMatrixRow: View {
                         .lineLimit(1)
                     Text("\(entry.publisher) · \(entry.category)")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.macWinReadableSecondaryText)
                         .lineLimit(1)
                     if let exePath = entry.exePath {
                         Text(exePath)
@@ -1815,7 +1821,7 @@ struct NativeUIApplicationMatrixRow: View {
                     if let bottleName = entry.bottleName {
                         Text(bottleName)
                             .font(.caption2)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.macWinReadableSecondaryText)
                             .lineLimit(1)
                     }
                 }
@@ -1902,7 +1908,7 @@ struct NativeUIApplicationMatrixRow: View {
                         : (entry.launchEvidence == .passed ? "checkmark.seal" : "eye")
                 )
                 .font(.caption2)
-                .foregroundStyle(entry.launchEvidence == .failed ? Color.red : Color.secondary)
+                .foregroundStyle(entry.launchEvidence == .failed ? Color.red : Color.macWinReadableSecondaryText)
                 .lineLimit(2)
             }
 
@@ -1980,7 +1986,7 @@ struct DiagnosticHistorySection: View {
             if report.records.isEmpty {
                 HStack(spacing: 10) {
                     Label(store.text(.noDiagnosticHistory), systemImage: "clock.badge.questionmark")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.macWinReadableSecondaryText)
                     Spacer(minLength: 0)
                     Button {
                         store.exportDiagnosticHistoryCSV()
@@ -2060,7 +2066,7 @@ struct DiagnosticHistoryRow: View {
                 }
                 Text(detailText)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinReadableSecondaryText)
                     .lineLimit(2)
                 Text(record.endedAt.formatted(date: .abbreviated, time: .shortened))
                     .font(.caption2)
@@ -2140,7 +2146,7 @@ struct DiagnosticArtifactIndexSection: View {
             if report.artifacts.isEmpty {
                 HStack(spacing: 10) {
                     Label(store.text(.noDiagnosticArtifacts), systemImage: "tray")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.macWinReadableSecondaryText)
                     Spacer(minLength: 0)
                     Button {
                         store.exportDiagnosticArtifactIndexCSV()
@@ -2250,7 +2256,7 @@ struct DiagnosticArtifactRow: View {
                 }
                 Text(artifact.relativePath)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinReadableSecondaryText)
                     .lineLimit(1)
                 Text("\(LogMaintenanceSection.formattedByteCount(artifact.byteCount)) · \(artifact.modifiedAt.formatted(date: .abbreviated, time: .shortened))")
                     .font(.caption2)
@@ -2391,7 +2397,7 @@ struct SupportTriageSummarySection: View {
                     Divider()
                     Text(store.text(.supportTriageActions))
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.macWinReadableSecondaryText)
                     VStack(spacing: 8) {
                         ForEach(report.items.prefix(6)) { item in
                             SupportTriageItemRow(item: item)
@@ -2459,7 +2465,7 @@ struct SupportTriageItemRow: View {
                 }
                 Text(item.detail)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinReadableSecondaryText)
                     .lineLimit(2)
                 Text(item.recommendedAction)
                     .font(.caption)
@@ -2520,7 +2526,7 @@ struct TestAssetSummarySection: View {
                     Spacer()
                     Text("\(report.presentCount)/\(report.totalCount)")
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.macWinReadableSecondaryText)
                 }
 
                 if !missingRequiredAssets.isEmpty {
@@ -2533,7 +2539,7 @@ struct TestAssetSummarySection: View {
                                     .lineLimit(1)
                                 Spacer(minLength: 0)
                                 Text(asset.kind.rawValue)
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(Color.macWinReadableSecondaryText)
                             }
                             .font(.caption)
                         }
@@ -2620,7 +2626,7 @@ struct BottleHealthSummarySection: View {
                     VStack(alignment: .leading, spacing: 8) {
                         Text(store.text(.latestBottleHealthFindings))
                             .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.macWinReadableSecondaryText)
                         ForEach(report.findings.prefix(4)) { finding in
                             HStack(alignment: .top, spacing: 8) {
                                 Image(systemName: icon(for: finding.severity))
@@ -2633,12 +2639,12 @@ struct BottleHealthSummarySection: View {
                                             .lineLimit(1)
                                         Text(finding.bottleId)
                                             .font(.caption2)
-                                            .foregroundStyle(.secondary)
+                                            .foregroundStyle(Color.macWinReadableSecondaryText)
                                             .lineLimit(1)
                                     }
                                     Text(finding.recommendedAction)
                                         .font(.caption)
-                                        .foregroundStyle(.secondary)
+                                        .foregroundStyle(Color.macWinReadableSecondaryText)
                                         .lineLimit(2)
                                 }
                                 Spacer(minLength: 0)
@@ -2787,7 +2793,7 @@ struct RuntimeProcessSummarySection: View {
 
                 if report.entries.isEmpty {
                     Label(store.text(.noRuntimeProcesses), systemImage: "checkmark.circle")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.macWinReadableSecondaryText)
                         .font(.caption)
                 } else {
                     Divider()
@@ -2795,7 +2801,7 @@ struct RuntimeProcessSummarySection: View {
                         VStack(alignment: .leading, spacing: 8) {
                             Text(store.text(.latestRuntimeFindings))
                                 .font(.caption.weight(.semibold))
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Color.macWinReadableSecondaryText)
                             ForEach(report.findings.prefix(3), id: \.id) { finding in
                                 RuntimeProcessFindingRow(finding: finding)
                             }
@@ -2805,7 +2811,7 @@ struct RuntimeProcessSummarySection: View {
                     VStack(alignment: .leading, spacing: 8) {
                         Text(store.text(.runningWindowsProcesses))
                             .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.macWinReadableSecondaryText)
                         ForEach(report.entries.prefix(6), id: \.processIdentifier) { entry in
                             RuntimeProcessEntryRow(entry: entry)
                         }
@@ -2832,12 +2838,12 @@ struct RuntimeProcessFindingRow: View {
                         .lineLimit(1)
                     Text(finding.affectedProcessIdentifiers.map(String.init).joined(separator: ", "))
                         .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.macWinReadableSecondaryText)
                         .lineLimit(1)
                 }
                 Text(finding.detail)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinReadableSecondaryText)
                     .lineLimit(2)
                 if !finding.flags.isEmpty {
                     Text(finding.flags.prefix(6).joined(separator: " · "))
@@ -2883,7 +2889,7 @@ struct RuntimeProcessEntryRow: View {
                         .background(tint.opacity(0.12), in: Capsule())
                     Text("\(store.text(.pid)) \(entry.processIdentifier)")
                         .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.macWinReadableSecondaryText)
                     Spacer(minLength: 0)
                 }
                 if !entry.staleRenderingFlags.isEmpty {
@@ -2969,7 +2975,7 @@ struct TestCoverageSummarySection: View {
         SectionPanel(title: store.text(.testCoverage)) {
             if report.categories.isEmpty {
                 Label(store.text(.noTestCoverage), systemImage: "clock.badge.questionmark")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinReadableSecondaryText)
             } else {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack(spacing: 10) {
@@ -3174,7 +3180,7 @@ struct TestExecutionPlanSummarySection: View {
                 }
             } else {
                 Label(store.text(.noTestExecutionPlan), systemImage: "checkmark.seal")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinReadableSecondaryText)
             }
         }
     }
@@ -3212,13 +3218,13 @@ struct TestExecutionPlanItemRow: View {
                 }
                 Text(reasonSummary)
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinReadableSecondaryText)
                     .lineLimit(1)
             }
             Spacer(minLength: 0)
             Text(AppText.diagnosticCategory(item.category, language: store.language))
                 .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.macWinReadableSecondaryText)
                 .lineLimit(1)
             Button {
                 Task { await store.runProbe(assetId: item.assetId) }
@@ -3226,7 +3232,8 @@ struct TestExecutionPlanItemRow: View {
                 Image(systemName: "play.circle.fill")
             }
             .buttonStyle(.plain)
-            .foregroundStyle(store.canRunProbe(assetId: item.assetId) ? Color.accentColor : Color.secondary)
+            .contentShape(Rectangle())
+            .foregroundStyle(store.canRunProbe(assetId: item.assetId) ? Color.accentColor : Color.macWinReadableSecondaryText)
             .disabled(!store.canRunProbe(assetId: item.assetId))
             .help(store.text(.runProbeSuite))
         }
@@ -3288,7 +3295,7 @@ struct TestCoverageCategoryRow: View {
                         .lineLimit(1)
                     Text(categorySummary)
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.macWinReadableSecondaryText)
                         .lineLimit(1)
                 }
                 Spacer(minLength: 0)
@@ -3314,7 +3321,7 @@ struct TestCoverageCategoryRow: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(store.text(.latestRuns))
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.macWinReadableSecondaryText)
                     ForEach(Array(category.latestRuns.prefix(3)), id: \.assetId) { run in
                         TestCoverageRunRow(run: run)
                     }
@@ -3409,7 +3416,7 @@ struct TestCoverageRunRow: View {
                 }
                 Text(run.summary)
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinReadableSecondaryText)
                     .lineLimit(1)
             }
             Button {
@@ -3560,13 +3567,13 @@ struct InstallerAssetSummarySection: View {
                     if preparation.actions.isEmpty {
                         Label(store.text(.noInstallerActions), systemImage: "checkmark.circle")
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.macWinReadableSecondaryText)
                     } else {
                         VStack(alignment: .leading, spacing: 8) {
                             HStack(spacing: 8) {
                                 Text(store.text(.installerPreparation))
                                     .font(.caption.weight(.semibold))
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(Color.macWinReadableSecondaryText)
                                 Text(store.text(
                                     .installerPreparationSummary,
                                     preparation.actionCount,
@@ -3590,7 +3597,7 @@ struct InstallerAssetSummarySection: View {
                             HStack(spacing: 8) {
                                 Text(store.text(.localInstallerCandidates))
                                     .font(.caption.weight(.semibold))
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(Color.macWinReadableSecondaryText)
                                 Text(store.text(.localInstallerCandidatesSummary, report.orphanedFileCount))
                                     .font(.caption2)
                                     .foregroundStyle(.tertiary)
@@ -3605,7 +3612,7 @@ struct InstallerAssetSummarySection: View {
                 }
             } else {
                 Label(store.text(.softwareNoCatalog), systemImage: "shippingbox")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinReadableSecondaryText)
             }
         }
     }
@@ -3647,7 +3654,7 @@ struct InstallerPreparationActionRow: View {
                         .background(tint.opacity(0.12), in: Capsule())
                     Text(severityText)
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.macWinReadableSecondaryText)
                         .padding(.horizontal, 7)
                         .padding(.vertical, 2)
                         .background(Color.primary.opacity(0.06), in: Capsule())
@@ -3656,7 +3663,7 @@ struct InstallerPreparationActionRow: View {
 
                 Text(action.detail)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinReadableSecondaryText)
                     .lineLimit(2)
 
                 Text(action.sourceURL ?? action.cachedPath ?? action.fileName)
@@ -3767,7 +3774,7 @@ struct InstallerAssetRow: View {
 
                 Text(item.fileName ?? item.sourceURL ?? item.recipeId)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinReadableSecondaryText)
                     .lineLimit(1)
 
                 if let sourceURL = item.sourceURL {
@@ -3862,7 +3869,7 @@ struct LocalInstallerCandidateRow: View {
 
                 Text("\(byteCountText) · \(item.modifiedAt.formatted(date: .abbreviated, time: .shortened))")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinReadableSecondaryText)
                     .lineLimit(1)
 
                 if let sha256 = item.sha256 {
@@ -3980,7 +3987,7 @@ struct InstallerDownloadHistorySection: View {
                 }
             } else {
                 Label(store.text(.noInstallerDownloadHistory), systemImage: "clock.arrow.circlepath")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinReadableSecondaryText)
             }
         }
     }
@@ -4017,7 +4024,7 @@ struct InstallerDownloadHistoryRow: View {
 
                 Text(record.fileName)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinReadableSecondaryText)
                     .lineLimit(1)
 
                 Text(record.sourceURL)
@@ -4191,7 +4198,7 @@ struct SoftwareCollectionSection: View {
                         Divider()
                         Text(store.text(.softwareNextActions))
                             .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.macWinReadableSecondaryText)
                         VStack(alignment: .leading, spacing: 8) {
                             ForEach(actionEntries.prefix(8)) { entry in
                                 SoftwareCollectionEntryRow(entry: entry)
@@ -4201,7 +4208,7 @@ struct SoftwareCollectionSection: View {
                 }
             } else {
                 Label(store.text(.noSoftwareCollection), systemImage: "shippingbox")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinReadableSecondaryText)
             }
         }
     }
@@ -4316,7 +4323,7 @@ struct SoftwareSampleCatalogSection: View {
                 }
             } else {
                 Label(store.text(.noSoftwareSampleCatalog), systemImage: "shippingbox")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinReadableSecondaryText)
             }
         }
     }
@@ -4369,7 +4376,7 @@ struct SoftwareSampleCatalogRow: View {
                 }
                 Text("\(sample.publisher) · \(sample.category)")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinReadableSecondaryText)
                     .lineLimit(1)
                 Text(detailText)
                     .font(.caption2)
@@ -4491,7 +4498,7 @@ struct SoftwareSampleLogCorrelationSection: View {
                     if matchedEntries.isEmpty {
                         Label(store.text(.noSoftwareSampleLogCorrelation), systemImage: "link.badge.plus")
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.macWinReadableSecondaryText)
                     } else {
                         VStack(alignment: .leading, spacing: 8) {
                             ForEach(matchedEntries.prefix(6)) { entry in
@@ -4502,7 +4509,7 @@ struct SoftwareSampleLogCorrelationSection: View {
                 }
             } else {
                 Label(store.text(.noSoftwareSampleLogCorrelation), systemImage: "link.badge.plus")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinReadableSecondaryText)
             }
         }
     }
@@ -4516,7 +4523,7 @@ private struct RepresentativeAcceptanceSummary: View {
         VStack(alignment: .leading, spacing: 8) {
             Text(store.text(.representativeAcceptanceSummary, report.passedCount, report.targetCount, report.pendingCount))
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.macWinReadableSecondaryText)
             ForEach(report.entries) { entry in
                 HStack(spacing: 8) {
                     Image(systemName: icon(for: entry.state))
@@ -4528,7 +4535,7 @@ private struct RepresentativeAcceptanceSummary: View {
                     Spacer(minLength: 8)
                     Text(entry.nextAction)
                         .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.macWinReadableSecondaryText)
                         .lineLimit(1)
                 }
             }
@@ -4584,7 +4591,7 @@ struct SoftwareSampleLogCorrelationRow: View {
                 }
                 Text(detailText)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinReadableSecondaryText)
                     .lineLimit(1)
                 if !entry.recommendedProbeIds.isEmpty {
                     Text("\(store.text(.recommendedProbes)): \(entry.recommendedProbeIds.joined(separator: ", "))")
@@ -4691,12 +4698,12 @@ struct SoftwareCollectionAcceptanceSection: View {
                 Divider()
                 Text(store.text(.softwareCollectionAcceptanceActions))
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinReadableSecondaryText)
 
                 if report.actions.isEmpty {
                     Label(store.text(.noSoftwareCollectionAcceptanceActions), systemImage: "checkmark.circle")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.macWinReadableSecondaryText)
                 } else {
                     VStack(alignment: .leading, spacing: 8) {
                         ForEach(report.actions.prefix(8)) { action in
@@ -4774,7 +4781,7 @@ struct SoftwareCollectionAcceptanceActionRow: View {
                 }
                 Text(localizedDetail)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinReadableSecondaryText)
                     .lineLimit(2)
                 if let relatedText {
                     Text(relatedText)
@@ -4926,7 +4933,7 @@ struct SoftwareCollectionGroupRow: View {
                         .lineLimit(1)
                     Text("\(entries.count)/\(collection.requiredRecipeIds.count)")
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.macWinReadableSecondaryText)
                         .padding(.horizontal, 7)
                         .padding(.vertical, 2)
                         .background(Color.primary.opacity(0.06), in: Capsule())
@@ -4934,7 +4941,7 @@ struct SoftwareCollectionGroupRow: View {
                 }
                 Text(localizedPurpose)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinReadableSecondaryText)
                     .lineLimit(2)
                 if !missingRecipeIds.isEmpty {
                     Text(missingRecipeIds.joined(separator: ", "))
@@ -4998,7 +5005,7 @@ struct SoftwareCollectionEntryRow: View {
                 }
                 Text("\(entry.publisher) · \(AppText.category(entry.category, language: store.language))")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinReadableSecondaryText)
                     .lineLimit(1)
                 Text(detailText)
                     .font(.caption2)
@@ -5150,11 +5157,11 @@ struct SoftwareTestPlanSection: View {
                     if actionEntries.isEmpty {
                         Label(store.text(.noSoftwareActions), systemImage: "checkmark.circle")
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.macWinReadableSecondaryText)
                     } else {
                         Text(store.text(.softwareNextActions))
                             .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.macWinReadableSecondaryText)
                         VStack(alignment: .leading, spacing: 8) {
                             ForEach(actionEntries.prefix(6)) { entry in
                                 SoftwareTestPlanRow(entry: entry)
@@ -5164,7 +5171,7 @@ struct SoftwareTestPlanSection: View {
                 }
             } else {
                 Label(store.text(.softwareNoCatalog), systemImage: "shippingbox")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinReadableSecondaryText)
             }
         }
     }
@@ -5252,11 +5259,11 @@ struct SoftwareSmokeMatrixSection: View {
                     if report.nextActions.isEmpty {
                         Label(store.text(.noSoftwareActions), systemImage: "checkmark.circle")
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.macWinReadableSecondaryText)
                     } else {
                         Text(store.text(.softwareNextActions))
                             .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.macWinReadableSecondaryText)
                         VStack(alignment: .leading, spacing: 8) {
                             ForEach(priorityRows(in: report).prefix(6)) { row in
                                 SoftwareSmokeMatrixRowView(row: row)
@@ -5266,7 +5273,7 @@ struct SoftwareSmokeMatrixSection: View {
                 }
             } else {
                 Label(store.text(.noSoftwareSmokeMatrix), systemImage: "checklist")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinReadableSecondaryText)
             }
         }
     }
@@ -5312,7 +5319,7 @@ struct SoftwareSmokeMatrixRowView: View {
                         .background(tint.opacity(0.12), in: Capsule())
                     Text(AppText.softwareSmokeCheckState(row.highestSeverity, language: store.language))
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.macWinReadableSecondaryText)
                         .padding(.horizontal, 7)
                         .padding(.vertical, 2)
                         .background(Color.primary.opacity(0.06), in: Capsule())
@@ -5321,7 +5328,7 @@ struct SoftwareSmokeMatrixRowView: View {
 
                 Text(row.nextAction)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinReadableSecondaryText)
                     .fixedSize(horizontal: false, vertical: true)
 
                 VStack(alignment: .leading, spacing: 3) {
@@ -5332,7 +5339,7 @@ struct SoftwareSmokeMatrixRowView: View {
                                 .frame(width: 6, height: 6)
                             Text("\(item.label): \(AppText.softwareSmokeCheckState(item.state, language: store.language))")
                                 .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Color.macWinReadableSecondaryText)
                                 .lineLimit(1)
                             Text(item.detail)
                                 .font(.caption2)
@@ -5457,7 +5464,7 @@ struct SoftwarePlanMetric: View {
                     .lineLimit(1)
                 Text(title)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinReadableSecondaryText)
                     .lineLimit(1)
             }
             Spacer(minLength: 0)
@@ -5499,7 +5506,7 @@ struct ActivityTimelineSection: View {
                         if let latest = report.latestEventAt {
                             Text(latest, style: .relative)
                                 .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Color.macWinReadableSecondaryText)
                                 .lineLimit(1)
                         }
                     }
@@ -5533,7 +5540,7 @@ struct ActivityTimelineSection: View {
                 }
             } else {
                 Label(store.text(.noActivityTimeline), systemImage: "clock.arrow.circlepath")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinReadableSecondaryText)
             }
         }
     }
@@ -5569,7 +5576,7 @@ struct ActivityTimelineRow: View {
                 }
                 Text(event.detail)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinReadableSecondaryText)
                     .lineLimit(2)
                 if let path = event.relatedLogPath ?? event.sourcePath {
                     Text(path)
@@ -5700,7 +5707,7 @@ struct CompatibilityRepairAuditSection: View {
                         Divider()
                         Text(store.text(.latestRepairFindings))
                             .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.macWinReadableSecondaryText)
                         VStack(alignment: .leading, spacing: 8) {
                             ForEach(problemEntries.prefix(5)) { entry in
                                 CompatibilityRepairAuditRow(entry: entry)
@@ -5712,7 +5719,7 @@ struct CompatibilityRepairAuditSection: View {
                         Divider()
                         Text(store.text(.compatibilityRuntimeCoverage))
                             .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.macWinReadableSecondaryText)
                         VStack(alignment: .leading, spacing: 8) {
                             ForEach(report.runtimeCoverageEntries) { entry in
                                 CompatibilityRuntimeCoverageRow(entry: entry)
@@ -5722,7 +5729,7 @@ struct CompatibilityRepairAuditSection: View {
                 }
             } else {
                 Label(store.text(.noCompatibilityRepairAudit), systemImage: "checkmark.shield")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinReadableSecondaryText)
             }
         }
     }
@@ -5763,7 +5770,7 @@ struct CompatibilityRuntimeCoverageRow: View {
                     entry.affectedBottleNames.joined(separator: " · ")
                 ))
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.macWinReadableSecondaryText)
                 .lineLimit(2)
 
                 if !entry.missingSourcePaths.isEmpty {
@@ -5820,13 +5827,13 @@ struct CompatibilityRepairAuditRow: View {
                 if !entry.missingRepairKeys.isEmpty {
                     Text(entry.missingRepairKeys.prefix(5).joined(separator: " · "))
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.macWinReadableSecondaryText)
                         .lineLimit(2)
                 }
                 if !entry.staleRenderingFlags.isEmpty {
                     Text(entry.staleRenderingFlags.prefix(5).joined(separator: " · "))
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.macWinReadableSecondaryText)
                         .lineLimit(2)
                 }
                 Text(entry.logPath)
@@ -5931,7 +5938,7 @@ struct SoftwareTestPlanRow: View {
 
                 Text(AppText.softwareTestPlanAction(entry, language: store.language))
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinReadableSecondaryText)
                     .fixedSize(horizontal: false, vertical: true)
 
                 HStack(spacing: 10) {
@@ -5947,7 +5954,7 @@ struct SoftwareTestPlanRow: View {
                 if !issueText.isEmpty {
                     Text("\(store.text(.blockers)): \(issueText)")
                         .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.macWinReadableSecondaryText)
                         .lineLimit(2)
                 }
             }
@@ -6047,7 +6054,7 @@ struct DiagnosticCard: View {
             }
             Text(AppText.diagnosticRecommendation(item, language: store.language))
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.macWinReadableSecondaryText)
                 .lineLimit(2)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -6096,7 +6103,7 @@ struct LogIssueSummarySection: View {
         SectionPanel(title: store.text(.logIssues)) {
             if report.logsAnalyzed == 0 {
                 Label(store.text(.noRecentLogs), systemImage: "doc.text")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinReadableSecondaryText)
             } else {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack(spacing: 10) {
@@ -6144,7 +6151,7 @@ struct LogIssueSummarySection: View {
                     if report.topIssues.isEmpty {
                         Label(store.text(.noLogIssues), systemImage: "checkmark.circle")
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.macWinReadableSecondaryText)
                     } else {
                         VStack(alignment: .leading, spacing: 8) {
                             ForEach(report.topIssues.prefix(5)) { issue in
@@ -6157,7 +6164,7 @@ struct LogIssueSummarySection: View {
                         Divider()
                         Text(store.text(.recentLogFailures))
                             .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.macWinReadableSecondaryText)
                         VStack(alignment: .leading, spacing: 8) {
                             ForEach(report.recentFailures.prefix(5)) { sample in
                                 LogIssueSampleRow(sample: sample)
@@ -6248,12 +6255,12 @@ struct LogMaintenanceSection: View {
                         }
                     }
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinReadableSecondaryText)
 
                     if report.cleanupCandidates.isEmpty {
                         Label(store.text(.logMaintenanceHealthy), systemImage: "checkmark.circle")
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.macWinReadableSecondaryText)
                     } else {
                         VStack(alignment: .leading, spacing: 6) {
                             ForEach(report.cleanupCandidates.prefix(4)) { item in
@@ -6266,11 +6273,11 @@ struct LogMaintenanceSection: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Label(store.text(.recommendations), systemImage: "lightbulb")
                                 .font(.caption.weight(.semibold))
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Color.macWinReadableSecondaryText)
                             ForEach(report.recommendations.prefix(3), id: \.self) { recommendation in
                                 Text(AppText.logMaintenanceRecommendation(recommendation, language: store.language))
                                     .font(.caption)
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(Color.macWinReadableSecondaryText)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
                         }
@@ -6278,7 +6285,7 @@ struct LogMaintenanceSection: View {
                 }
             } else {
                 Label(store.text(.noRecentLogs), systemImage: "doc.text")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinReadableSecondaryText)
             }
         }
     }
@@ -6306,7 +6313,7 @@ struct LogMaintenanceCandidateRow: View {
                     .lineLimit(1)
                 Text("\(LogMaintenanceSection.formattedByteCount(item.byteCount)) · \(item.modifiedAt.formatted(date: .abbreviated, time: .shortened))")
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinReadableSecondaryText)
                     .lineLimit(1)
             }
             Spacer(minLength: 0)
@@ -6367,12 +6374,12 @@ struct LogIssueTrendRow: View {
                 Spacer(minLength: 0)
                 Text("\(issue.count)")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinReadableSecondaryText)
             }
 
             Text(AppText.logIssueDetail(issue, language: store.language))
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.macWinReadableSecondaryText)
                 .fixedSize(horizontal: false, vertical: true)
 
             let actions = AppText.logIssueActions(issue, language: store.language)
@@ -6380,11 +6387,11 @@ struct LogIssueTrendRow: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Label(store.text(.recommendedActions), systemImage: "wrench.and.screwdriver")
                         .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.macWinReadableSecondaryText)
                     ForEach(actions.prefix(2), id: \.self) { action in
                         Text(action)
                             .font(.caption2)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.macWinReadableSecondaryText)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -6395,7 +6402,7 @@ struct LogIssueTrendRow: View {
                 HStack(alignment: .center, spacing: 6) {
                     Label(store.text(.recommendedProbes), systemImage: "testtube.2")
                         .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.macWinReadableSecondaryText)
                     ForEach(issue.probeAssetIds.prefix(5), id: \.self) { probe in
                         Button {
                             Task { await store.runProbe(assetId: probe) }
@@ -6479,7 +6486,7 @@ struct LogIssueSampleRow: View {
 
                 Text(summaryText)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinReadableSecondaryText)
                     .lineLimit(2)
 
                 Text(sample.modifiedAt.formatted(date: .abbreviated, time: .shortened))
@@ -6495,11 +6502,11 @@ struct LogIssueSampleRow: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(store.text(.evidence))
                             .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.macWinReadableSecondaryText)
                         ForEach(Array(sample.evidenceSnippets.prefix(2)), id: \.self) { snippet in
                             Text(snippet)
                                 .font(.caption2.monospaced())
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Color.macWinReadableSecondaryText)
                                 .lineLimit(2)
                         }
                     }
@@ -6575,13 +6582,13 @@ struct RecentLogsSection: View {
         SectionPanel(title: store.text(.recentLogs)) {
             if store.recentLogs.isEmpty {
                 Text(store.text(.noRecentLogs))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.macWinReadableSecondaryText)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else {
                 ForEach(store.recentLogs) { item in
                     HStack(spacing: 10) {
                         Image(systemName: "doc.text")
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.macWinReadableSecondaryText)
                             .frame(width: 22)
                         VStack(alignment: .leading, spacing: 3) {
                             HStack(spacing: 8) {
@@ -6597,12 +6604,12 @@ struct RecentLogsSection: View {
                             }
                             Text("\(item.modifiedAt.formatted(date: .abbreviated, time: .shortened)) · \(Self.formattedByteCount(item.byteCount))")
                                 .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Color.macWinReadableSecondaryText)
                                 .lineLimit(1)
                             if !summaryCounts(item.summary).isEmpty {
                                 Text(summaryCounts(item.summary))
                                     .font(.caption)
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(Color.macWinReadableSecondaryText)
                                     .lineLimit(1)
                             }
                             if let context = item.launchContext {
@@ -6611,7 +6618,7 @@ struct RecentLogsSection: View {
                             ForEach(item.summary.hints.prefix(2), id: \.self) { hint in
                                 Label(AppText.logHint(hint, language: store.language), systemImage: "lightbulb")
                                     .font(.caption)
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(Color.macWinReadableSecondaryText)
                                     .lineLimit(1)
                             }
                         }
@@ -6753,7 +6760,7 @@ struct SettingsView: View {
                         }
                         Text(store.text(.preventScreenLockHint))
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.macWinReadableSecondaryText)
                     }
 
                     SectionPanel(title: store.text(.engine)) {
@@ -6767,7 +6774,7 @@ struct SettingsView: View {
                             LabeledContent("D3D", value: engine.defaultEnv["WINE_D3D_CONFIG"] ?? "")
                         } else {
                             Text(store.text(.noEngineRegistered))
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Color.macWinReadableSecondaryText)
                         }
                         Button {
                             Task { await store.bootstrap() }
@@ -6782,7 +6789,7 @@ struct SettingsView: View {
                             GraphicsPresetSelector(bottle: bottle)
                         } else {
                             Text(store.text(.noBottleSelected))
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Color.macWinReadableSecondaryText)
                         }
                     }
 
@@ -6828,7 +6835,7 @@ struct Header: View {
                 .lineLimit(1)
             Text(subtitle)
                 .font(.title3)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.macWinReadableSecondaryText)
                 .lineLimit(1)
             Spacer()
         }
@@ -6868,7 +6875,7 @@ struct EmptyState: View {
         VStack(spacing: 14) {
             Image(systemName: systemImage)
                 .font(.system(size: 44))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.macWinReadableSecondaryText)
             Text(title)
                 .font(.headline)
             Button(action: action) {
@@ -6897,7 +6904,7 @@ struct ExternalExecutableOpenView: View {
                         .font(.headline)
                     Text(store.text(.chooseBottleToOpenExecutable))
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.macWinReadableSecondaryText)
                 }
                 Spacer()
             }

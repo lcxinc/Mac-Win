@@ -380,13 +380,14 @@ struct ImmersiveWorkspaceView: View {
                                             Spacer()
                                             Button {
                                                 store.refreshRunningItems()
-                                            } label: {
-                                                Image(systemName: "arrow.clockwise")
-                                                    .frame(width: 28, height: 26)
-                                            }
-                                            .buttonStyle(.plain)
-                                            .help(store.text(.refreshDesktop))
-                                        }
+            } label: {
+                Image(systemName: "arrow.clockwise")
+                    .frame(width: 28, height: 26)
+            }
+            .buttonStyle(.plain)
+            .contentShape(Rectangle())
+            .help(store.text(.refreshDesktop))
+        }
 
                                         if store.runningItems.isEmpty {
                                             Text(store.text(.noRunningApps))
@@ -1007,6 +1008,7 @@ private struct ImmersiveToolButton: View {
             .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 8))
         }
         .buttonStyle(.plain)
+        .contentShape(Rectangle())
     }
 }
 
@@ -1529,6 +1531,7 @@ private struct StartMenuPanel: View {
                         Image(systemName: "arrow.clockwise")
                     }
                     .buttonStyle(.borderless)
+                    .contentShape(Rectangle())
                     .help(store.text(.refreshDesktop))
                 }
 
@@ -1645,11 +1648,13 @@ private struct RunningProcessRow: View {
                 Image(systemName: "doc.text")
             }
             .buttonStyle(.borderless)
+            .contentShape(Rectangle())
             .help(store.text(.openLogFile))
             Button(role: .destructive, action: terminate) {
                 Image(systemName: "stop.fill")
             }
             .buttonStyle(.borderless)
+            .contentShape(Rectangle())
             .help(store.text(.stop))
         }
         .padding(.horizontal, 10)
