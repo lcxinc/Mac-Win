@@ -1333,58 +1333,79 @@ private struct InstallerDropOverlay: View {
 }
 
 private struct WindowsDesktopWallpaper: View {
+    @Environment(\.colorScheme) private var colorScheme
+
     var body: some View {
         ZStack {
-            LinearGradient(
-                colors: [
-                    Color(red: 0.08, green: 0.32, blue: 0.52),
-                    Color(red: 0.10, green: 0.48, blue: 0.58),
-                    Color(red: 0.58, green: 0.72, blue: 0.68)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
+            ZStack {
+                if colorScheme == .dark {
+                    LinearGradient(
+                        colors: [
+                            Color(nsColor: .windowBackgroundColor),
+                            Color(nsColor: .controlBackgroundColor).opacity(0.72),
+                            Color(nsColor: .textBackgroundColor)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                } else {
+                    LinearGradient(
+                        colors: [
+                            Color(nsColor: .controlBackgroundColor),
+                            Color(nsColor: .underPageBackgroundColor).opacity(0.84),
+                            Color(nsColor: .windowBackgroundColor)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                }
+
+                RadialGradient(
+                    colors: [
+                        Color(nsColor: .controlAccentColor).opacity(0.18),
+                        Color.clear
+                    ],
+                    center: .topLeading,
+                    startRadius: 12,
+                    endRadius: 520
+                )
+            }
+
+            Rectangle()
+                .fill(.ultraThinMaterial)
+                .blendMode(.softLight)
+                .allowsHitTesting(false)
 
             VStack {
                 HStack {
-                    WindowsPaneShape()
-                        .fill(.white.opacity(0.22))
-                        .frame(width: 260, height: 190)
-                        .rotationEffect(.degrees(-8))
-                        .blur(radius: 0.2)
+                    Group {
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(.tertiary)
+                            .frame(width: 320, height: 36)
+                            .overlay(
+                                HStack {
+                                    Capsule()
+                                        .frame(width: 8, height: 8)
+                                    Capsule()
+                                        .frame(width: 8, height: 8)
+                                    Capsule()
+                                        .frame(width: 8, height: 8)
+                                    Spacer()
+                                }
+                                .foregroundStyle(.secondary.opacity(0.9))
+                                .padding(.horizontal, 10)
+                            )
+                            .opacity(0.35)
+                            .blur(radius: 1)
+                        Spacer()
+                    }
+                    .padding(.horizontal, 32)
+                    .padding(.top, 14)
                     Spacer()
                 }
                 Spacer()
             }
-            .padding(52)
-
-            VStack {
-                Spacer()
-                Rectangle()
-                    .fill(.white.opacity(0.10))
-                    .frame(height: 120)
-                    .blur(radius: 32)
-            }
         }
-    }
-}
-
-private struct WindowsPaneShape: Shape {
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        let gap: CGFloat = min(rect.width, rect.height) * 0.045
-        let halfWidth = (rect.width - gap) / 2
-        let halfHeight = (rect.height - gap) / 2
-        let panes = [
-            CGRect(x: 0, y: 0, width: halfWidth, height: halfHeight),
-            CGRect(x: halfWidth + gap, y: 0, width: halfWidth, height: halfHeight),
-            CGRect(x: 0, y: halfHeight + gap, width: halfWidth, height: halfHeight),
-            CGRect(x: halfWidth + gap, y: halfHeight + gap, width: halfWidth, height: halfHeight)
-        ]
-        for pane in panes {
-            path.addRoundedRect(in: pane, cornerSize: CGSize(width: 4, height: 4))
-        }
-        return path
     }
 }
 
