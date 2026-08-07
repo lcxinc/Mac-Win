@@ -1023,7 +1023,6 @@ private struct NativePanel<Content: View>: View {
                 RoundedRectangle(cornerRadius: 8)
                     .stroke(Color(nsColor: .separatorColor).opacity(0.72), lineWidth: 1)
             }
-            .shadow(color: .black.opacity(0.07), radius: 18, y: 8)
     }
 }
 
@@ -1043,18 +1042,16 @@ struct LauncherIconView: View {
                     .interpolation(.high)
                     .scaledToFit()
                     .padding(size * 0.04)
-                    .shadow(color: .black.opacity(0.16), radius: size * 0.08, y: size * 0.035)
             } else if let builtInIcon {
                 Image(nsImage: builtInIcon)
                     .resizable()
                     .interpolation(.high)
                     .scaledToFit()
-                    .shadow(color: .black.opacity(0.12), radius: size * 0.08, y: size * 0.035)
+                    .padding(size * 0.03)
             } else {
                 ZStack {
                     RoundedRectangle(cornerRadius: min(size * 0.23, 18), style: .continuous)
                         .fill(iconShellBackground)
-                        .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
                         .overlay {
                             RoundedRectangle(cornerRadius: min(size * 0.23, 18), style: .continuous)
                                 .stroke(Color(nsColor: .separatorColor).opacity(0.72), lineWidth: 0.8)
@@ -1324,10 +1321,10 @@ private struct InstallerDropOverlay: View {
                 .lineLimit(2)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.black.opacity(0.42), in: RoundedRectangle(cornerRadius: 8))
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
         .overlay {
             RoundedRectangle(cornerRadius: 8)
-                .stroke(.primary.opacity(0.72), style: StrokeStyle(lineWidth: 2, dash: [10, 7]))
+                .stroke(Color(nsColor: .separatorColor).opacity(0.58), style: StrokeStyle(lineWidth: 1.2, dash: [10, 7]))
         }
     }
 }
@@ -1440,7 +1437,6 @@ private struct DesktopShortcutButton: View {
                 ZStack {
                     RoundedRectangle(cornerRadius: 8)
                         .fill(Color(nsColor: .controlBackgroundColor).opacity(0.92))
-                        .shadow(color: .black.opacity(0.14), radius: 8, y: 3)
                     Image(systemName: shortcut.systemImage)
                         .font(.system(size: 26, weight: .semibold))
                         .foregroundStyle(shortcut.tint)
@@ -1450,11 +1446,10 @@ private struct DesktopShortcutButton: View {
                 Text(shortcut.title)
                     .font(.system(size: 12, weight: .semibold))
                     .multilineTextAlignment(.center)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.78)
-                    .foregroundStyle(Color(nsColor: .labelColor))
-                    .shadow(color: .black.opacity(0.48), radius: 3, y: 1)
-                    .frame(width: 100, height: 30, alignment: .top)
+                .lineLimit(2)
+                .minimumScaleFactor(0.78)
+                .foregroundStyle(Color(nsColor: .labelColor))
+                .frame(width: 100, height: 30, alignment: .top)
             }
             .frame(width: 106, height: 92, alignment: .top)
             .contentShape(Rectangle())
@@ -1608,7 +1603,10 @@ private struct StartMenuPanel: View {
         .padding(18)
         .frame(width: 620)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
-        .shadow(color: .black.opacity(0.28), radius: 24, y: 10)
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color(nsColor: .separatorColor).opacity(0.24), lineWidth: 1)
+        }
     }
 
     private var filteredLaunchers: [LauncherManifest] {
@@ -1680,7 +1678,7 @@ private struct StartMenuAppButton: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
+        .background(Color.primary.opacity(0.03), in: RoundedRectangle(cornerRadius: 8))
     }
 }
 
@@ -1798,7 +1796,10 @@ private struct WindowsTaskbar: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
-        .shadow(color: .black.opacity(0.18), radius: 16, y: 8)
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color(nsColor: .separatorColor).opacity(0.2), lineWidth: 0.6)
+        }
     }
 
     private static var timeString: String {
