@@ -449,11 +449,6 @@ private struct WorkspaceModeControl: View {
                 .background {
                     RoundedRectangle(cornerRadius: 5, style: .continuous)
                         .fill(isSelected ? Color.accentColor : Color.clear)
-                        .shadow(
-                            color: isSelected ? Color.black.opacity(0.12) : .clear,
-                            radius: 1.5,
-                            y: 0.5
-                        )
                 }
         }
         .buttonStyle(.plain)
