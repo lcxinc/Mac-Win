@@ -1531,10 +1531,10 @@ struct MacWinManagerApp: App {
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1280, height: 800)
-        .commands {
-            CommandGroup(replacing: .newItem) {
-                Button("New Bottle") {
-                    Task { await store.createBottle(named: "New Bottle") }
+            .commands {
+                CommandGroup(replacing: .newItem) {
+                Button(store.text(.createBottle)) {
+                    Task { await store.createBottle(named: store.text(.defaultBottleName)) }
                 }
                 .keyboardShortcut("n")
             }
