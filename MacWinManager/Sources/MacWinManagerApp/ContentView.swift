@@ -202,7 +202,7 @@ enum MacWinWindowChrome {
         window.setContentBorderThickness(0, for: .minY)
         window.setContentBorderThickness(0, for: .maxY)
         window.isReleasedWhenClosed = false
-        window.isMovableByWindowBackground = false
+        window.isMovableByWindowBackground = true
         window.isMovable = true
         window.isRestorable = false
         window.hasShadow = true
@@ -283,6 +283,7 @@ struct UnifiedTitleBar: View {
             WindowDragRegion()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .contentShape(Rectangle())
+                .allowsHitTesting(false)
                 .accessibilityHidden(true)
                 .zIndex(-1)
 
