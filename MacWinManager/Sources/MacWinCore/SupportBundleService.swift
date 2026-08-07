@@ -216,6 +216,7 @@ public struct SupportBundleManifest: Codable, Equatable, Sendable {
     public var attentionLaunchHealthEntryCount: Int?
     public var logMatchedLaunchHealthCount: Int?
     public var visualAcceptanceResultPath: String?
+    public var visualAcceptanceArtifactPaths: [String]?
     public var compatibilityRepairAuditedLaunchCount: Int
     public var compatibilityRepairMissingLaunchCount: Int
     public var compatibilityRepairStaleFlagLaunchCount: Int
@@ -451,6 +452,7 @@ public struct SupportBundleManifest: Codable, Equatable, Sendable {
         attentionLaunchHealthEntryCount: Int? = nil,
         logMatchedLaunchHealthCount: Int? = nil,
         visualAcceptanceResultPath: String? = nil,
+        visualAcceptanceArtifactPaths: [String]? = nil,
         compatibilityRepairAuditedLaunchCount: Int,
         compatibilityRepairMissingLaunchCount: Int,
         compatibilityRepairStaleFlagLaunchCount: Int,
@@ -685,6 +687,7 @@ public struct SupportBundleManifest: Codable, Equatable, Sendable {
         self.attentionLaunchHealthEntryCount = attentionLaunchHealthEntryCount
         self.logMatchedLaunchHealthCount = logMatchedLaunchHealthCount
         self.visualAcceptanceResultPath = visualAcceptanceResultPath
+        self.visualAcceptanceArtifactPaths = visualAcceptanceArtifactPaths
         self.compatibilityRepairAuditedLaunchCount = compatibilityRepairAuditedLaunchCount
         self.compatibilityRepairMissingLaunchCount = compatibilityRepairMissingLaunchCount
         self.compatibilityRepairStaleFlagLaunchCount = compatibilityRepairStaleFlagLaunchCount
@@ -1322,8 +1325,9 @@ public struct SupportBundleService {
             options: [.atomic]
         )
         let visualAcceptanceResultBundleURL = bundleURL.appendingPathComponent("visual-acceptance-result.json")
+        let resolvedVisualAcceptanceResultURL = Self.visualAcceptanceResultURL(from: visualAcceptanceResultURL)
         let visualAcceptanceResultPath: String? = {
-            guard let source = Self.visualAcceptanceResultURL(from: visualAcceptanceResultURL) else { return nil }
+            guard let source = resolvedVisualAcceptanceResultURL else { return nil }
             do {
                 return try copyArtifact(
                     source: source,
@@ -1332,6 +1336,10 @@ public struct SupportBundleService {
             } catch {
                 return nil
             }
+        }()
+        let visualAcceptanceArtifactPaths: [String] = {
+            guard let source = resolvedVisualAcceptanceResultURL else { return [] }
+            return Self.copyVisualAcceptanceArtifacts(from: source, into: bundleURL)
         }()
 
         let fileManifestURL = bundleURL.appendingPathComponent("bundle-files.json")
@@ -1551,6 +1559,7 @@ public struct SupportBundleService {
             attentionLaunchHealthEntryCount: launchHealth.attentionEntryCount,
             logMatchedLaunchHealthCount: launchHealth.logMatchedLaunchCount,
             visualAcceptanceResultPath: visualAcceptanceResultPath,
+            visualAcceptanceArtifactPaths: visualAcceptanceArtifactPaths,
             compatibilityRepairAuditedLaunchCount: report.compatibilityRepairAudit.auditedLaunchCount,
             compatibilityRepairMissingLaunchCount: report.compatibilityRepairAudit.missingRepairLaunchCount,
             compatibilityRepairStaleFlagLaunchCount: report.compatibilityRepairAudit.staleFlagLaunchCount,
@@ -1662,6 +1671,46 @@ public struct SupportBundleService {
             .standardizedFileURL
         if FileManager.default.fileExists(atPath: fallback.path) { return fallback }
         return nil
+    }
+
+    private static func copyVisualAcceptanceArtifacts(from resultURL: URL, into bundleURL: URL) -> [String] {
+        guard let data = try? Data(contentsOf: resultURL),
+              let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let artifacts = payload["artifacts"] as? [String: String] else {
+            return []
+        }
+
+        let resultDirectory = resultURL.deletingLastPathComponent()
+        var copiedPaths: [String] = []
+        let knownArtifactMap: [(key: String, destination: URL)] = [
+            ("analysisJson", bundleURL.appendingPathComponent("visual-acceptance-analysis.json")),
+            ("screenshot", bundleURL.appendingPathComponent("visual-acceptance-screenshot.png"))
+        ]
+
+        for (key, destination) in knownArtifactMap {
+            guard let path = artifacts[key], !path.isEmpty else { continue }
+            let source = URL(fileURLWithPath: path, relativeTo: resultDirectory)
+            do {
+                let sourceURL = source.standardizedFileURL
+                let destinationURL = destination.standardizedFileURL
+                if sourceURL.path != destinationURL.path {
+                    if FileManager.default.fileExists(atPath: destinationURL.path) {
+                        try FileManager.default.removeItem(at: destinationURL)
+                    }
+                    try FileManager.default.createDirectory(
+                        at: destinationURL.deletingLastPathComponent(),
+                        withIntermediateDirectories: true
+                    )
+                    try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
+                }
+                let copied = destinationURL.path
+                copiedPaths.append(copied)
+            } catch {
+                continue
+            }
+        }
+
+        return copiedPaths
     }
 
     private func copyArtifact(source: URL, destination: URL) throws -> String {
@@ -2070,6 +2119,7 @@ public struct SupportBundleService {
             "Test Coverage Timed Out Assets: \(report.testCoverage.timedOutAssetCount)",
             "Test Coverage Unverified Assets: \(report.testCoverage.unverifiedAssetCount)",
             "Visual Acceptance Result: \(manifest.visualAcceptanceResultPath == nil ? "not-exported" : "exported")",
+            "Visual Acceptance Artifacts: \(manifest.visualAcceptanceArtifactPaths?.count ?? 0)",
             "Launch History: \(report.launchHistory?.totalLaunchCount ?? 0) records",
             "Launch Health Entries: \(manifest.launchHealthEntryCount ?? 0)",
             "Launch Health Failed: \(manifest.failedLaunchHealthEntryCount ?? 0)",
@@ -2202,6 +2252,9 @@ public struct SupportBundleService {
         ]
         if manifest.visualAcceptanceResultPath != nil {
             lines.append("- visual-acceptance-result.json")
+        }
+        for artifactPath in manifest.visualAcceptanceArtifactPaths ?? [] {
+            lines.append("- \(URL(fileURLWithPath: artifactPath).lastPathComponent)")
         }
         try Data(lines.joined(separator: "\n").utf8).write(to: url, options: [.atomic])
     }

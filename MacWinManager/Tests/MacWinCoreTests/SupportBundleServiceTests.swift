@@ -242,7 +242,19 @@ struct SupportBundleServiceTests {
         )
 
         let visualAcceptanceResultURL = root.appendingPathComponent("macwin-visual-acceptance-result.json")
-        try Data("{\"status\":\"passed\"}\n".utf8).write(to: visualAcceptanceResultURL)
+        let visualAnalysisURL = root.appendingPathComponent("visual-acceptance-analysis.json")
+        let visualScreenshotPath = root.appendingPathComponent("visual-acceptance-screenshot.png")
+        try Data("{\"result\":\"pass\"}".utf8).write(to: visualAnalysisURL)
+        try Data("PNG-MOCK".utf8).write(to: visualScreenshotPath)
+        let visualAcceptanceResultPayload: [String: Any] = [
+            "status": "passed",
+            "artifacts": [
+                "analysisJson": visualAnalysisURL.path,
+                "screenshot": visualScreenshotPath.lastPathComponent
+            ] as [String: String]
+        ]
+        let visualAcceptanceResultData = try JSONSerialization.data(withJSONObject: visualAcceptanceResultPayload)
+        try visualAcceptanceResultData.write(to: visualAcceptanceResultURL)
 
         let service = SupportBundleService(
             paths: paths,
@@ -287,6 +299,8 @@ struct SupportBundleServiceTests {
         #expect(FileManager.default.fileExists(atPath: bundleURL.appendingPathComponent("diagnostic-history.json").path))
         #expect(FileManager.default.fileExists(atPath: bundleURL.appendingPathComponent("diagnostic-history.csv").path))
         #expect(FileManager.default.fileExists(atPath: bundleURL.appendingPathComponent("visual-acceptance-result.json").path))
+        #expect(FileManager.default.fileExists(atPath: bundleURL.appendingPathComponent("visual-acceptance-analysis.json").path))
+        #expect(FileManager.default.fileExists(atPath: bundleURL.appendingPathComponent("visual-acceptance-screenshot.png").path))
         #expect(FileManager.default.fileExists(atPath: bundleURL.appendingPathComponent("diagnostic-artifacts.json").path))
         #expect(FileManager.default.fileExists(atPath: bundleURL.appendingPathComponent("diagnostic-artifacts.csv").path))
         #expect(FileManager.default.fileExists(atPath: bundleURL.appendingPathComponent("diagnostic-artifacts.md").path))
@@ -400,6 +414,9 @@ struct SupportBundleServiceTests {
         #expect(manifest.bottleCount == 1)
         #expect(manifest.recipeCount == 2)
         #expect(manifest.visualAcceptanceResultPath?.hasSuffix("visual-acceptance-result.json") == true)
+        #expect(manifest.visualAcceptanceArtifactPaths?.count == 2)
+        #expect(manifest.visualAcceptanceArtifactPaths?.contains(bundleURL.appendingPathComponent("visual-acceptance-analysis.json").path) == true)
+        #expect(manifest.visualAcceptanceArtifactPaths?.contains(bundleURL.appendingPathComponent("visual-acceptance-screenshot.png").path) == true)
         #expect(manifest.fileManifestPath?.hasSuffix("bundle-files.json") == true)
         #expect(manifest.fileManifestCSVPath?.hasSuffix("bundle-files.csv") == true)
         #expect(manifest.diagnosticLogPath == logURL.path)
@@ -864,6 +881,8 @@ struct SupportBundleServiceTests {
         #expect(fileManifest.files.contains { $0.relativePath == "README.txt" && $0.sha256.count == 64 })
         #expect(fileManifest.files.contains { $0.relativePath == "external-open-queue.json" && $0.sha256.count == 64 })
         #expect(fileManifest.files.contains { $0.relativePath == "visual-acceptance-result.json" && $0.sha256.count == 64 })
+        #expect(fileManifest.files.contains { $0.relativePath == "visual-acceptance-analysis.json" && $0.sha256.count == 64 })
+        #expect(fileManifest.files.contains { $0.relativePath == "visual-acceptance-screenshot.png" && $0.sha256.count == 64 })
         #expect(fileManifest.files.contains { $0.relativePath == "software-sample-catalog.json" && $0.sha256.count == 64 })
         #expect(fileManifest.files.contains { $0.relativePath == "software-sample-preparation.json" && $0.sha256.count == 64 })
         #expect(fileManifest.files.contains { $0.relativePath == "software-sample-preparation.md" && $0.sha256.count == 64 })
@@ -898,6 +917,8 @@ struct SupportBundleServiceTests {
         #expect(fileManifestCSV.contains("support-bundle.json"))
         #expect(fileManifestCSV.contains("external-open-queue.json"))
         #expect(fileManifestCSV.contains("visual-acceptance-result.json"))
+        #expect(fileManifestCSV.contains("visual-acceptance-analysis.json"))
+        #expect(fileManifestCSV.contains("visual-acceptance-screenshot.png"))
         #expect(fileManifestCSV.contains("software-sample-catalog.json"))
         #expect(fileManifestCSV.contains("software-sample-preparation.json"))
         #expect(fileManifestCSV.contains("software-sample-preparation.md"))
@@ -1207,6 +1228,9 @@ struct SupportBundleServiceTests {
         #expect(readme.contains("diagnostic-artifacts.json"))
         #expect(readme.contains("diagnostic-artifacts.csv"))
         #expect(readme.contains("diagnostic-artifacts.md"))
+        #expect(readme.contains("Visual Acceptance Artifacts: 2"))
+        #expect(readme.contains("visual-acceptance-analysis.json"))
+        #expect(readme.contains("visual-acceptance-screenshot.png"))
         #expect(readme.contains("Recent Logs Included: 1"))
         #expect(readme.contains("Log Issues: 1"))
         #expect(readme.contains("Recommended Probe Commands: 1"))
