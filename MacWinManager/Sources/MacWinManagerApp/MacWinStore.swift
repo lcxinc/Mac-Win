@@ -402,18 +402,19 @@ final class MacWinStore: ObservableObject {
     }
 
     private func cleanupOrphanedBottleProcesses() async {
-        guard !isBusy, !bottles.isEmpty else { return }
+        guard !isBusy else { return }
+        let currentBottles = bottles
+        guard !currentBottles.isEmpty else { return }
         let paths = paths
-        let bottles = bottles
         let results = await Task.detached(priority: .utility) {
-            bottles.map { bottle in
+            currentBottles.map { bottle in
                 BottleRuntimeService(paths: paths).cleanupOrphans(in: bottle)
             }
         }.value
         let cleanedCount = results.map(\.stoppedCount).reduce(0, +)
         guard cleanedCount > 0 else { return }
         runtimeProcessAuditReport = runtimeProcessAuditService.makeReport()
-        bottleRuntimeReports = Dictionary(uniqueKeysWithValues: bottles.map { bottle in
+        bottleRuntimeReports = Dictionary(uniqueKeysWithValues: currentBottles.map { bottle in
             (bottle.id, BottleRuntimeService(paths: paths).report(for: bottle))
         })
         refreshRunningItems()
