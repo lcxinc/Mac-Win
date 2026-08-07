@@ -10,6 +10,7 @@ OWNER_NAME="${MACWIN_WINDOW_OWNER:-MacWinManagerApp}"
 ALLOW_NONPID_FALLBACK="${MACWIN_VISUAL_ALLOW_NONPID_FALLBACK:-0}"
 SCREENSHOT_PATH="${MACWIN_VISUAL_SCREENSHOT:-$OUTPUT_DIR/macwin-ui.png}"
 ANALYSIS_JSON="${MACWIN_VISUAL_ANALYSIS_JSON:-$OUTPUT_DIR/macwin-ui-analysis.json}"
+RESULT_JSON="${MACWIN_VISUAL_RESULT_JSON:-$OUTPUT_DIR/macwin-visual-acceptance-result.json}"
 
 mkdir -p "$OUTPUT_DIR"
 
@@ -23,6 +24,8 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 log_file="$OUTPUT_DIR/macwin-visual-acceptance.log"
 rm -f "$SCREENSHOT_PATH"
+rm -f "$RESULT_JSON"
+rm -f "$OUTPUT_DIR/macwin-visual-analysis-report.txt"
 
 if [ ! -x "$APP_PATH" ]; then
   echo "APP_PATH not executable: $APP_PATH" >&2
@@ -34,8 +37,15 @@ fi
 ) &
 APP_PID=$!
 
+analysis_status="not-run"
+analysis_reason=""
+analysis_resolution=""
+analysis_dominant=""
+analysis_center_std=""
+
 cleanup() {
   local status=$?
+  rm -f "$OUTPUT_DIR/macwin-visual-analysis-report.txt"
   if [ -n "${APP_PID-}" ] && kill -0 "$APP_PID" 2>/dev/null; then
     kill "$APP_PID" 2>/dev/null || true
     sleep 0.8
@@ -54,9 +64,42 @@ emit_status() {
   echo "window_id=${window_id-}"
   echo "screenshot=$SCREENSHOT_PATH"
   echo "analysis_json=$ANALYSIS_JSON"
+  echo "result_json=$RESULT_JSON"
   echo "log_file=$log_file"
   echo "owner=$OWNER_NAME"
   echo "app_path=$APP_PATH"
+
+/usr/bin/python3 - "$RESULT_JSON" "$status" "$reason" "$window_id" "$analysis_status" "$analysis_resolution" "$analysis_dominant" "$analysis_center_std" "$ANALYSIS_JSON" "$SCREENSHOT_PATH" "$APP_PATH" "$OWNER_NAME" "$log_file" "$elapsed" <<'PY'
+import json
+import sys
+
+result_path, status, reason, window_id, analysis_status, analysis_resolution, analysis_dominant, analysis_center_std, analysis_json, screenshot, app_path, owner, log_file, elapsed = sys.argv[1:15]
+with open(result_path, "w", encoding="utf-8") as handle:
+    json.dump({
+        "status": status,
+        "reason": reason,
+        "windowId": window_id,
+        "analysis": {
+            "status": analysis_status if analysis_status not in ("", "-") else None,
+            "resolution": analysis_resolution,
+            "dominantRatio": analysis_dominant,
+            "centerColorStd": analysis_center_std,
+        },
+        "artifacts": {
+            "analysisJson": analysis_json,
+            "screenshot": screenshot,
+        },
+        "process": {
+            "owner": owner,
+            "appPath": app_path,
+            "log": log_file,
+        },
+        "timing": {
+            "elapsedSeconds": int(elapsed) if str(elapsed).isdigit() else elapsed,
+        },
+    }, handle, ensure_ascii=False, indent=2)
+    handle.write("\n")
+PY
 }
 
 discover_window() {
@@ -275,20 +318,11 @@ if [ -z "$analysis_status" ]; then
   exit 7
 fi
 
-echo "visual_acceptance_status=$analysis_status"
-if [ -n "$analysis_reason" ]; then
-  echo "reason=$analysis_reason"
-fi
+emit_status "$analysis_status" "$analysis_reason"
 echo "resolution=$analysis_resolution"
 echo "dominant_ratio=$analysis_dominant"
 echo "center_color_std=$analysis_center_std"
-echo "analysis_json=$ANALYSIS_JSON"
 echo "analysis_classification=${classification:-unknown}"
-echo "window_id=$window_id"
-echo "screenshot=$SCREENSHOT_PATH"
-echo "log_file=$log_file"
-echo "owner=$OWNER_NAME"
-echo "app_path=$APP_PATH"
 echo "elapsed_seconds=$elapsed"
 rm -f "$analysis_tmp"
 exit 0
