@@ -241,6 +241,9 @@ struct SupportBundleServiceTests {
             endedAt: Date(timeIntervalSince1970: 590)
         )
 
+        let visualAcceptanceResultURL = root.appendingPathComponent("macwin-visual-acceptance-result.json")
+        try Data("{\"status\":\"passed\"}\n".utf8).write(to: visualAcceptanceResultURL)
+
         let service = SupportBundleService(
             paths: paths,
             capabilityReportService: CapabilityReportService(
@@ -274,7 +277,8 @@ struct SupportBundleServiceTests {
             bottles: [bottle],
             recipes: [recipe, installerRecipe],
             diagnosticReport: diagnostics,
-            logLimit: 4
+            logLimit: 4,
+            visualAcceptanceResultURL: visualAcceptanceResultURL
         )
 
         #expect(FileManager.default.fileExists(atPath: bundleURL.appendingPathComponent("README.txt").path))
@@ -282,6 +286,7 @@ struct SupportBundleServiceTests {
         #expect(FileManager.default.fileExists(atPath: bundleURL.appendingPathComponent("diagnostics.csv").path))
         #expect(FileManager.default.fileExists(atPath: bundleURL.appendingPathComponent("diagnostic-history.json").path))
         #expect(FileManager.default.fileExists(atPath: bundleURL.appendingPathComponent("diagnostic-history.csv").path))
+        #expect(FileManager.default.fileExists(atPath: bundleURL.appendingPathComponent("visual-acceptance-result.json").path))
         #expect(FileManager.default.fileExists(atPath: bundleURL.appendingPathComponent("diagnostic-artifacts.json").path))
         #expect(FileManager.default.fileExists(atPath: bundleURL.appendingPathComponent("diagnostic-artifacts.csv").path))
         #expect(FileManager.default.fileExists(atPath: bundleURL.appendingPathComponent("diagnostic-artifacts.md").path))
@@ -394,6 +399,7 @@ struct SupportBundleServiceTests {
         #expect(manifest.engineCount == 1)
         #expect(manifest.bottleCount == 1)
         #expect(manifest.recipeCount == 2)
+        #expect(manifest.visualAcceptanceResultPath?.hasSuffix("visual-acceptance-result.json") == true)
         #expect(manifest.fileManifestPath?.hasSuffix("bundle-files.json") == true)
         #expect(manifest.fileManifestCSVPath?.hasSuffix("bundle-files.csv") == true)
         #expect(manifest.diagnosticLogPath == logURL.path)
@@ -857,6 +863,7 @@ struct SupportBundleServiceTests {
         #expect(fileManifest.files.contains { $0.relativePath == "support-bundle.json" && $0.sha256.count == 64 })
         #expect(fileManifest.files.contains { $0.relativePath == "README.txt" && $0.sha256.count == 64 })
         #expect(fileManifest.files.contains { $0.relativePath == "external-open-queue.json" && $0.sha256.count == 64 })
+        #expect(fileManifest.files.contains { $0.relativePath == "visual-acceptance-result.json" && $0.sha256.count == 64 })
         #expect(fileManifest.files.contains { $0.relativePath == "software-sample-catalog.json" && $0.sha256.count == 64 })
         #expect(fileManifest.files.contains { $0.relativePath == "software-sample-preparation.json" && $0.sha256.count == 64 })
         #expect(fileManifest.files.contains { $0.relativePath == "software-sample-preparation.md" && $0.sha256.count == 64 })
@@ -890,6 +897,7 @@ struct SupportBundleServiceTests {
         #expect(fileManifestCSV.contains("relative_path,byte_count,modified_at,sha256"))
         #expect(fileManifestCSV.contains("support-bundle.json"))
         #expect(fileManifestCSV.contains("external-open-queue.json"))
+        #expect(fileManifestCSV.contains("visual-acceptance-result.json"))
         #expect(fileManifestCSV.contains("software-sample-catalog.json"))
         #expect(fileManifestCSV.contains("software-sample-preparation.json"))
         #expect(fileManifestCSV.contains("software-sample-preparation.md"))

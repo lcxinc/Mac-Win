@@ -215,6 +215,7 @@ public struct SupportBundleManifest: Codable, Equatable, Sendable {
     public var failedLaunchHealthEntryCount: Int?
     public var attentionLaunchHealthEntryCount: Int?
     public var logMatchedLaunchHealthCount: Int?
+    public var visualAcceptanceResultPath: String?
     public var compatibilityRepairAuditedLaunchCount: Int
     public var compatibilityRepairMissingLaunchCount: Int
     public var compatibilityRepairStaleFlagLaunchCount: Int
@@ -449,6 +450,7 @@ public struct SupportBundleManifest: Codable, Equatable, Sendable {
         failedLaunchHealthEntryCount: Int? = nil,
         attentionLaunchHealthEntryCount: Int? = nil,
         logMatchedLaunchHealthCount: Int? = nil,
+        visualAcceptanceResultPath: String? = nil,
         compatibilityRepairAuditedLaunchCount: Int,
         compatibilityRepairMissingLaunchCount: Int,
         compatibilityRepairStaleFlagLaunchCount: Int,
@@ -682,6 +684,7 @@ public struct SupportBundleManifest: Codable, Equatable, Sendable {
         self.failedLaunchHealthEntryCount = failedLaunchHealthEntryCount
         self.attentionLaunchHealthEntryCount = attentionLaunchHealthEntryCount
         self.logMatchedLaunchHealthCount = logMatchedLaunchHealthCount
+        self.visualAcceptanceResultPath = visualAcceptanceResultPath
         self.compatibilityRepairAuditedLaunchCount = compatibilityRepairAuditedLaunchCount
         self.compatibilityRepairMissingLaunchCount = compatibilityRepairMissingLaunchCount
         self.compatibilityRepairStaleFlagLaunchCount = compatibilityRepairStaleFlagLaunchCount
@@ -791,7 +794,8 @@ public struct SupportBundleService {
         bottles: [BottleManifest],
         recipes: [RecipeManifest],
         diagnosticReport: DiagnosticReport? = nil,
-        logLimit: Int = 24
+        logLimit: Int = 24,
+        visualAcceptanceResultURL: URL? = nil
     ) throws -> URL {
         try paths.ensureBaseDirectories(fileManager: fileManager)
         let bundleURL = paths.logsDirectory
@@ -1317,6 +1321,18 @@ public struct SupportBundleService {
             to: logIndexCSVURL,
             options: [.atomic]
         )
+        let visualAcceptanceResultBundleURL = bundleURL.appendingPathComponent("visual-acceptance-result.json")
+        let visualAcceptanceResultPath: String? = {
+            guard let source = Self.visualAcceptanceResultURL(from: visualAcceptanceResultURL) else { return nil }
+            do {
+                return try copyArtifact(
+                    source: source,
+                    destination: visualAcceptanceResultBundleURL
+                )
+            } catch {
+                return nil
+            }
+        }()
 
         let fileManifestURL = bundleURL.appendingPathComponent("bundle-files.json")
         let fileManifestCSVURL = bundleURL.appendingPathComponent("bundle-files.csv")
@@ -1534,6 +1550,7 @@ public struct SupportBundleService {
             failedLaunchHealthEntryCount: launchHealth.failedEntryCount,
             attentionLaunchHealthEntryCount: launchHealth.attentionEntryCount,
             logMatchedLaunchHealthCount: launchHealth.logMatchedLaunchCount,
+            visualAcceptanceResultPath: visualAcceptanceResultPath,
             compatibilityRepairAuditedLaunchCount: report.compatibilityRepairAudit.auditedLaunchCount,
             compatibilityRepairMissingLaunchCount: report.compatibilityRepairAudit.missingRepairLaunchCount,
             compatibilityRepairStaleFlagLaunchCount: report.compatibilityRepairAudit.staleFlagLaunchCount,
@@ -1617,6 +1634,48 @@ public struct SupportBundleService {
             lhs.relativePath.localizedStandardCompare(rhs.relativePath) == .orderedAscending
         }
         return SupportBundleFileManifest(generatedAt: generatedAt, bundlePath: bundleURL.path, files: entries)
+    }
+
+    private static func visualAcceptanceResultURL(from preferred: URL?) -> URL? {
+        if let preferred {
+            let preferredURL = preferred.standardizedFileURL
+            if FileManager.default.fileExists(atPath: preferredURL.path) { return preferredURL }
+            return nil
+        }
+
+        let env = ProcessInfo.processInfo.environment
+        if let explicit = env["MACWIN_VISUAL_RESULT_JSON"], !explicit.isEmpty {
+            let explicitURL = URL(fileURLWithPath: explicit).standardizedFileURL
+            if FileManager.default.fileExists(atPath: explicitURL.path) { return explicitURL }
+        }
+        if let outputDir = env["MACWIN_VISUAL_OUTPUT_DIR"], !outputDir.isEmpty {
+            let outputURL = URL(fileURLWithPath: outputDir)
+                .appendingPathComponent("macwin-visual-acceptance-result.json")
+                .standardizedFileURL
+            if FileManager.default.fileExists(atPath: outputURL.path) { return outputURL }
+        }
+
+        let fallback = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Desktop")
+            .appendingPathComponent("MacWinVisualAcceptance")
+            .appendingPathComponent("macwin-visual-acceptance-result.json")
+            .standardizedFileURL
+        if FileManager.default.fileExists(atPath: fallback.path) { return fallback }
+        return nil
+    }
+
+    private func copyArtifact(source: URL, destination: URL) throws -> String {
+        let sourceURL = source.standardizedFileURL
+        let destinationURL = destination.standardizedFileURL
+        if sourceURL.path == destinationURL.path {
+            return destinationURL.path
+        }
+        if fileManager.fileExists(atPath: destinationURL.path) {
+            try fileManager.removeItem(at: destinationURL)
+        }
+        try fileManager.createDirectory(at: destinationURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try fileManager.copyItem(at: sourceURL, to: destinationURL)
+        return destinationURL.path
     }
 
     public static func fileManifestCSV(_ manifest: SupportBundleFileManifest) -> String {
@@ -1896,7 +1955,7 @@ public struct SupportBundleService {
     }
 
     private func writeReadme(manifest: SupportBundleManifest, report: CapabilityReport, to url: URL) throws {
-        let lines = [
+        var lines = [
             "MacWin Manager Support Bundle",
             "Generated At: \(ISO8601DateFormatter().string(from: manifest.generatedAt))",
             "Root: \(manifest.rootPath)",
@@ -2010,6 +2069,7 @@ public struct SupportBundleService {
             "Test Coverage Failed Assets: \(report.testCoverage.failedAssetCount)",
             "Test Coverage Timed Out Assets: \(report.testCoverage.timedOutAssetCount)",
             "Test Coverage Unverified Assets: \(report.testCoverage.unverifiedAssetCount)",
+            "Visual Acceptance Result: \(manifest.visualAcceptanceResultPath == nil ? "not-exported" : "exported")",
             "Launch History: \(report.launchHistory?.totalLaunchCount ?? 0) records",
             "Launch Health Entries: \(manifest.launchHealthEntryCount ?? 0)",
             "Launch Health Failed: \(manifest.failedLaunchHealthEntryCount ?? 0)",
@@ -2140,6 +2200,9 @@ public struct SupportBundleService {
             "- bottles/",
             "- catalog/recipes.json"
         ]
+        if manifest.visualAcceptanceResultPath != nil {
+            lines.append("- visual-acceptance-result.json")
+        }
         try Data(lines.joined(separator: "\n").utf8).write(to: url, options: [.atomic])
     }
 
