@@ -1564,6 +1564,7 @@ struct NativeUIProbeSection: View {
                         Image(systemName: "arrow.clockwise")
                     }
                     .buttonStyle(.borderless)
+                    .contentShape(Rectangle())
                     .help(store.text(.refreshLogs))
                     .accessibilityLabel(store.text(.refreshLogs))
                     .accessibilityIdentifier("native-ui-probe-refresh")
@@ -1642,6 +1643,7 @@ struct NativeUIProbeSection: View {
                             Image(systemName: "doc.text")
                         }
                         .buttonStyle(.borderless)
+                        .contentShape(Rectangle())
                         .help(store.text(.openLogFile))
                     }
                 } else {
@@ -1890,6 +1892,7 @@ struct NativeUIApplicationMatrixRow: View {
                         Image(systemName: "doc.text")
                     }
                     .buttonStyle(.borderless)
+                    .contentShape(Rectangle())
                     .help(store.text(.openLogFile))
                 }
                 Spacer(minLength: 0)
@@ -1994,12 +1997,14 @@ struct DiagnosticHistorySection: View {
                         Label(store.text(.exportDiagnosticHistoryCSV), systemImage: "tablecells")
                     }
                     .buttonStyle(.borderless)
+                    .contentShape(Rectangle())
                     Button {
                         store.refreshDiagnosticHistory()
                     } label: {
                         Label(store.text(.refreshLogs), systemImage: "arrow.clockwise")
                     }
                     .buttonStyle(.borderless)
+                    .contentShape(Rectangle())
                 }
             } else {
                 VStack(alignment: .leading, spacing: 12) {
@@ -2015,12 +2020,14 @@ struct DiagnosticHistorySection: View {
                             Label(store.text(.exportDiagnosticHistoryCSV), systemImage: "tablecells")
                         }
                         .buttonStyle(.borderless)
+                        .contentShape(Rectangle())
                         Button {
                             store.refreshDiagnosticHistory()
                         } label: {
                             Label(store.text(.refreshLogs), systemImage: "arrow.clockwise")
                         }
                         .buttonStyle(.borderless)
+                        .contentShape(Rectangle())
                     }
 
                     LazyVGrid(columns: metricColumns, spacing: 8) {
@@ -2080,6 +2087,7 @@ struct DiagnosticHistoryRow: View {
                     Image(systemName: "doc.text.magnifyingglass")
                 }
                 .buttonStyle(.borderless)
+                .contentShape(Rectangle())
                 .help(store.text(.openLogFile))
                 Button {
                     store.revealDiagnosticRunLog(record)
@@ -2087,6 +2095,7 @@ struct DiagnosticHistoryRow: View {
                     Image(systemName: "folder")
                 }
                 .buttonStyle(.borderless)
+                .contentShape(Rectangle())
                 .help(store.text(.revealInFinder))
             }
         }
@@ -2154,12 +2163,14 @@ struct DiagnosticArtifactIndexSection: View {
                         Label(store.text(.exportDiagnosticArtifactIndexCSV), systemImage: "tablecells")
                     }
                     .buttonStyle(.borderless)
+                    .contentShape(Rectangle())
                     Button {
                         store.refreshDiagnosticArtifacts()
                     } label: {
                         Label(store.text(.refreshLogs), systemImage: "arrow.clockwise")
                     }
                     .buttonStyle(.borderless)
+                    .contentShape(Rectangle())
                 }
             } else {
                 VStack(alignment: .leading, spacing: 12) {
@@ -2175,12 +2186,14 @@ struct DiagnosticArtifactIndexSection: View {
                             Label(store.text(.exportDiagnosticArtifactIndexCSV), systemImage: "tablecells")
                         }
                         .buttonStyle(.borderless)
+                        .contentShape(Rectangle())
                         Button {
                             store.refreshDiagnosticArtifacts()
                         } label: {
                             Label(store.text(.refreshLogs), systemImage: "arrow.clockwise")
                         }
                         .buttonStyle(.borderless)
+                        .contentShape(Rectangle())
                     }
 
                     LazyVGrid(columns: metricColumns, spacing: 8) {
@@ -2270,6 +2283,7 @@ struct DiagnosticArtifactRow: View {
                     Image(systemName: "doc.text.magnifyingglass")
                 }
                 .buttonStyle(.borderless)
+                .contentShape(Rectangle())
                 .help(store.text(.openLogFile))
                 Button {
                     store.revealDiagnosticArtifact(artifact)
@@ -2277,6 +2291,7 @@ struct DiagnosticArtifactRow: View {
                     Image(systemName: "folder")
                 }
                 .buttonStyle(.borderless)
+                .contentShape(Rectangle())
                 .help(store.text(.revealInFinder))
             }
         }
@@ -2354,12 +2369,14 @@ struct SupportTriageSummarySection: View {
                         Label(store.text(.refreshSupportTriage), systemImage: "arrow.clockwise")
                     }
                     .buttonStyle(.borderless)
+                    .contentShape(Rectangle())
                     Button {
                         store.exportSupportBundle()
                     } label: {
                         Label(store.text(.exportSupportBundle), systemImage: "shippingbox.and.arrow.backward")
                     }
                     .buttonStyle(.borderless)
+                    .contentShape(Rectangle())
                 }
 
                 LazyVGrid(columns: metricColumns, spacing: 8) {
@@ -2729,24 +2746,28 @@ struct RuntimeProcessSummarySection: View {
                         Label(store.text(.refreshRuntimeProcesses), systemImage: "arrow.clockwise")
                     }
                     .buttonStyle(.borderless)
+                    .contentShape(Rectangle())
                     Button {
                         store.exportRuntimeProcessesCSV()
                     } label: {
                         Label(store.text(.exportRuntimeProcessesCSV), systemImage: "tablecells")
                     }
                     .buttonStyle(.borderless)
+                    .contentShape(Rectangle())
                     Button {
                         store.exportRuntimeProcessSnapshot()
                     } label: {
                         Label(store.text(.exportRuntimeSnapshot), systemImage: "square.and.arrow.up")
                     }
                     .buttonStyle(.borderless)
+                    .contentShape(Rectangle())
                     Button(role: .destructive) {
                         store.terminateWineVirtualDesktopProcesses()
                     } label: {
                         Label(store.text(.stopWineVirtualDesktops), systemImage: "rectangle.badge.xmark")
                     }
                     .buttonStyle(.borderless)
+                    .contentShape(Rectangle())
                     .disabled(!report.entries.contains { $0.isWineVirtualDesktop || $0.isWineDeviceService })
                     Button(role: .destructive) {
                         store.terminateDetachedWineSystemProcesses()
@@ -2754,6 +2775,7 @@ struct RuntimeProcessSummarySection: View {
                         Label(store.text(.stopDetachedWineSystemProcesses), systemImage: "eraser.fill")
                     }
                     .buttonStyle(.borderless)
+                    .contentShape(Rectangle())
                     .disabled(report.detachedWineSystemEntries.isEmpty)
                     Button(role: .destructive) {
                         store.terminateAllRuntimeProcesses()
@@ -2761,6 +2783,7 @@ struct RuntimeProcessSummarySection: View {
                         Label(store.text(.stopAllRuntimeProcesses), systemImage: "stop.circle")
                     }
                     .buttonStyle(.borderless)
+                    .contentShape(Rectangle())
                     .disabled(report.entries.isEmpty)
                 }
 
@@ -2916,6 +2939,7 @@ struct RuntimeProcessEntryRow: View {
                 Image(systemName: "stop.circle")
             }
             .buttonStyle(.borderless)
+            .contentShape(Rectangle())
             .help(store.text(.stopRuntimeProcess))
         }
     }
@@ -2997,24 +3021,28 @@ struct TestCoverageSummarySection: View {
                             Label(store.text(.exportTestSessionArchive), systemImage: "archivebox")
                         }
                         .buttonStyle(.borderless)
+                        .contentShape(Rectangle())
                         Button {
                             store.exportLogIssueReport()
                         } label: {
                             Label(store.text(.exportLogIssueReport), systemImage: "doc.text.magnifyingglass")
                         }
                         .buttonStyle(.borderless)
+                        .contentShape(Rectangle())
                         Button {
                             store.exportTestRunHistoryCSV()
                         } label: {
                             Label(store.text(.exportTestRunHistoryCSV), systemImage: "tablecells")
                         }
                         .buttonStyle(.borderless)
+                        .contentShape(Rectangle())
                         Button {
                             store.exportRecommendedProbeScript()
                         } label: {
                             Label(store.text(.exportRecommendedProbeScript), systemImage: "terminal")
                         }
                         .buttonStyle(.borderless)
+                        .contentShape(Rectangle())
                     }
 
                     LazyVGrid(columns: metricColumns, alignment: .leading, spacing: 8) {
@@ -3425,6 +3453,7 @@ struct TestCoverageRunRow: View {
                 Image(systemName: "arrow.clockwise.circle")
             }
             .buttonStyle(.borderless)
+            .contentShape(Rectangle())
             .disabled(!store.canRunProbe(assetId: run.assetId))
             .help(store.text(.rerunProbe))
             Button {
@@ -3433,6 +3462,7 @@ struct TestCoverageRunRow: View {
                 Image(systemName: "doc.text")
             }
             .buttonStyle(.borderless)
+            .contentShape(Rectangle())
             .help(store.text(.openLogFile))
             Button {
                 store.revealTestRunLog(run)
@@ -3440,6 +3470,7 @@ struct TestCoverageRunRow: View {
                 Image(systemName: "folder")
             }
             .buttonStyle(.borderless)
+            .contentShape(Rectangle())
             .help(store.text(.revealInFinder))
         }
         .padding(8)
@@ -3899,6 +3930,7 @@ struct LocalInstallerCandidateRow: View {
                 Image(systemName: "folder")
             }
             .buttonStyle(.borderless)
+            .contentShape(Rectangle())
             .help(store.text(.revealInFinder))
         }
         .padding(10)
@@ -4052,6 +4084,7 @@ struct InstallerDownloadHistoryRow: View {
                     Image(systemName: "folder")
                 }
                 .buttonStyle(.borderless)
+                .contentShape(Rectangle())
                 .help(store.text(.revealInFinder))
             }
         }
@@ -4805,6 +4838,7 @@ struct SoftwareCollectionAcceptanceActionRow: View {
                     Image(systemName: "play.circle.fill")
                 }
                 .buttonStyle(.borderless)
+                .contentShape(Rectangle())
                 .help(store.text(.runProbeSuite))
             } else if let path = action.relatedPath, !path.isEmpty {
                 Button {
@@ -4813,6 +4847,7 @@ struct SoftwareCollectionAcceptanceActionRow: View {
                     Image(systemName: "doc.text.magnifyingglass")
                 }
                 .buttonStyle(.borderless)
+                .contentShape(Rectangle())
                 .help(store.text(.latestLog))
             }
         }
@@ -5027,6 +5062,7 @@ struct SoftwareCollectionEntryRow: View {
                     Image(systemName: "doc.text.magnifyingglass")
                 }
                 .buttonStyle(.borderless)
+                .contentShape(Rectangle())
                 .help(store.text(.latestLog))
             }
         }
@@ -5363,6 +5399,7 @@ struct SoftwareSmokeMatrixRowView: View {
                 Image(systemName: "arrowtriangle.right.circle.fill")
             }
             .buttonStyle(.borderless)
+            .contentShape(Rectangle())
             .disabled(row.stage == .verified || row.stage == .disabled)
             .help(store.text(.runNextAction))
 
@@ -5373,6 +5410,7 @@ struct SoftwareSmokeMatrixRowView: View {
                     Image(systemName: "doc.text")
                 }
                 .buttonStyle(.borderless)
+                .contentShape(Rectangle())
                 .help(store.text(.openLogFile))
             }
         }
@@ -5497,12 +5535,14 @@ struct ActivityTimelineSection: View {
                             Label(store.text(.exportInstallHistoryCSV), systemImage: "tablecells")
                         }
                         .buttonStyle(.borderless)
+                        .contentShape(Rectangle())
                         Button {
                             store.exportLaunchHistoryCSV()
                         } label: {
                             Label(store.text(.exportLaunchHistoryCSV), systemImage: "tablecells")
                         }
                         .buttonStyle(.borderless)
+                        .contentShape(Rectangle())
                         if let latest = report.latestEventAt {
                             Text(latest, style: .relative)
                                 .font(.caption)
@@ -5594,6 +5634,7 @@ struct ActivityTimelineRow: View {
                     Image(systemName: "doc.text")
                 }
                 .buttonStyle(.borderless)
+                .contentShape(Rectangle())
                 .help(store.text(.openLogFile))
 
                 Button {
@@ -5602,6 +5643,7 @@ struct ActivityTimelineRow: View {
                     Image(systemName: "folder")
                 }
                 .buttonStyle(.borderless)
+                .contentShape(Rectangle())
                 .help(store.text(.revealInFinder))
             }
         }
@@ -5849,6 +5891,7 @@ struct CompatibilityRepairAuditRow: View {
                     Image(systemName: "doc.text")
                 }
                 .buttonStyle(.borderless)
+                .contentShape(Rectangle())
                 .help(store.text(.openLogFile))
 
                 Button {
@@ -5857,6 +5900,7 @@ struct CompatibilityRepairAuditRow: View {
                     Image(systemName: "folder")
                 }
                 .buttonStyle(.borderless)
+                .contentShape(Rectangle())
                 .help(store.text(.revealInFinder))
             }
         }
@@ -5965,6 +6009,7 @@ struct SoftwareTestPlanRow: View {
                 Image(systemName: "arrowtriangle.right.circle.fill")
             }
             .buttonStyle(.borderless)
+            .contentShape(Rectangle())
             .disabled(entry.state == .verified || entry.state == .disabled)
             .help(store.text(.runNextAction))
         }
