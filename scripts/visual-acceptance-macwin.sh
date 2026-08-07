@@ -7,6 +7,7 @@ WINDOW_TITLE_TOKEN="${MACWIN_WINDOW_TITLE_TOKEN:-MacWin}"
 TIMEOUT_SECONDS="${MACWIN_VISUAL_WAIT_SECONDS:-20}"
 SWEEP_SECONDS="${MACWIN_VISUAL_SWEEP_SECONDS:-1}"
 OWNER_NAME="${MACWIN_WINDOW_OWNER:-MacWinManagerApp}"
+ALLOW_NONPID_FALLBACK="${MACWIN_VISUAL_ALLOW_NONPID_FALLBACK:-0}"
 SCREENSHOT_PATH="${MACWIN_VISUAL_SCREENSHOT:-$OUTPUT_DIR/macwin-ui.png}"
 ANALYSIS_JSON="${MACWIN_VISUAL_ANALYSIS_JSON:-$OUTPUT_DIR/macwin-ui-analysis.json}"
 
@@ -61,7 +62,12 @@ emit_status() {
 discover_window() {
   local owner="$1"
   local title_token="$2"
-  /usr/bin/swift "$SCRIPT_DIR/find-macos-window.swift" --discover-smallest "$owner" "$title_token" 2>/dev/null || true
+  local owner_pid="${3-}"
+  if [ -n "$owner_pid" ]; then
+    /usr/bin/swift "$SCRIPT_DIR/find-macos-window.swift" --discover-smallest "$owner" "$title_token" "$owner_pid" 2>/dev/null || true
+  else
+    /usr/bin/swift "$SCRIPT_DIR/find-macos-window.swift" --discover-smallest "$owner" "$title_token" 2>/dev/null || true
+  fi
 }
 
 parse_window_id() {
@@ -88,7 +94,10 @@ while [ "$elapsed" -lt "$TIMEOUT_SECONDS" ]; do
   candidate=""
   for owner in "$OWNER_NAME" "wine"; do
     for token in "$WINDOW_TITLE_TOKEN" ""; do
-      candidate="$(discover_window "$owner" "$token")"
+      candidate="$(discover_window "$owner" "$token" "$APP_PID")"
+      if [ -z "$candidate" ] && [ "$ALLOW_NONPID_FALLBACK" = "1" ]; then
+        candidate="$(discover_window "$owner" "$token")"
+      fi
       if [ -n "$candidate" ]; then
         window_id="$(parse_window_id "$candidate")"
         if [ -n "$window_id" ]; then

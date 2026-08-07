@@ -1,19 +1,22 @@
 import CoreGraphics
 import Foundation
 
-let discoveryMode = CommandLine.arguments.count == 4
+let discoveryMode = (CommandLine.arguments.count == 4 || CommandLine.arguments.count == 5)
     && (CommandLine.arguments[1] == "--discover"
         || CommandLine.arguments[1] == "--discover-smallest")
 let preferSmallest = discoveryMode && CommandLine.arguments[1] == "--discover-smallest"
 guard discoveryMode || CommandLine.arguments.count == 8 else {
     fputs("usage: find-macos-window <owner> <title> <x> <y> <width> <height> <tolerance>\n", stderr)
-    fputs("       find-macos-window --discover <owner> <title-token>\n", stderr)
-    fputs("       find-macos-window --discover-smallest <owner> <title-token>\n", stderr)
+    fputs("       find-macos-window --discover <owner> <title-token> [owner-pid]\n", stderr)
+    fputs("       find-macos-window --discover-smallest <owner> <title-token> [owner-pid]\n", stderr)
     exit(2)
 }
 
 let expectedOwner = CommandLine.arguments[discoveryMode ? 2 : 1].lowercased()
 let expectedTitle = CommandLine.arguments[discoveryMode ? 3 : 2]
+let expectedPid = discoveryMode && CommandLine.arguments.count == 5
+    ? Int(CommandLine.arguments[4])
+    : nil
 let expectedValues = discoveryMode ? [] : CommandLine.arguments[3...6].compactMap(Double.init)
 let tolerance = discoveryMode ? 0 : (Double(CommandLine.arguments[7]) ?? 12)
 guard discoveryMode || expectedValues.count == 4 else { exit(2) }
@@ -49,6 +52,12 @@ let candidates = windows.compactMap { window -> Candidate? in
     let ownerMatches = owner.lowercased() == expectedOwner
         || (expectedOwner.contains("wine") && owner.lowercased().contains("wine"))
     guard ownerMatches else { return nil }
+    if let expectedPid = expectedPid {
+        guard let ownerPid = window[kCGWindowOwnerPID as String] as? NSNumber,
+              ownerPid.intValue == expectedPid else {
+            return nil
+        }
+    }
     if !expectedTitle.isEmpty {
         if discoveryMode && !title.localizedCaseInsensitiveContains(expectedTitle) { return nil }
         if !discoveryMode && title != expectedTitle { return nil }
