@@ -2891,6 +2891,40 @@ class MigrationBaselineTagTests(unittest.TestCase):
         )
         self.assertNotIn("hostile", str(caught.exception))
 
+    def test_tag_validation_uses_an_injected_runner_exclusively(self):
+        validator = load_validator()
+        repository, source_commit, _ = self.createRepository("injected-runner")
+        self.runGit(
+            repository,
+            "tag",
+            "-a",
+            BASELINE_TAG,
+            source_commit,
+            "-m",
+            TAG_MESSAGE,
+        )
+        original_runner = validator._run_git
+        calls = []
+
+        def injected(root, arguments):
+            calls.append((Path(root).resolve(), tuple(arguments)))
+            return original_runner(root, arguments)
+
+        with mock.patch.object(
+            validator,
+            "_run_git",
+            side_effect=AssertionError("injected validation must not use module runner"),
+        ):
+            validator.validate_baseline_tag(
+                repository,
+                BASELINE_TAG,
+                source_commit,
+                run_git=injected,
+            )
+
+        self.assertGreaterEqual(len(calls), 7)
+        self.assertTrue(all(root == repository.resolve() for root, _args in calls))
+
     def test_cli_rejects_extra_arguments_with_argparse_usage_status(self):
         result = subprocess.run(
             [sys.executable, str(VALIDATOR_PATH), "unexpected"],

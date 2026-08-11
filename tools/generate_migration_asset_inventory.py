@@ -396,7 +396,7 @@ def _run_git(repository_root, *arguments, allowed_returncodes=(0,)):
         )
     except OSError as error:
         raise InventoryError("inventory Git command failed") from error
-    if result.returncode not in allowed_returncodes:
+    if allowed_returncodes is not None and result.returncode not in allowed_returncodes:
         raise InventoryError("inventory Git command failed")
     return result
 
@@ -450,6 +450,13 @@ def _validate_primary_object_database(repository_root):
         raise InventoryError("inventory Git object database is not self-contained")
 
 
+def _tag_git_runner(repository_root, arguments):
+    """Adapt the hardened inventory runner to the audited tag validator API."""
+    return _run_git(
+        repository_root, *arguments, allowed_returncodes=None
+    )
+
+
 def _validate_source_tag(repository_root, source_tag, source_commit):
     """Lazily reuse the audited baseline tag validator in package or script mode."""
     try:
@@ -470,7 +477,12 @@ def _validate_source_tag(repository_root, source_tag, source_commit):
                 "inventory source Git identity is invalid"
             ) from fallback_error
     try:
-        validate_baseline_tag(repository_root, source_tag, source_commit)
+        validate_baseline_tag(
+            repository_root,
+            source_tag,
+            source_commit,
+            run_git=_tag_git_runner,
+        )
     except BaselineValidationError as error:
         raise InventoryError("inventory source Git identity is invalid") from error
 

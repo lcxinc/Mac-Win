@@ -567,11 +567,12 @@ def _validate_tag_tagger_line(raw_line):
         raise BaselineValidationError(diagnostic)
 
 
-def validate_baseline_tag(repository_root, tag_name, source_commit):
+def validate_baseline_tag(repository_root, tag_name, source_commit, run_git=None):
     """Require one local annotated tag directly bound to the source commit."""
     tag_ref = f"refs/tags/{tag_name}"
+    git = _run_git if run_git is None else run_git
 
-    listed_refs = _run_git(
+    listed_refs = git(
         repository_root,
         ["for-each-ref", "--format=%(refname)", "refs/tags"],
     )
@@ -599,19 +600,19 @@ def validate_baseline_tag(repository_root, tag_name, source_commit):
             "baseline tag ref is not stored with exact canonical spelling"
         )
 
-    symbolic_ref = _run_git(repository_root, ["symbolic-ref", "-q", tag_ref])
+    symbolic_ref = git(repository_root, ["symbolic-ref", "-q", tag_ref])
     if symbolic_ref.returncode == 0:
         raise BaselineValidationError("baseline tag ref must not be symbolic")
     if symbolic_ref.returncode != 1:
         raise BaselineValidationError("baseline tag ref could not be inspected")
 
-    object_type = _run_git(repository_root, ["cat-file", "-t", tag_ref])
+    object_type = git(repository_root, ["cat-file", "-t", tag_ref])
     if object_type.returncode != 0 or object_type.stdout.strip() != b"tag":
         raise BaselineValidationError(
             "baseline tag is not a local annotated tag object"
         )
 
-    peeled = _run_git(repository_root, ["rev-parse", f"{tag_ref}^{{}}"])
+    peeled = git(repository_root, ["rev-parse", f"{tag_ref}^{{}}"])
     if (
         peeled.returncode != 0
         or peeled.stdout.strip() != source_commit.encode("ascii")
@@ -620,7 +621,7 @@ def validate_baseline_tag(repository_root, tag_name, source_commit):
             "baseline tag does not peel to the source commit"
         )
 
-    resolved_tag = _run_git(repository_root, ["rev-parse", "--verify", tag_ref])
+    resolved_tag = git(repository_root, ["rev-parse", "--verify", tag_ref])
     encoded_object_id = resolved_tag.stdout.strip()
     if (
         resolved_tag.returncode != 0
@@ -630,7 +631,7 @@ def validate_baseline_tag(repository_root, tag_name, source_commit):
         raise BaselineValidationError("baseline tag object id is invalid")
     object_id = encoded_object_id.decode("ascii")
 
-    object_size = _run_git(repository_root, ["cat-file", "-s", object_id])
+    object_size = git(repository_root, ["cat-file", "-s", object_id])
     encoded_size = object_size.stdout.strip()
     if (
         object_size.returncode != 0
@@ -644,7 +645,7 @@ def validate_baseline_tag(repository_root, tag_name, source_commit):
             f"baseline tag object exceeds {MAX_TAG_OBJECT_BYTES}-byte limit"
         )
 
-    tag_object = _run_git(repository_root, ["cat-file", "tag", object_id])
+    tag_object = git(repository_root, ["cat-file", "tag", object_id])
     if tag_object.returncode != 0:
         raise BaselineValidationError("baseline tag object could not be read")
     if len(tag_object.stdout) != size:

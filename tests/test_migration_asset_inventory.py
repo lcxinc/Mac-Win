@@ -981,7 +981,6 @@ class AssetGitBindingTests(unittest.TestCase):
         promisor.write_bytes(b"")
         self.assert_binding_error("inventory Git object database is not self-contained")
         promisor.unlink()
-
         self._fixture_git("config", "remote.origin.promisor", "true")
         self.assert_binding_error("inventory Git object database is not self-contained")
 
@@ -1078,6 +1077,30 @@ class AssetGitBindingTests(unittest.TestCase):
             counts,
             {"catalog": 19, "patches": 11, "probes": 26, "fixtures": 30, "bottle-schema": 4},
         )
+
+    def test_list_cli_uses_hardened_runner_for_audited_tag_validation(self):
+        hostile_environments = (
+            {"GIT_TEST_ASSUME_DIFFERENT_OWNER": "1"},
+            {
+                "GIT_CONFIG_COUNT": "1",
+                "GIT_CONFIG_KEY_0": "core.abbrev",
+                "GIT_CONFIG_VALUE_0": "invalid",
+            },
+        )
+        for hostile in hostile_environments:
+            with self.subTest(hostile=tuple(sorted(hostile))):
+                environment = os.environ.copy()
+                environment.update(hostile)
+                result = subprocess.run(
+                    [sys.executable, "-B", str(GENERATOR_PATH), "--list"],
+                    cwd=ROOT,
+                    env=environment,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0)
+                self.assertEqual(result.stderr, b"")
+                self.assertTrue(result.stdout.startswith(b"Mac-Win migration assets: 90 "))
 
 
 if __name__ == "__main__":
