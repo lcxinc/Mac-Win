@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Build the deterministic Mac-Win migration asset inventory."""
 
+import argparse
 import json
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import sys
+import unicodedata
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -15,6 +17,7 @@ SOURCE_COMMIT = "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527"
 SOURCE_TAG = "mw-migration-baseline-db12d5e"
 MAX_DOCUMENT_BYTES = 64 * 1024
 MAX_JSON_DEPTH = 128
+MAX_JSON_INTEGER_DIGITS = 128
 
 CATEGORIES = frozenset(
     ("catalog", "patches", "probes", "fixtures", "bottle-schema")
@@ -29,17 +32,19 @@ CATEGORY_KINDS = {
     "fixtures": "test-fixture",
     "bottle-schema": "bottle-schema",
 }
+CATEGORY_OWNERS = {
+    "catalog": frozenset(("compatforge/catalog",)),
+    "patches": frozenset(
+        ("compatforge/patches", "quarantine/unresolved")
+    ),
+    "probes": frozenset(("compatforge/probes", "macwin/archive")),
+    "fixtures": frozenset(("compatforge/probes",)),
+    "bottle-schema": frozenset(("compatforge/bottle-schema",)),
+}
 LICENSE_STATUSES = frozenset(("unresolved",))
 PROVENANCE_STATUSES = frozenset(("unresolved",))
 INTENDED_OWNERS = frozenset(
-    (
-        "compatforge/catalog",
-        "compatforge/patches",
-        "compatforge/probes",
-        "compatforge/bottle-schema",
-        "macwin/archive",
-        "quarantine/unresolved",
-    )
+    owner for owners in CATEGORY_OWNERS.values() for owner in owners
 )
 
 ROOT_FIELDS = frozenset(
@@ -68,14 +73,12 @@ DEPENDENCY_POLICY_FIELDS = frozenset(
     ("externalRefs", "developmentDependencies")
 )
 DEPENDENCY_FIELDS = frozenset(("sourcePath", "locator", "kind", "status"))
-EXTERNAL_DEPENDENCY_KINDS = frozenset(("url",))
-EXTERNAL_DEPENDENCY_STATUSES = frozenset(("external-unverified",))
-DEVELOPMENT_DEPENDENCY_KINDS = frozenset(
-    ("absolute-path", "environment-path", "repository-path")
-)
-DEVELOPMENT_DEPENDENCY_STATUSES = frozenset(
-    ("not-in-baseline", "development-machine-only", "unexpanded")
-)
+EXTERNAL_DEPENDENCY_CONTRACT = {"url": "external-unverified"}
+DEVELOPMENT_DEPENDENCY_CONTRACT = {
+    "absolute-path": "development-machine-only",
+    "environment-path": "unexpanded",
+    "repository-path": "not-in-baseline",
+}
 
 
 class InventoryError(ValueError):
@@ -122,6 +125,16 @@ def _reject_non_json_constant(_value):
     raise InventoryError("inventory document is not valid JSON")
 
 
+def _parse_bounded_integer(value):
+    digits = value[1:] if value.startswith("-") else value
+    if len(digits) > MAX_JSON_INTEGER_DIGITS:
+        raise InventoryError("inventory document integer is invalid")
+    try:
+        return int(value)
+    except ValueError as error:
+        raise InventoryError("inventory document integer is invalid") from error
+
+
 def _parse_json_document(raw):
     if type(raw) is not bytes:
         raise InventoryError("inventory document value type is invalid")
@@ -138,10 +151,11 @@ def _parse_json_document(raw):
             text,
             object_pairs_hook=_reject_duplicate_keys,
             parse_constant=_reject_non_json_constant,
+            parse_int=_parse_bounded_integer,
         )
     except InventoryError:
         raise
-    except (json.JSONDecodeError, RecursionError) as error:
+    except (json.JSONDecodeError, RecursionError, ValueError) as error:
         raise InventoryError("inventory document is not valid JSON") from error
 
 
@@ -157,9 +171,11 @@ def _require_list(value):
     return value
 
 
-def _require_string(value):
+def _require_string(value, invalid_message="inventory policy string is invalid"):
     if type(value) is not str:
         raise InventoryError("inventory policy value type is invalid")
+    if any(unicodedata.category(character) in ("Cc", "Cs") for character in value):
+        raise InventoryError(invalid_message)
     return value
 
 
@@ -178,7 +194,7 @@ def _validate_tagged_status(value, statuses):
 
 
 def _validate_path(value):
-    path = _require_string(value)
+    path = _require_string(value, "inventory policy path is invalid")
     try:
         path.encode("ascii", errors="strict")
     except UnicodeEncodeError as error:
@@ -209,27 +225,29 @@ def _validate_string_list(value):
     entries = _require_list(value)
     seen = set()
     for entry in entries:
-        text = _require_string(entry)
-        if not text or "\0" in text or any(ord(character) < 0x20 for character in text):
+        text = _require_string(
+            entry, "inventory policy dependency reference is invalid"
+        )
+        if not text:
             raise InventoryError("inventory policy dependency reference is invalid")
         if text in seen:
             raise InventoryError("inventory policy dependency reference is duplicated")
         seen.add(text)
 
 
-def _validate_dependency_entries(entries, kinds, statuses, governed_paths):
+def _validate_dependency_entries(entries, contract, governed_paths):
     seen = set()
     for entry in _require_list(entries):
         dependency = _require_exact_fields(entry, DEPENDENCY_FIELDS)
         source_path = _validate_path(dependency["sourcePath"])
-        locator = _require_string(dependency["locator"])
+        locator = _require_string(
+            dependency["locator"], "inventory policy dependency is invalid"
+        )
         kind = _require_string(dependency["kind"])
         status = _require_string(dependency["status"])
-        if source_path not in governed_paths or not locator or "\0" in locator:
+        if source_path not in governed_paths or not locator:
             raise InventoryError("inventory policy dependency is invalid")
-        if any(ord(character) < 0x20 for character in locator):
-            raise InventoryError("inventory policy dependency is invalid")
-        if kind not in kinds or status not in statuses:
+        if kind not in contract or status != contract.get(kind):
             raise InventoryError("inventory policy enum value is invalid")
         identity = (source_path, locator, kind)
         if identity in seen:
@@ -269,6 +287,7 @@ def validate_policy(policy):
             or kind not in KINDS
             or owner not in INTENDED_OWNERS
             or CATEGORY_KINDS.get(category) != kind
+            or owner not in CATEGORY_OWNERS.get(category, ())
         ):
             raise InventoryError("inventory policy enum value is invalid")
 
@@ -297,14 +316,12 @@ def validate_policy(policy):
     )
     _validate_dependency_entries(
         dependency_policy["externalRefs"],
-        EXTERNAL_DEPENDENCY_KINDS,
-        EXTERNAL_DEPENDENCY_STATUSES,
+        EXTERNAL_DEPENDENCY_CONTRACT,
         governed_paths,
     )
     _validate_dependency_entries(
         dependency_policy["developmentDependencies"],
-        DEVELOPMENT_DEPENDENCY_KINDS,
-        DEVELOPMENT_DEPENDENCY_STATUSES,
+        DEVELOPMENT_DEPENDENCY_CONTRACT,
         governed_paths,
     )
     return policy
@@ -325,7 +342,24 @@ def load_policy(path=POLICY_PATH):
     return parse_policy_bytes(raw)
 
 
-def main(_arguments=()):
+class _StableArgumentParser(argparse.ArgumentParser):
+    """Keep CLI failures stable without reflecting untrusted arguments."""
+
+    def error(self, _message):
+        self.print_usage(sys.stderr)
+        self.exit(2, f"{self.prog}: error: invalid command-line arguments\n")
+
+
+def _argument_parser():
+    return _StableArgumentParser(
+        prog="generate_migration_asset_inventory.py",
+        add_help=False,
+        allow_abbrev=False,
+    )
+
+
+def main(arguments=()):
+    _argument_parser().parse_args(arguments)
     try:
         load_policy()
     except InventoryError as error:

@@ -2,7 +2,12 @@
 
 import copy
 import json
+import os
 from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
 import unittest
 
 from tools.generate_migration_asset_inventory import (
@@ -18,6 +23,8 @@ from tools.generate_migration_asset_inventory import (
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_COMMIT = "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527"
 INVENTORY_DIRECTORY = ROOT / "migration" / "assets"
+GENERATOR_PATH = ROOT / "tools" / "generate_migration_asset_inventory.py"
+NATIVE_LINE_ENDING = os.linesep.encode("ascii")
 
 
 class MigrationAssetInventoryEntrypointTests(unittest.TestCase):
@@ -30,6 +37,36 @@ class MigrationAssetInventoryEntrypointTests(unittest.TestCase):
             INVENTORY_DIRECTORY.relative_to(ROOT).as_posix(),
             "migration/assets",
         )
+
+    def test_cli_accepts_only_an_empty_argument_list(self):
+        expected_stderr = (
+            b"usage: generate_migration_asset_inventory.py"
+            + NATIVE_LINE_ENDING
+            + b"generate_migration_asset_inventory.py: error: "
+            + b"invalid command-line arguments"
+            + NATIVE_LINE_ENDING
+        )
+        for arguments in (
+            ("extra",),
+            ("extra", "second"),
+            ("--write",),
+            ("--wri",),
+            ("--",),
+            ("-h",),
+            ("hostile\nargument",),
+        ):
+            with self.subTest(arguments=arguments):
+                result = subprocess.run(
+                    [sys.executable, "-B", str(GENERATOR_PATH), *arguments],
+                    cwd=ROOT,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 2)
+                self.assertEqual(result.stdout, b"")
+                self.assertEqual(result.stderr, expected_stderr)
+                for argument in arguments:
+                    self.assertNotIn(argument.encode("utf-8"), result.stderr)
 
 
 class AssetPolicyTests(unittest.TestCase):
@@ -70,6 +107,12 @@ class AssetPolicyTests(unittest.TestCase):
             raw = json.dumps(value, ensure_ascii=True).encode("ascii")
         with self.assertRaisesRegex(InventoryError, f"^{expected}$"):
             parse_policy_bytes(raw)
+
+    def policy_with_schema_integer(self, digits):
+        raw = json.dumps(self.policy, ensure_ascii=True).encode("ascii")
+        marker = b'"schemaVersion": 1'
+        self.assertIn(marker, raw)
+        return raw.replace(marker, b'"schemaVersion": ' + digits, 1)
 
     def test_accepts_the_closed_policy_shape(self):
         self.assertEqual(self.parse(), self.policy)
@@ -162,6 +205,37 @@ class AssetPolicyTests(unittest.TestCase):
 
         validate_json_depth("[" * MAX_JSON_DEPTH + "]" * MAX_JSON_DEPTH)
 
+    def test_rejects_oversized_json_integer_with_stable_direct_error(self):
+        self.assert_policy_error(
+            "inventory document integer is invalid",
+            raw=self.policy_with_schema_integer(b"9" * 129),
+        )
+
+    def test_rejects_oversized_json_integer_with_stable_cli_error(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            script = temporary_root / "tools" / GENERATOR_PATH.name
+            policy = temporary_root / "migration" / "assets" / POLICY_PATH.name
+            script.parent.mkdir(parents=True)
+            policy.parent.mkdir(parents=True)
+            shutil.copyfile(GENERATOR_PATH, script)
+            policy.write_bytes(self.policy_with_schema_integer(b"9" * 129))
+
+            result = subprocess.run(
+                [sys.executable, "-B", str(script)],
+                cwd=temporary_root,
+                capture_output=True,
+                check=False,
+            )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, b"")
+        self.assertEqual(
+            result.stderr,
+            b"migration asset inventory failed: "
+            b"inventory document integer is invalid" + NATIVE_LINE_ENDING,
+        )
+
     def test_rejects_unknown_enums(self):
         for field, replacement in (
             ("category", "unknown"),
@@ -179,6 +253,69 @@ class AssetPolicyTests(unittest.TestCase):
                 candidate["groups"][0][field]["status"] = "guessed"
                 self.assert_policy_error("inventory policy enum value is invalid", candidate)
 
+    def test_enforces_closed_category_owner_combinations(self):
+        category_contract = {
+            "catalog": ("catalog-record", {"compatforge/catalog"}),
+            "patches": (
+                "source-patch",
+                {"compatforge/patches", "quarantine/unresolved"},
+            ),
+            "probes": (
+                "probe",
+                {"compatforge/probes", "macwin/archive"},
+            ),
+            "fixtures": ("test-fixture", {"compatforge/probes"}),
+            "bottle-schema": (
+                "bottle-schema",
+                {"compatforge/bottle-schema"},
+            ),
+        }
+        all_owners = {
+            owner
+            for _kind, owners in category_contract.values()
+            for owner in owners
+        }
+        for category, (kind, allowed_owners) in category_contract.items():
+            for owner in all_owners:
+                with self.subTest(category=category, owner=owner):
+                    candidate = copy.deepcopy(self.policy)
+                    group = candidate["groups"][0]
+                    group["category"] = category
+                    group["kind"] = kind
+                    group["intendedOwner"] = owner
+                    if owner in allowed_owners:
+                        self.assertEqual(self.parse(candidate), candidate)
+                    else:
+                        self.assert_policy_error(
+                            "inventory policy enum value is invalid", candidate
+                        )
+
+    def test_enforces_closed_development_kind_status_combinations(self):
+        kind_contract = {
+            "absolute-path": "development-machine-only",
+            "environment-path": "unexpanded",
+            "repository-path": "not-in-baseline",
+        }
+        all_statuses = set(kind_contract.values())
+        for kind, allowed_status in kind_contract.items():
+            for status in all_statuses:
+                with self.subTest(kind=kind, status=status):
+                    candidate = copy.deepcopy(self.policy)
+                    candidate["dependencyPolicy"]["developmentDependencies"] = [
+                        {
+                            "sourcePath": "scripts/example.sh",
+                            "locator": "reviewed-locator",
+                            "kind": kind,
+                            "status": status,
+                        }
+                    ]
+                    if status == allowed_status:
+                        self.assertEqual(self.parse(candidate), candidate)
+                    else:
+                        self.assert_policy_error(
+                            "inventory policy enum value is invalid", candidate
+                        )
+
     def test_rejects_invalid_duplicate_and_case_colliding_paths(self):
         invalid_paths = (
             "",
@@ -190,6 +327,8 @@ class AssetPolicyTests(unittest.TestCase):
             "scripts/./probe.sh",
             "scripts/../probe.sh",
             "scripts/probe\x00.sh",
+            "scripts/control\x1f.sh",
+            "scripts/delete\x7f.sh",
             "scripts/caf\N{LATIN SMALL LETTER E WITH ACUTE}.sh",
         )
         for path in invalid_paths:
@@ -211,6 +350,48 @@ class AssetPolicyTests(unittest.TestCase):
         self.assert_policy_error(
             "inventory policy path has a case-fold collision", candidate
         )
+
+    def test_rejects_control_and_surrogate_reviewed_strings(self):
+        for hostile in ("\x00", "\x1f", "\x7f", "\u0085", "\ud800"):
+            with self.subTest(reviewed_string=ascii(hostile)):
+                candidate = copy.deepcopy(self.policy)
+                candidate["groups"][0]["intendedOwner"] = hostile
+                self.assert_policy_error("inventory policy string is invalid", candidate)
+
+            with self.subTest(group_reference=ascii(hostile)):
+                candidate = copy.deepcopy(self.policy)
+                candidate["groups"][0]["externalRefs"] = [hostile]
+                self.assert_policy_error(
+                    "inventory policy dependency reference is invalid", candidate
+                )
+
+            with self.subTest(locator=ascii(hostile)):
+                candidate = copy.deepcopy(self.policy)
+                candidate["dependencyPolicy"]["externalRefs"] = [
+                    {
+                        "sourcePath": "scripts/example.sh",
+                        "locator": hostile,
+                        "kind": "url",
+                        "status": "external-unverified",
+                    }
+                ]
+                self.assert_policy_error(
+                    "inventory policy dependency is invalid", candidate
+                )
+
+    def test_accepts_supplementary_unicode_in_reviewed_locators(self):
+        locator = "https://example.invalid/\N{GRINNING FACE}"
+        candidate = copy.deepcopy(self.policy)
+        candidate["groups"][0]["externalRefs"] = [locator]
+        candidate["dependencyPolicy"]["externalRefs"] = [
+            {
+                "sourcePath": "scripts/example.sh",
+                "locator": locator,
+                "kind": "url",
+                "status": "external-unverified",
+            }
+        ]
+        self.assertEqual(self.parse(candidate), candidate)
 
     def test_requires_closed_tagged_unions_and_dependency_policy(self):
         for field in ("license", "provenance"):
