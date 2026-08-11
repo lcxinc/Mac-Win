@@ -1,6 +1,7 @@
 """Tests for the canonical migration asset inventory contract."""
 
 import copy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -10,6 +11,7 @@ import sys
 import tempfile
 import unittest
 from unittest import mock
+import zlib
 
 import tools.generate_migration_asset_inventory as generator
 
@@ -30,6 +32,7 @@ from tools.generate_migration_asset_inventory import (
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_COMMIT = "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527"
+SOURCE_TAG_MESSAGE = "Mac-Win migration source baseline db12d5e"
 INVENTORY_DIRECTORY = ROOT / "migration" / "assets"
 GENERATOR_PATH = ROOT / "tools" / "generate_migration_asset_inventory.py"
 NATIVE_LINE_ENDING = os.linesep.encode("ascii")
@@ -555,7 +558,7 @@ class AssetGitBindingTests(unittest.TestCase):
         self._fixture_git("commit", "-q", "-m", "source")
         self.source_commit = self._fixture_git("rev-parse", "HEAD").stdout.strip()
         self._fixture_git(
-            "tag", "-a", "frozen-source", "-m", "frozen source", self.source_commit
+            "tag", "-a", "frozen-source", "-m", SOURCE_TAG_MESSAGE, self.source_commit
         )
         self.policy = self._policy([self.asset_path])
 
@@ -662,16 +665,73 @@ class AssetGitBindingTests(unittest.TestCase):
         self._fixture_git("tag", "frozen-source", self.source_commit)
         self.assert_binding_error("inventory source Git identity is invalid")
 
+    def test_rejects_annotated_tag_with_unapproved_message(self):
+        self._fixture_git("tag", "-d", "frozen-source")
+        self._fixture_git(
+            "tag", "-a", "frozen-source", "-m", "wrong message", self.source_commit
+        )
+        self.assert_binding_error("inventory source Git identity is invalid")
+
+    def test_rejects_wrong_case_and_symbolic_tag_refs(self):
+        self.assert_binding_error(
+            "inventory source Git identity is invalid", tag="FROZEN-SOURCE"
+        )
+        self._fixture_git("tag", "-d", "frozen-source")
+        self._fixture_git(
+            "symbolic-ref", "refs/tags/frozen-source", "refs/heads/main"
+        )
+        self.assert_binding_error("inventory source Git identity is invalid")
+
+    def test_rejects_oversized_and_wrong_internal_tag_contracts(self):
+        raw_tag = (
+            f"object {self.source_commit}\n"
+            "type commit\n"
+            "tag frozen-source\n"
+            "tagger Inventory Tests <inventory@example.invalid> 1 +0000\n\n"
+        ).encode("ascii") + (b"x" * (2 * 1024 * 1024)) + b"\n"
+        huge_oid = self._fixture_git("mktag", input_bytes=raw_tag).stdout.strip().decode("ascii")
+        self._fixture_git("update-ref", "refs/tags/frozen-source", huge_oid)
+        self.assert_binding_error("inventory source Git identity is invalid")
+
+        self._fixture_git("tag", "-d", "frozen-source")
+        self._fixture_git(
+            "tag", "-a", "internal-other", "-m", SOURCE_TAG_MESSAGE, self.source_commit
+        )
+        other_oid = self._fixture_git("rev-parse", "refs/tags/internal-other").stdout.strip()
+        self._fixture_git("update-ref", "refs/tags/frozen-source", other_oid)
+        self.assert_binding_error("inventory source Git identity is invalid")
+
+    def test_rejects_annotated_tag_that_points_to_another_tag(self):
+        self._fixture_git("tag", "-d", "frozen-source")
+        self._fixture_git(
+            "tag", "-a", "inner", "-m", SOURCE_TAG_MESSAGE, self.source_commit
+        )
+        self._fixture_git(
+            "tag", "-a", "outer", "-m", SOURCE_TAG_MESSAGE, "refs/tags/inner"
+        )
+        outer_oid = self._fixture_git("rev-parse", "refs/tags/outer").stdout.strip()
+        self._fixture_git("update-ref", "refs/tags/frozen-source", outer_oid)
+        self.assert_binding_error("inventory source Git identity is invalid")
+
+    def test_rejects_casefold_colliding_stored_tag_refs(self):
+        self._fixture_git("pack-refs", "--all")
+        tag_oid = self._fixture_git("rev-parse", "refs/tags/frozen-source").stdout.strip()
+        packed_refs = self.repository / ".git" / "packed-refs"
+        with packed_refs.open("a", encoding="ascii", newline="\n") as stream:
+            stream.write(f"{tag_oid} refs/tags/FROZEN-SOURCE\n")
+            stream.write(f"^{self.source_commit}\n")
+        self.assert_binding_error("inventory source Git identity is invalid")
+
         self._fixture_git("tag", "-d", "frozen-source")
         (self.repository / self.asset_path).write_bytes(b"different\n")
         self._fixture_git("add", "--", self.asset_path)
         self._fixture_git("commit", "-q", "-m", "other")
         other = self._fixture_git("rev-parse", "HEAD").stdout.strip()
-        self._fixture_git("tag", "-a", "frozen-source", "-m", "wrong", other)
+        self._fixture_git("tag", "-a", "frozen-source", "-m", SOURCE_TAG_MESSAGE, other)
         self.assert_binding_error("inventory source Git identity is invalid")
 
         self._fixture_git("tag", "-d", "frozen-source")
-        self._fixture_git("tag", "-a", "frozen-source", "-m", "source", self.source_commit)
+        self._fixture_git("tag", "-a", "frozen-source", "-m", SOURCE_TAG_MESSAGE, self.source_commit)
         self._fixture_git("checkout", "-q", "--orphan", "unrelated")
         self._fixture_git("rm", "-q", "--cached", "--", self.asset_path)
         (self.repository / self.asset_path).write_bytes(b"unrelated\n")
@@ -679,7 +739,7 @@ class AssetGitBindingTests(unittest.TestCase):
         self._fixture_git("commit", "-q", "-m", "unrelated")
         self.assert_binding_error("inventory source Git identity is invalid")
 
-    def test_governed_tree_coverage_rejects_added_removed_and_case_colliding_paths(self):
+    def test_governed_tree_coverage_rejects_added_and_removed_paths(self):
         policy = self._policy([])
         self.assert_binding_error("inventory governed path coverage is invalid", policy=policy)
 
@@ -688,12 +748,24 @@ class AssetGitBindingTests(unittest.TestCase):
         self._fixture_git("add", "--", "scripts/extra.sh")
         self._fixture_git("commit", "-q", "-m", "extra")
         self.source_commit = self._fixture_git("rev-parse", "HEAD").stdout.strip()
-        self._fixture_git("tag", "-f", "-a", "frozen-source", "-m", "extra", self.source_commit)
+        self._fixture_git("tag", "-f", "-a", "frozen-source", "-m", SOURCE_TAG_MESSAGE, self.source_commit)
         self.policy = self._policy([self.asset_path])
         self.assert_binding_error("inventory governed path coverage is invalid")
 
-        self.policy = self._policy([self.asset_path, "Scripts/Example.sh"])
-        self.assert_binding_error("inventory governed path coverage is invalid")
+    def test_governed_tree_rejects_casefold_collision_when_ordinary_coverage_matches(self):
+        colliding_path = "Scripts/Example.sh"
+        policy = self._policy([self.asset_path, colliding_path])
+        oid = self._fixture_git(
+            "rev-parse", f"{self.source_commit}:{self.asset_path}"
+        ).stdout.strip()
+        entries = [
+            ("100644", "blob", oid, self.asset_path),
+            ("100644", "blob", oid, colliding_path),
+        ]
+        with mock.patch.object(generator, "_list_governed_tree", return_value=entries):
+            self.assert_binding_error(
+                "inventory governed path coverage is invalid", policy=policy
+            )
 
     def _replace_asset_mode(self, mode, oid=None):
         if oid is None:
@@ -705,7 +777,7 @@ class AssetGitBindingTests(unittest.TestCase):
         )
         self._fixture_git("commit", "-q", "-m", f"mode {mode}")
         self.source_commit = self._fixture_git("rev-parse", "HEAD").stdout.strip()
-        self._fixture_git("tag", "-f", "-a", "frozen-source", "-m", "mode", self.source_commit)
+        self._fixture_git("tag", "-f", "-a", "frozen-source", "-m", SOURCE_TAG_MESSAGE, self.source_commit)
         self.policy = self._policy([self.asset_path])
 
     def test_accepts_executable_and_rejects_symlink_submodule_and_unknown_mode(self):
@@ -745,7 +817,7 @@ class AssetGitBindingTests(unittest.TestCase):
         self._fixture_git("add", "--", self.asset_path)
         self._fixture_git("commit", "-q", "-m", "oversized")
         self.source_commit = self._fixture_git("rev-parse", "HEAD").stdout.strip()
-        self._fixture_git("tag", "-f", "-a", "frozen-source", "-m", "huge", self.source_commit)
+        self._fixture_git("tag", "-f", "-a", "frozen-source", "-m", SOURCE_TAG_MESSAGE, self.source_commit)
         self.policy = self._policy([self.asset_path])
         self.assert_binding_error("inventory governed Git object exceeds the byte limit")
 
@@ -762,6 +834,45 @@ class AssetGitBindingTests(unittest.TestCase):
                 InventoryError, "^inventory governed Git object length is invalid$"
             ):
                 _read_blob(self.repository, small_oid)
+
+    def test_rejects_same_length_blob_replacement_between_size_and_read(self):
+        expected_oid = hashlib.sha1(b"blob 4\0good").hexdigest()
+
+        def replaced(_repository_root, *arguments):
+            if arguments == ("rev-parse", "--show-object-format=storage"):
+                stdout = b"sha1\n"
+            elif arguments[:2] == ("cat-file", "-t"):
+                stdout = b"blob\n"
+            elif arguments[:2] == ("cat-file", "-s"):
+                stdout = b"4\n"
+            elif arguments[:2] == ("cat-file", "blob"):
+                stdout = b"evil"
+            else:
+                self.fail(f"unexpected Git arguments: {arguments!r}")
+            return subprocess.CompletedProcess(arguments, 0, stdout, b"")
+
+        with mock.patch.object(generator, "_run_git", side_effect=replaced):
+            with self.assertRaisesRegex(
+                InventoryError, "^inventory governed Git object identity is invalid$"
+            ):
+                _read_blob(self.repository, expected_oid)
+
+    def test_rejects_same_length_loose_object_corruption(self):
+        oid = self._fixture_git(
+            "rev-parse", f"{self.source_commit}:{self.asset_path}"
+        ).stdout.strip()
+        loose_object = self.repository / ".git" / "objects" / oid[:2] / oid[2:]
+        stored = zlib.decompress(loose_object.read_bytes())
+        self.assertIn(b"frozen", stored)
+        corrupted = stored.replace(b"frozen", b"broken", 1)
+        self.assertEqual(len(corrupted), len(stored))
+        loose_object.chmod(0o600)
+        loose_object.write_bytes(zlib.compress(corrupted))
+        with self.assertRaisesRegex(
+            InventoryError,
+            r"^inventory governed Git object (?:is|identity is) invalid$",
+        ):
+            _read_blob(self.repository, oid)
 
     def test_git_environment_is_copied_scrubbed_and_forces_offline_object_reads(self):
         hostile = {
@@ -837,6 +948,32 @@ class AssetGitBindingTests(unittest.TestCase):
         replacement = self._fixture_git("rev-parse", "HEAD").stdout.strip()
         self._fixture_git("replace", self.source_commit, replacement)
         self.assertEqual(self.bind(), expected)
+
+    def test_rejects_repository_owned_alternate_and_http_object_databases(self):
+        info = self.repository / ".git" / "objects" / "info"
+        alternate_objects = self.repository / "alternate-object-database"
+        alternate_objects.mkdir()
+        for sentinel, content in (
+            ("alternates", str(alternate_objects) + "\n"),
+            ("http-alternates", "https://example.invalid/objects\n"),
+        ):
+            with self.subTest(sentinel=sentinel):
+                path = info / sentinel
+                path.write_text(content, encoding="utf-8")
+                self.assert_binding_error(
+                    "inventory Git object database is not self-contained"
+                )
+                path.unlink()
+
+    def test_rejects_promisor_pack_and_partial_clone_configuration(self):
+        pack_directory = self.repository / ".git" / "objects" / "pack"
+        promisor = pack_directory / "hostile.promisor"
+        promisor.write_bytes(b"")
+        self.assert_binding_error("inventory Git object database is not self-contained")
+        promisor.unlink()
+
+        self._fixture_git("config", "remote.origin.promisor", "true")
+        self.assert_binding_error("inventory Git object database is not self-contained")
 
     def test_reads_the_same_binding_from_packed_objects(self):
         expected = self.bind()

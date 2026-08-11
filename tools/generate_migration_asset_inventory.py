@@ -11,6 +11,19 @@ import subprocess
 import sys
 import unicodedata
 
+try:
+    from tools.validate_migration_baseline import (
+        BaselineValidationError,
+        validate_baseline_tag,
+    )
+except ModuleNotFoundError as error:
+    if error.name != "tools":
+        raise
+    from validate_migration_baseline import (  # type: ignore[no-redef]
+        BaselineValidationError,
+        validate_baseline_tag,
+    )
+
 
 ROOT = Path(__file__).resolve().parents[1]
 POLICY_PATH = ROOT / "migration" / "assets" / "metadata-policy.json"
@@ -37,7 +50,7 @@ GOVERNED_TREE_PATHS = (
     "MacWinManager/Sources/MacWinCore/MacWinPaths.swift",
     "MacWinManager/Sources/MacWinCore/Models.swift",
 )
-_OID_PATTERN = re.compile(rb"[0-9a-f]{40}\Z")
+_OID_PATTERN = re.compile(rb"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 
 CATEGORIES = frozenset(
     ("catalog", "patches", "probes", "fixtures", "bottle-schema")
@@ -381,7 +394,7 @@ def _git_environment(source=None):
     return environment
 
 
-def _run_git(repository_root, *arguments):
+def _run_git(repository_root, *arguments, allowed_returncodes=(0,)):
     """Run one local Git plumbing command with a fixed repository boundary."""
     root = Path(repository_root).resolve()
     try:
@@ -396,9 +409,58 @@ def _run_git(repository_root, *arguments):
         )
     except OSError as error:
         raise InventoryError("inventory Git command failed") from error
-    if result.returncode != 0:
+    if result.returncode not in allowed_returncodes:
         raise InventoryError("inventory Git command failed")
     return result
+
+
+def _absolute_git_path(repository_root, *arguments):
+    raw = _run_git(
+        repository_root, "rev-parse", "--path-format=absolute", *arguments
+    ).stdout
+    if not raw or len(raw) > 4096 or b"\0" in raw:
+        raise InventoryError("inventory Git object database is invalid")
+    try:
+        return Path(raw.rstrip(b"\r\n").decode("utf-8", errors="strict")).resolve()
+    except (OSError, UnicodeError, ValueError) as error:
+        raise InventoryError("inventory Git object database is invalid") from error
+
+
+def _validate_primary_object_database(repository_root):
+    """Reject alternates and partial-clone stores outside the primary object DB."""
+    root = Path(repository_root).resolve()
+    common_directory = _absolute_git_path(root, "--git-common-dir")
+    object_directory = _absolute_git_path(root, "--git-path", "objects")
+    try:
+        if object_directory != (common_directory / "objects").resolve():
+            raise InventoryError("inventory Git object database is not self-contained")
+        for sentinel in (
+            object_directory / "info" / "alternates",
+            object_directory / "info" / "http-alternates",
+        ):
+            if sentinel.exists():
+                raise InventoryError(
+                    "inventory Git object database is not self-contained"
+                )
+        pack_directory = object_directory / "pack"
+        if pack_directory.exists() and any(
+            path.is_file() and path.suffix == ".promisor"
+            for path in pack_directory.iterdir()
+        ):
+            raise InventoryError("inventory Git object database is not self-contained")
+    except OSError as error:
+        raise InventoryError("inventory Git object database is invalid") from error
+
+    promisor = _run_git(
+        root,
+        "config",
+        "--local",
+        "--get-regexp",
+        r"^(extensions\.partialClone|remote\..*\.promisor)$",
+        allowed_returncodes=(0, 1),
+    )
+    if promisor.returncode == 0 or promisor.stdout:
+        raise InventoryError("inventory Git object database is not self-contained")
 
 
 def _verify_source_identity(repository_root, source_commit, source_tag):
@@ -411,32 +473,6 @@ def _verify_source_identity(repository_root, source_commit, source_tag):
             raise InventoryError("inventory source Git identity is invalid")
         _run_git(repository_root, "cat-file", "-e", f"{source_commit}^{{commit}}")
 
-        tag_ref = f"refs/tags/{source_tag}"
-        tag_oid = _run_git(
-            repository_root, "rev-parse", "--verify", tag_ref
-        ).stdout.strip()
-        if not _OID_PATTERN.fullmatch(tag_oid):
-            raise InventoryError("inventory source Git identity is invalid")
-        if _run_git(repository_root, "cat-file", "-t", tag_oid.decode("ascii")).stdout.strip() != b"tag":
-            raise InventoryError("inventory source Git identity is invalid")
-        tag_bytes = _run_git(
-            repository_root, "cat-file", "tag", tag_oid.decode("ascii")
-        ).stdout
-        tag_lines = tag_bytes.splitlines()
-        if (
-            len(tag_lines) < 2
-            or tag_lines[0] != b"object " + source_commit.encode("ascii")
-            or tag_lines[1] != b"type commit"
-        ):
-            raise InventoryError("inventory source Git identity is invalid")
-        peeled = _run_git(
-            repository_root,
-            "rev-parse",
-            "--verify",
-            f"{tag_ref}^{{commit}}",
-        ).stdout.strip()
-        if peeled != source_commit.encode("ascii"):
-            raise InventoryError("inventory source Git identity is invalid")
         _run_git(
             repository_root,
             "merge-base",
@@ -444,7 +480,8 @@ def _verify_source_identity(repository_root, source_commit, source_tag):
             source_commit,
             "HEAD",
         )
-    except (InventoryError, UnicodeError, ValueError) as error:
+        validate_baseline_tag(repository_root, source_tag, source_commit)
+    except (BaselineValidationError, InventoryError, UnicodeError, ValueError) as error:
         raise InventoryError("inventory source Git identity is invalid") from error
 
 
@@ -485,6 +522,15 @@ def _list_governed_tree(repository_root, source_commit):
 def _read_blob(repository_root, oid):
     """Read a bounded raw blob by immutable object ID and verify its length."""
     try:
+        object_format = _run_git(
+            repository_root, "rev-parse", "--show-object-format=storage"
+        ).stdout.strip()
+        format_contract = {b"sha1": (hashlib.sha1, 40), b"sha256": (hashlib.sha256, 64)}
+        if object_format not in format_contract:
+            raise InventoryError("inventory governed Git object is invalid")
+        hash_constructor, oid_length = format_contract[object_format]
+        if len(oid) != oid_length or re.fullmatch(r"[0-9a-f]+", oid) is None:
+            raise InventoryError("inventory governed Git object is invalid")
         if _run_git(repository_root, "cat-file", "-t", oid).stdout.strip() != b"blob":
             raise InventoryError("inventory governed Git object is invalid")
         raw_size = _run_git(repository_root, "cat-file", "-s", oid).stdout.strip()
@@ -503,6 +549,9 @@ def _read_blob(repository_root, oid):
         raise InventoryError("inventory governed Git object is invalid") from error
     if len(content) != size:
         raise InventoryError("inventory governed Git object length is invalid")
+    framed = b"blob " + str(size).encode("ascii") + b"\0" + content
+    if hash_constructor(framed).hexdigest() != oid:
+        raise InventoryError("inventory governed Git object identity is invalid")
     return content
 
 
@@ -528,6 +577,7 @@ def _policy_assets(policy):
 def _bind_governed_assets(repository_root, policy, source_commit, source_tag):
     """Bind reviewed policy paths to raw objects from one immutable Git tree."""
     root = Path(repository_root).resolve()
+    _validate_primary_object_database(root)
     _verify_source_identity(root, source_commit, source_tag)
     expected = _policy_assets(policy)
     entries = _list_governed_tree(root, source_commit)
