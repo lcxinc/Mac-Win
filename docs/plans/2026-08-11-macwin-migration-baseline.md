@@ -120,6 +120,19 @@ GIT_TERMINAL_PROMPT=0
 GIT_NO_REPLACE_OBJECTS=1
 ```
 
+Inject each of these variables with a valid alternate repository, index,
+object store, or namespace and prove it cannot redirect validation:
+
+```text
+GIT_DIR
+GIT_WORK_TREE
+GIT_COMMON_DIR
+GIT_INDEX_FILE
+GIT_OBJECT_DIRECTORY
+GIT_ALTERNATE_OBJECT_DIRECTORIES
+GIT_NAMESPACE
+```
+
 **Step 2: Run the focused test and verify RED**
 
 Expected: the new Git-boundary tests fail because the helpers are absent.
@@ -129,7 +142,9 @@ Expected: the new Git-boundary tests fail because the helpers are absent.
 Add `_run_git`, `read_reviewed_text`, and source-commit validation:
 
 - always pass argument arrays with `shell=False`;
-- preserve the caller environment while forcing the three Git safety flags;
+- derive and fix the repository root from the validator file location;
+- copy the caller environment, remove all seven repository/index/object/ref
+  override variables listed above, and force the three Git safety flags;
 - use `git cat-file -t` before `-s` and blob reads;
 - enforce size before reading a blob;
 - verify the index blob and worktree text independently after LF
@@ -220,7 +235,8 @@ Require the exact reviewed workflow to have:
 - a repository-contract job on `ubuntu-24.04`;
 - two explicit Swift matrix entries, `macos-15`/`arm64` and
   `macos-15-intel`/`x86_64`;
-- pinned `actions/checkout` SHA and `persist-credentials: false`;
+- pinned `actions/checkout` SHA, `persist-credentials: false`, and
+  `fetch-depth: 0` on every checkout that runs the validator;
 - bounded timeouts and `fail-fast: false`;
 - the exact five environment/test commands;
 - an architecture equality check;
@@ -229,7 +245,8 @@ Require the exact reviewed workflow to have:
 
 Start with mutation tests for a missing Intel row, swapped architecture,
 mutable action ref, write permission, changed Swift command, hidden fallback,
-and comment-only decoys.
+and comment-only decoys. Deleting `fetch-depth` or changing it from `0` to `1`
+must also fail.
 
 **Step 2: Run focused tests and verify RED**
 
@@ -243,9 +260,20 @@ Use the pinned checkout action already approved in sibling repositories:
 actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 ```
 
+Every checkout step uses:
+
+```yaml
+with:
+  persist-credentials: false
+  fetch-depth: 0
+```
+
 The Swift job records host facts and test output in the GitHub log and
-`GITHUB_STEP_SUMMARY`. Use `set -euo pipefail` and `tee`; capture the command
-exit through the pipeline rather than masking it. Do not upload artifacts.
+`GITHUB_STEP_SUMMARY`. Record all host facts first. For the Swift test step,
+use `set -uo pipefail`, temporarily disable immediate exit around the `tee`
+pipeline, save `PIPESTATUS[0]`, append that exact exit status to the summary,
+and exit with the saved status. Do not upload artifacts or allow a failing
+Swift command to look successful.
 
 **Step 4: Seal the reviewed workflow**
 
@@ -386,11 +414,12 @@ the name already exists.
 
 **Step 2: Create the annotated tag at the source commit**
 
-If no signing policy/key is configured, create an explicitly non-signed
-annotated tag:
+Inspect repository signing policy and key configuration first. If none is
+configured, create an explicitly non-signed annotated tag so ambient global
+configuration cannot enable signing:
 
 ```powershell
-git tag -a mw-migration-baseline-4e421fb 4e421fbea6f59e73e4f813c1f0a14e8db9e36de7 -m "Mac-Win migration source baseline 4e421fb"
+git tag -a --no-sign mw-migration-baseline-4e421fb 4e421fbea6f59e73e4f813c1f0a14e8db9e36de7 -m "Mac-Win migration source baseline 4e421fb"
 ```
 
 Push only that tag. Verify the remote tag object and peeled SHA independently.

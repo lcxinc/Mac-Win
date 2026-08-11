@@ -84,13 +84,18 @@ access. It:
 - under `--require-tag`, requires an annotated local tag object and verifies
   that it peels to the exact source commit.
 
-All Git subprocesses use argument arrays, disable prompts, lazy fetch, and
-replace objects, and never invoke a shell.
+All Git subprocesses run at the repository root derived from the validator's
+own path, use argument arrays, disable prompts, lazy fetch, and replace
+objects, and never invoke a shell. They discard inherited repository, index,
+object-store, alternates, and namespace overrides before reading Git state.
 
 ## CI and evidence flow
 
 The workflow has `contents: read`, pinned first-party actions, bounded job
-timeouts, and no artifact publication or release permissions.
+timeouts, and no artifact publication or release permissions. Every checkout
+that runs the validator uses `fetch-depth: 0`; full local history is required
+to prove that the frozen source commit exists and is an ancestor of the
+current PR or merge commit.
 
 The repository-contract job runs the Python unit tests and validator. The
 Swift matrix has two explicit entries:
@@ -107,9 +112,12 @@ Each matrix job records:
 - `swift test --package-path MacWinManager` output and exit status.
 
 The job fails if the observed architecture differs from the matrix contract or
-if any Swift test fails. GitHub run logs and summaries are the authoritative
-macOS execution evidence. The issue receives the final run URL, job results,
-host facts, known failures, and tag object/peeled commit before closure.
+if any Swift test fails. It records all host facts before testing, temporarily
+captures the Swift pipeline status, writes that status to the job summary even
+on failure, and finally exits with the original Swift status. GitHub run logs
+and summaries are the authoritative macOS execution evidence. The issue
+receives the final run URL, job results, host facts, known failures, and tag
+object/peeled commit before closure.
 
 GitHub-hosted macOS runners in this private repository consume the account's
 Actions minutes. That cost and the `macos-15`/`macos-15-intel` labels were
@@ -122,7 +130,9 @@ explicitly approved for this slice.
 - Known failures are recorded as evidence; they are not silently converted to
   passing expectations.
 - Before tag publication, the PR can be reverted normally.
-- After tag publication, the tag remains immutable. A baseline error is
+- After tag publication, the tag remains immutable. If repository signing is
+  not configured, tag creation explicitly disables automatic signing. A
+  baseline error is
   corrected with a new superseding tag and an explicit issue record.
 - The validator never downloads missing commits or tags and never mutates a
   Bottle, runtime, source asset, or product state.
