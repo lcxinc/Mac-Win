@@ -3,8 +3,9 @@
 
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
+import stat
 import subprocess
 import sys
 
@@ -13,6 +14,7 @@ MAX_MANIFEST_BYTES = 65_536
 MAX_JSON_INTEGER_DIGITS = 128
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = ROOT / "migration" / "baseline.json"
+MANIFEST_RELATIVE_PATH = "migration/baseline.json"
 
 SCHEMA_VERSION = 1
 REPOSITORY = "a1112/Mac-Win"
@@ -24,6 +26,18 @@ EVIDENCE_TARGETS = [
     {"runner": "macos-15-intel", "architecture": "x86_64"},
 ]
 FROZEN_FEATURE_AREAS = ["SwiftUI", "Bridge", "legacy-launcher"]
+APPROVED_MANIFEST_TEXT = json.dumps(
+    {
+        "schemaVersion": SCHEMA_VERSION,
+        "repository": REPOSITORY,
+        "sourceCommit": SOURCE_COMMIT,
+        "tag": TAG,
+        "swiftPackagePath": SWIFT_PACKAGE_PATH,
+        "evidenceTargets": EVIDENCE_TARGETS,
+        "frozenFeatureAreas": FROZEN_FEATURE_AREAS,
+    },
+    indent=2,
+) + "\n"
 TOP_LEVEL_FIELDS = (
     "schemaVersion",
     "repository",
@@ -195,9 +209,213 @@ def validate_source_commit(repository_root, source_commit):
         raise BaselineValidationError("source commit is not an ancestor of HEAD")
 
 
+def _normalize_lf(text):
+    """Normalize reviewed CRLF input while preserving every other character."""
+    return text.replace("\r\n", "\n")
+
+
+def _reviewed_relative_path(relative_path):
+    """Return a closed repository-relative POSIX path."""
+    if type(relative_path) is not str or not relative_path or "\0" in relative_path:
+        raise BaselineValidationError("reviewed file path is not repository-relative")
+    if "\\" in relative_path:
+        raise BaselineValidationError("reviewed file path is not repository-relative")
+
+    path = PurePosixPath(relative_path)
+    if (
+        path.is_absolute()
+        or not path.parts
+        or any(part in ("", ".", "..") for part in path.parts)
+        or str(path) != relative_path
+    ):
+        raise BaselineValidationError("reviewed file path is not repository-relative")
+    return path
+
+
+def _read_worktree_text(repository_root, relative_path, maximum_bytes):
+    """Read one regular non-reparse working-tree file with a byte bound."""
+    reviewed_path = Path(repository_root).resolve().joinpath(*relative_path.parts)
+    try:
+        status = reviewed_path.lstat()
+    except FileNotFoundError as error:
+        raise BaselineValidationError(
+            "reviewed working-tree input is missing"
+        ) from error
+    except OSError as error:
+        raise BaselineValidationError(
+            "reviewed working-tree input could not be inspected"
+        ) from error
+
+    reparse_attribute = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    file_attributes = getattr(status, "st_file_attributes", 0)
+    if not stat.S_ISREG(status.st_mode) or file_attributes & reparse_attribute:
+        raise BaselineValidationError(
+            "reviewed working-tree input must be a regular non-reparse file"
+        )
+
+    try:
+        with reviewed_path.open("rb") as stream:
+            raw = stream.read(maximum_bytes + 1)
+    except FileNotFoundError as error:
+        raise BaselineValidationError(
+            "reviewed working-tree input is missing"
+        ) from error
+    except OSError as error:
+        raise BaselineValidationError(
+            "reviewed working-tree input could not be read"
+        ) from error
+
+    if len(raw) > maximum_bytes:
+        raise BaselineValidationError(
+            f"reviewed working-tree input exceeds {maximum_bytes}-byte limit"
+        )
+    try:
+        return _normalize_lf(raw.decode("utf-8", errors="strict"))
+    except UnicodeDecodeError as error:
+        raise BaselineValidationError(
+            "reviewed working-tree input is not valid UTF-8"
+        ) from error
+
+
+def _index_entry(repository_root, relative_path):
+    """Return the mode and non-zero object id of one stage-0 index entry."""
+    relative_text = str(relative_path)
+    listed = _run_git(
+        repository_root,
+        ["ls-files", "--stage", "-z", "--", relative_text],
+    )
+    if listed.returncode != 0:
+        raise BaselineValidationError("reviewed file index could not be read")
+
+    raw = listed.stdout
+    if not raw or not raw.endswith(b"\0"):
+        raise BaselineValidationError(
+            "reviewed file must have one stage-0 index entry"
+        )
+    records = raw[:-1].split(b"\0")
+    if len(records) != 1:
+        raise BaselineValidationError(
+            "reviewed file must have one stage-0 index entry"
+        )
+
+    try:
+        metadata, indexed_path = records[0].split(b"\t", 1)
+        mode, object_id, stage = metadata.split(b" ")
+    except ValueError as error:
+        raise BaselineValidationError(
+            "reviewed file must have one stage-0 index entry"
+        ) from error
+    if stage != b"0" or indexed_path != relative_text.encode("utf-8"):
+        raise BaselineValidationError(
+            "reviewed file must have one stage-0 index entry"
+        )
+    if mode != b"100644":
+        raise BaselineValidationError("reviewed file index mode must be 100644")
+    if (
+        re.fullmatch(rb"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", object_id)
+        is None
+        or set(object_id) == {ord("0")}
+    ):
+        raise BaselineValidationError("reviewed file index object id is invalid")
+
+    debug = _run_git(
+        repository_root,
+        ["ls-files", "--debug", "-z", "--", relative_text],
+    )
+    expected_prefix = relative_text.encode("utf-8") + b"\0"
+    flags = re.findall(rb"(?:^|[\t ])flags: ([0-9a-fA-F]+)(?:\r?\n|$)", debug.stdout)
+    if (
+        debug.returncode != 0
+        or not debug.stdout.startswith(expected_prefix)
+        or len(flags) != 1
+    ):
+        raise BaselineValidationError("reviewed file index metadata is invalid")
+    if int(flags[0], 16) & 0x20000000:
+        raise BaselineValidationError(
+            "reviewed file index entry must not be intent-to-add"
+        )
+    return object_id.decode("ascii").lower()
+
+
+def _read_index_blob_text(repository_root, object_id, maximum_bytes):
+    """Read one verified local Git blob only after checking its bounded size."""
+    object_type = _run_git(repository_root, ["cat-file", "-t", object_id])
+    if object_type.returncode != 0 or object_type.stdout.strip() != b"blob":
+        raise BaselineValidationError(
+            "reviewed file index object is not a local blob"
+        )
+
+    object_size = _run_git(repository_root, ["cat-file", "-s", object_id])
+    encoded_size = object_size.stdout.strip()
+    if (
+        object_size.returncode != 0
+        or len(encoded_size) > 20
+        or re.fullmatch(rb"[0-9]+", encoded_size) is None
+    ):
+        raise BaselineValidationError(
+            "reviewed file index blob size is invalid"
+        )
+    size = int(encoded_size)
+    if size > maximum_bytes:
+        raise BaselineValidationError(
+            f"reviewed file index blob exceeds {maximum_bytes}-byte limit"
+        )
+
+    blob = _run_git(repository_root, ["cat-file", "blob", object_id])
+    if blob.returncode != 0:
+        raise BaselineValidationError("reviewed file index blob could not be read")
+    if len(blob.stdout) != size:
+        raise BaselineValidationError(
+            "reviewed file index blob length does not match Git metadata"
+        )
+    try:
+        return _normalize_lf(blob.stdout.decode("utf-8", errors="strict"))
+    except UnicodeDecodeError as error:
+        raise BaselineValidationError(
+            "reviewed file index blob is not valid UTF-8"
+        ) from error
+
+
+def read_reviewed_text(
+    repository_root,
+    relative_path,
+    expected_text,
+    maximum_bytes,
+):
+    """Bind approved text independently to the worktree and stage-0 Git blob."""
+    path = _reviewed_relative_path(relative_path)
+    if type(expected_text) is not str:
+        raise BaselineValidationError("reviewed approved content must be text")
+    if type(maximum_bytes) is not int or maximum_bytes < 0:
+        raise BaselineValidationError("reviewed byte limit is invalid")
+
+    approved_text = _normalize_lf(expected_text)
+    worktree_text = _read_worktree_text(repository_root, path, maximum_bytes)
+    if worktree_text != approved_text:
+        raise BaselineValidationError(
+            "reviewed working-tree content does not match approved content"
+        )
+
+    object_id = _index_entry(repository_root, path)
+    index_text = _read_index_blob_text(repository_root, object_id, maximum_bytes)
+    if index_text != approved_text:
+        raise BaselineValidationError(
+            "reviewed index content does not match approved content"
+        )
+    if index_text != worktree_text:
+        raise BaselineValidationError("reviewed index and working tree have drifted")
+    return worktree_text
+
+
 def main():
     try:
         load_manifest()
+        read_reviewed_text(
+            ROOT,
+            MANIFEST_RELATIVE_PATH,
+            APPROVED_MANIFEST_TEXT,
+            MAX_MANIFEST_BYTES,
+        )
         validate_source_commit(ROOT, SOURCE_COMMIT)
     except (BaselineValidationError, OSError) as error:
         print(f"migration baseline validation failed: {error}", file=sys.stderr)

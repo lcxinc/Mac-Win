@@ -4,9 +4,11 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -622,22 +624,434 @@ class MigrationBaselineGitSourceTests(unittest.TestCase):
         def validate_source_commit(repository, source_commit):
             events.append(("source", repository, source_commit))
 
+        def read_reviewed_text(
+            repository, relative_path, expected_text, maximum_bytes
+        ):
+            events.append(
+                (
+                    "reviewed",
+                    repository,
+                    relative_path,
+                    expected_text,
+                    maximum_bytes,
+                )
+            )
+            return expected_text
+
         with mock.patch.object(validator, "load_manifest", side_effect=load_manifest):
             with mock.patch.object(
-                validator,
-                "validate_source_commit",
-                side_effect=validate_source_commit,
+                validator, "read_reviewed_text", side_effect=read_reviewed_text
             ):
-                with mock.patch("builtins.print"):
-                    self.assertEqual(validator.main(), 0)
+                with mock.patch.object(
+                    validator,
+                    "validate_source_commit",
+                    side_effect=validate_source_commit,
+                ):
+                    with mock.patch("builtins.print"):
+                        self.assertEqual(validator.main(), 0)
 
         self.assertEqual(
             events,
             [
                 "manifest",
+                (
+                    "reviewed",
+                    validator.ROOT,
+                    validator.MANIFEST_RELATIVE_PATH,
+                    validator.APPROVED_MANIFEST_TEXT,
+                    validator.MAX_MANIFEST_BYTES,
+                ),
                 ("source", validator.ROOT, validator.SOURCE_COMMIT),
             ],
         )
+
+
+class MigrationBaselineReviewedFileTests(unittest.TestCase):
+    GIT_IDENTITY = (
+        "-c",
+        "user.name=Mac-Win Baseline Tests",
+        "-c",
+        "user.email=baseline-tests@example.invalid",
+        "-c",
+        "core.autocrlf=false",
+    )
+    RELATIVE_PATH = "reviewed.txt"
+    APPROVED_TEXT = "approved baseline\n"
+    MAXIMUM_BYTES = 64
+
+    def setUp(self):
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+        self.test_root = Path(self.temporary_directory.name)
+
+    def runGit(
+        self,
+        repository,
+        *arguments,
+        input_bytes=None,
+        check=True,
+    ):
+        repository = Path(repository)
+        repository.mkdir(parents=True, exist_ok=True)
+        command = ["git", *self.GIT_IDENTITY, *arguments]
+        result = subprocess.run(
+            command,
+            cwd=repository,
+            input=input_bytes,
+            capture_output=True,
+            text=input_bytes is None,
+            shell=False,
+            check=False,
+        )
+        if check and result.returncode != 0:
+            stdout = result.stdout
+            stderr = result.stderr
+            self.fail(
+                f"Git fixture command failed ({result.returncode}): "
+                f"{command!r}\nstdout: {stdout!r}\nstderr: {stderr!r}"
+            )
+        return result
+
+    def createRepository(self, name="target"):
+        repository = self.test_root / name
+        self.runGit(repository, "init", "-b", "main")
+        reviewed = repository / self.RELATIVE_PATH
+        reviewed.write_text(self.APPROVED_TEXT, encoding="utf-8", newline="")
+        self.runGit(repository, "add", self.RELATIVE_PATH)
+        self.runGit(repository, "commit", "-m", "reviewed baseline")
+        oid = self.runGit(
+            repository, "rev-parse", f"HEAD:{self.RELATIVE_PATH}"
+        ).stdout.strip()
+        return repository, reviewed, oid
+
+    def writeBlob(self, repository, raw):
+        result = self.runGit(
+            repository,
+            "hash-object",
+            "-w",
+            "--stdin",
+            input_bytes=raw,
+        )
+        return result.stdout.decode("ascii").strip()
+
+    def setIndexEntry(self, repository, mode, oid, *, info_only=False):
+        arguments = ["update-index"]
+        if info_only:
+            arguments.append("--info-only")
+        arguments.extend(
+            ["--add", "--cacheinfo", mode, oid, self.RELATIVE_PATH]
+        )
+        self.runGit(repository, *arguments)
+
+    def readReviewed(self, repository, validator=None, **overrides):
+        if validator is None:
+            validator = load_validator()
+        arguments = {
+            "repository_root": repository,
+            "relative_path": self.RELATIVE_PATH,
+            "expected_text": self.APPROVED_TEXT,
+            "maximum_bytes": self.MAXIMUM_BYTES,
+        }
+        arguments.update(overrides)
+        return validator.read_reviewed_text(**arguments)
+
+    def assertReviewedInvalid(self, repository, diagnostic, **overrides):
+        validator = load_validator()
+        with self.assertRaises(validator.BaselineValidationError) as caught:
+            self.readReviewed(repository, validator=validator, **overrides)
+        self.assertEqual(str(caught.exception), diagnostic)
+
+    def test_accepts_regular_stage_zero_file_and_reads_blob_type_size_first(self):
+        repository, _, oid = self.createRepository()
+        validator = load_validator()
+        real_run_git = validator._run_git
+        calls = []
+
+        def recording_run_git(repository_root, arguments, check=False):
+            calls.append(list(arguments))
+            return real_run_git(repository_root, arguments, check=check)
+
+        with mock.patch.object(
+            validator, "_run_git", side_effect=recording_run_git
+        ):
+            text = validator.read_reviewed_text(
+                repository,
+                self.RELATIVE_PATH,
+                self.APPROVED_TEXT,
+                self.MAXIMUM_BYTES,
+            )
+
+        self.assertEqual(text, self.APPROVED_TEXT)
+        self.assertEqual(
+            calls,
+            [
+                ["ls-files", "--stage", "-z", "--", self.RELATIVE_PATH],
+                ["ls-files", "--debug", "-z", "--", self.RELATIVE_PATH],
+                ["cat-file", "-t", oid],
+                ["cat-file", "-s", oid],
+                ["cat-file", "blob", oid],
+            ],
+        )
+
+    def test_accepts_crlf_worktree_equivalent(self):
+        repository, reviewed, _ = self.createRepository()
+        reviewed.write_bytes(self.APPROVED_TEXT.replace("\n", "\r\n").encode())
+
+        self.assertEqual(self.readReviewed(repository), self.APPROVED_TEXT)
+
+    def test_accepts_regular_hardlink(self):
+        repository, reviewed, _ = self.createRepository()
+        hardlink_source = repository / "hardlink-source.txt"
+        hardlink_source.write_text(self.APPROVED_TEXT, encoding="utf-8", newline="")
+        reviewed.unlink()
+        os.link(hardlink_source, reviewed)
+
+        self.assertEqual(self.readReviewed(repository), self.APPROVED_TEXT)
+
+    def test_rejects_symlink_and_non_regular_worktree_inputs(self):
+        repository, reviewed, _ = self.createRepository("symlink")
+        target = repository / "symlink-target.txt"
+        target.write_text(self.APPROVED_TEXT, encoding="utf-8", newline="")
+        reviewed.unlink()
+        try:
+            reviewed.symlink_to(target.name)
+        except OSError as error:
+            self.skipTest(f"symlink creation is unavailable: {error}")
+        self.assertReviewedInvalid(
+            repository,
+            "reviewed working-tree input must be a regular non-reparse file",
+        )
+
+        repository, reviewed, _ = self.createRepository("directory")
+        reviewed.unlink()
+        reviewed.mkdir()
+        self.assertReviewedInvalid(
+            repository,
+            "reviewed working-tree input must be a regular non-reparse file",
+        )
+
+    def test_rejects_windows_reparse_attribute_before_reading(self):
+        repository, reviewed, _ = self.createRepository()
+        real_status = reviewed.lstat()
+        reparse_status = SimpleNamespace(
+            st_mode=real_status.st_mode,
+            st_file_attributes=getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400),
+        )
+        validator = load_validator()
+
+        with mock.patch.object(Path, "lstat", return_value=reparse_status):
+            with self.assertRaises(validator.BaselineValidationError) as caught:
+                validator.read_reviewed_text(
+                    repository,
+                    self.RELATIVE_PATH,
+                    self.APPROVED_TEXT,
+                    self.MAXIMUM_BYTES,
+                )
+        self.assertEqual(
+            str(caught.exception),
+            "reviewed working-tree input must be a regular non-reparse file",
+        )
+
+    def test_rejects_missing_oversized_and_invalid_utf8_worktree_inputs(self):
+        cases = (
+            ("missing", None, "reviewed working-tree input is missing"),
+            (
+                "oversized",
+                b"x" * (self.MAXIMUM_BYTES + 1),
+                "reviewed working-tree input exceeds 64-byte limit",
+            ),
+            (
+                "invalid-utf8",
+                b"approved \xff baseline\n",
+                "reviewed working-tree input is not valid UTF-8",
+            ),
+        )
+        for name, raw, diagnostic in cases:
+            with self.subTest(name=name):
+                repository, reviewed, _ = self.createRepository(name)
+                if raw is None:
+                    reviewed.unlink()
+                else:
+                    reviewed.write_bytes(raw)
+                self.assertReviewedInvalid(repository, diagnostic)
+
+    def test_rejects_missing_conflicted_and_unexpected_index_entries(self):
+        repository, _, oid = self.createRepository("missing-index")
+        self.runGit(repository, "rm", "--cached", self.RELATIVE_PATH)
+        self.assertReviewedInvalid(
+            repository,
+            "reviewed file must have one stage-0 index entry",
+        )
+
+        repository, _, oid = self.createRepository("conflict")
+        index_info = (
+            f"100644 {oid} 1\t{self.RELATIVE_PATH}\n"
+            f"100644 {oid} 2\t{self.RELATIVE_PATH}\n"
+            f"100644 {oid} 3\t{self.RELATIVE_PATH}\n"
+        ).encode("ascii")
+        self.runGit(repository, "read-tree", "--empty")
+        self.runGit(repository, "update-index", "--index-info", input_bytes=index_info)
+        self.assertReviewedInvalid(
+            repository,
+            "reviewed file must have one stage-0 index entry",
+        )
+
+    def test_rejects_executable_symlink_and_submodule_index_modes(self):
+        repository, _, oid = self.createRepository()
+        source_commit = self.runGit(repository, "rev-parse", "HEAD").stdout.strip()
+        for mode, object_id in (
+            ("100755", oid),
+            ("120000", oid),
+            ("160000", source_commit),
+        ):
+            with self.subTest(mode=mode):
+                self.setIndexEntry(repository, mode, object_id)
+                self.assertReviewedInvalid(
+                    repository,
+                    "reviewed file index mode must be 100644",
+                )
+
+    def test_rejects_intent_to_add_entry(self):
+        repository, _, _ = self.createRepository()
+        self.runGit(repository, "rm", "--cached", self.RELATIVE_PATH)
+        self.runGit(repository, "add", "--intent-to-add", self.RELATIVE_PATH)
+
+        self.assertReviewedInvalid(
+            repository,
+            "reviewed file index entry must not be intent-to-add",
+        )
+
+    def test_rejects_intent_to_add_even_when_empty_blob_content_is_approved(self):
+        repository, reviewed, _ = self.createRepository()
+        reviewed.write_bytes(b"")
+        self.runGit(repository, "rm", "--cached", self.RELATIVE_PATH)
+        self.runGit(repository, "add", "--intent-to-add", self.RELATIVE_PATH)
+
+        self.assertReviewedInvalid(
+            repository,
+            "reviewed file index entry must not be intent-to-add",
+            expected_text="",
+        )
+
+    def test_rejects_zero_or_malformed_index_object_ids(self):
+        repository, _, _ = self.createRepository()
+        validator = load_validator()
+        outputs = (
+            b"100644 " + b"0" * 40 + b" 0\treviewed.txt\0",
+            b"100644 not-an-object 0\treviewed.txt\0",
+        )
+        for output in outputs:
+            with self.subTest(output=output):
+                result = SimpleNamespace(returncode=0, stdout=output)
+                with mock.patch.object(validator, "_run_git", return_value=result):
+                    with self.assertRaises(
+                        validator.BaselineValidationError
+                    ) as caught:
+                        validator.read_reviewed_text(
+                            repository,
+                            self.RELATIVE_PATH,
+                            self.APPROVED_TEXT,
+                            self.MAXIMUM_BYTES,
+                        )
+                self.assertEqual(
+                    str(caught.exception),
+                    "reviewed file index object id is invalid",
+                )
+
+    def test_rejects_missing_and_non_blob_index_objects(self):
+        repository, _, _ = self.createRepository("missing-object")
+        self.setIndexEntry(repository, "100644", "1" * 40, info_only=True)
+        self.assertReviewedInvalid(
+            repository,
+            "reviewed file index object is not a local blob",
+        )
+
+        repository, _, _ = self.createRepository("tree-object")
+        tree_oid = self.runGit(repository, "rev-parse", "HEAD^{tree}").stdout.strip()
+        self.setIndexEntry(repository, "100644", tree_oid)
+        self.assertReviewedInvalid(
+            repository,
+            "reviewed file index object is not a local blob",
+        )
+
+    def test_rejects_oversized_and_invalid_utf8_index_blobs(self):
+        repository, _, _ = self.createRepository("oversized-blob")
+        oversized_oid = self.writeBlob(
+            repository, b"x" * (self.MAXIMUM_BYTES + 1)
+        )
+        self.setIndexEntry(repository, "100644", oversized_oid)
+        self.assertReviewedInvalid(
+            repository,
+            "reviewed file index blob exceeds 64-byte limit",
+        )
+
+        repository, _, _ = self.createRepository("invalid-blob")
+        invalid_oid = self.writeBlob(repository, b"approved \xff baseline\n")
+        self.setIndexEntry(repository, "100644", invalid_oid)
+        self.assertReviewedInvalid(
+            repository,
+            "reviewed file index blob is not valid UTF-8",
+        )
+
+    def test_rejects_index_and_worktree_drift_from_approved_content(self):
+        repository, reviewed, _ = self.createRepository("worktree-drift")
+        reviewed.write_text("changed\n", encoding="utf-8", newline="")
+        self.assertReviewedInvalid(
+            repository,
+            "reviewed working-tree content does not match approved content",
+        )
+
+        repository, _, _ = self.createRepository("index-drift")
+        changed_oid = self.writeBlob(repository, b"changed\n")
+        self.setIndexEntry(repository, "100644", changed_oid)
+        self.assertReviewedInvalid(
+            repository,
+            "reviewed index content does not match approved content",
+        )
+
+    def test_rejects_index_blob_length_mismatch_with_stable_diagnostic(self):
+        repository, _, oid = self.createRepository()
+        validator = load_validator()
+        real_run_git = validator._run_git
+
+        def corrupt_blob(repository_root, arguments, check=False):
+            result = real_run_git(repository_root, arguments, check=check)
+            if arguments == ["cat-file", "blob", oid]:
+                return SimpleNamespace(returncode=0, stdout=result.stdout[:-1])
+            return result
+
+        with mock.patch.object(validator, "_run_git", side_effect=corrupt_blob):
+            with self.assertRaises(validator.BaselineValidationError) as caught:
+                validator.read_reviewed_text(
+                    repository,
+                    self.RELATIVE_PATH,
+                    self.APPROVED_TEXT,
+                    self.MAXIMUM_BYTES,
+                )
+        self.assertEqual(
+            str(caught.exception),
+            "reviewed file index blob length does not match Git metadata",
+        )
+
+    def test_git_failure_diagnostic_does_not_echo_untrusted_output(self):
+        repository, _, _ = self.createRepository()
+        validator = load_validator()
+        hostile = b"git-output\n\x1b[31mspoofed diagnostic\x00"
+        failed = SimpleNamespace(returncode=17, stdout=hostile, stderr=hostile)
+
+        with mock.patch.object(validator, "_run_git", return_value=failed):
+            with self.assertRaises(validator.BaselineValidationError) as caught:
+                validator.read_reviewed_text(
+                    repository,
+                    self.RELATIVE_PATH,
+                    self.APPROVED_TEXT,
+                    self.MAXIMUM_BYTES,
+                )
+
+        self.assertEqual(
+            str(caught.exception), "reviewed file index could not be read"
+        )
+        self.assertNotIn("git-output", str(caught.exception))
 
 
 if __name__ == "__main__":
