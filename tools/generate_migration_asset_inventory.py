@@ -11,19 +11,6 @@ import subprocess
 import sys
 import unicodedata
 
-try:
-    from tools.validate_migration_baseline import (
-        BaselineValidationError,
-        validate_baseline_tag,
-    )
-except ModuleNotFoundError as error:
-    if error.name != "tools":
-        raise
-    from validate_migration_baseline import (  # type: ignore[no-redef]
-        BaselineValidationError,
-        validate_baseline_tag,
-    )
-
 
 ROOT = Path(__file__).resolve().parents[1]
 POLICY_PATH = ROOT / "migration" / "assets" / "metadata-policy.json"
@@ -463,6 +450,31 @@ def _validate_primary_object_database(repository_root):
         raise InventoryError("inventory Git object database is not self-contained")
 
 
+def _validate_source_tag(repository_root, source_tag, source_commit):
+    """Lazily reuse the audited baseline tag validator in package or script mode."""
+    try:
+        from tools.validate_migration_baseline import (
+            BaselineValidationError,
+            validate_baseline_tag,
+        )
+    except ModuleNotFoundError as error:
+        if error.name != "tools":
+            raise InventoryError("inventory source Git identity is invalid") from error
+        try:
+            from validate_migration_baseline import (
+                BaselineValidationError,
+                validate_baseline_tag,
+            )
+        except ModuleNotFoundError as fallback_error:
+            raise InventoryError(
+                "inventory source Git identity is invalid"
+            ) from fallback_error
+    try:
+        validate_baseline_tag(repository_root, source_tag, source_commit)
+    except BaselineValidationError as error:
+        raise InventoryError("inventory source Git identity is invalid") from error
+
+
 def _verify_source_identity(repository_root, source_commit, source_tag):
     """Require a local commit, a direct annotated tag, and HEAD ancestry."""
     try:
@@ -480,8 +492,8 @@ def _verify_source_identity(repository_root, source_commit, source_tag):
             source_commit,
             "HEAD",
         )
-        validate_baseline_tag(repository_root, source_tag, source_commit)
-    except (BaselineValidationError, InventoryError, UnicodeError, ValueError) as error:
+        _validate_source_tag(repository_root, source_tag, source_commit)
+    except (InventoryError, UnicodeError, ValueError) as error:
         raise InventoryError("inventory source Git identity is invalid") from error
 
 
