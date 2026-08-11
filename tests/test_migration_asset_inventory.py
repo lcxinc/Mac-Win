@@ -44,7 +44,13 @@ def _fixture_git_environment(source=None):
     for key in tuple(environment):
         if key.upper().startswith("GIT_"):
             del environment[key]
-    environment["GIT_TERMINAL_PROMPT"] = "0"
+    environment.update(
+        {
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_TERMINAL_PROMPT": "0",
+        }
+    )
     return environment
 
 
@@ -566,6 +572,8 @@ class AssetGitBindingTests(unittest.TestCase):
         self.temporary_directory.cleanup()
 
     def _fixture_git(self, *arguments, check=True, input_bytes=None):
+        hooks_directory = self.repository / ".fixture-empty-hooks"
+        hooks_directory.mkdir(exist_ok=True)
         result = subprocess.run(
             [
                 "git",
@@ -575,6 +583,8 @@ class AssetGitBindingTests(unittest.TestCase):
                 "commit.gpgSign=false",
                 "-c",
                 "tag.gpgSign=false",
+                "-c",
+                f"core.hooksPath={hooks_directory}",
                 *arguments,
             ],
             cwd=self.repository,
@@ -1005,6 +1015,28 @@ class AssetGitBindingTests(unittest.TestCase):
             "tag",
         )
 
+    def test_fixture_git_ignores_hostile_home_hooks_and_missing_signer(self):
+        hostile_home = self.repository / "hostile-home"
+        hooks = hostile_home / "hooks"
+        hooks.mkdir(parents=True)
+        (hooks / "pre-commit").write_bytes(b"#!/bin/sh\nexit 91\n")
+        (hostile_home / ".gitconfig").write_text(
+            "[core]\n"
+            f"\thooksPath = {hooks.as_posix()}\n"
+            "[commit]\n\tgpgSign = true\n"
+            "[tag]\n\tgpgSign = true\n"
+            "[user]\n\tsigningKey = missing-home-signer\n",
+            encoding="utf-8",
+        )
+        with mock.patch.dict(
+            os.environ,
+            {"HOME": str(hostile_home), "USERPROFILE": str(hostile_home)},
+            clear=False,
+        ):
+            (self.repository / self.asset_path).write_bytes(b"hook isolated\n")
+            self._fixture_git("add", "--", self.asset_path)
+            self._fixture_git("commit", "-q", "-m", "isolated fixture commit")
+
     def test_fixture_git_environment_preserves_path_and_scrubs_git_injection(self):
         source = {
             "PATH": "fixture-path",
@@ -1026,10 +1058,12 @@ class AssetGitBindingTests(unittest.TestCase):
         cleaned = _fixture_git_environment(source)
         self.assertEqual(cleaned["PATH"], "fixture-path")
         self.assertEqual(cleaned["KEEP_ME"], "yes")
+        self.assertEqual(cleaned["GIT_CONFIG_GLOBAL"], os.devnull)
+        self.assertEqual(cleaned["GIT_CONFIG_NOSYSTEM"], "1")
         self.assertEqual(cleaned["GIT_TERMINAL_PROMPT"], "0")
         self.assertEqual(
             {key for key in cleaned if key.startswith("GIT_")},
-            {"GIT_TERMINAL_PROMPT"},
+            {"GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "GIT_TERMINAL_PROMPT"},
         )
 
     def test_real_frozen_tree_contains_the_approved_ninety_records(self):
