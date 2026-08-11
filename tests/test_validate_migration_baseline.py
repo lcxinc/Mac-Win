@@ -69,6 +69,16 @@ Known failures must be recorded in MW-MIG-001 with the affected runner, observed
 
 Tag evidence must record both the annotated tag object ID and its peeled commit ID before MW-MIG-001 closes.
 
+## Tag verification procedure
+
+Before tag creation, run `python tools/validate_migration_baseline.py`; this pre-tag check intentionally does not require the tag and is not tag evidence.
+
+After the merge commit passes both macOS evidence jobs, create the annotated tag directly at the frozen source with `git tag --no-sign -a {BASELINE_TAG} {SOURCE_COMMIT} -m "Mac-Win migration baseline 4e421fb"`.
+
+Before publication, run `python tools/validate_migration_baseline.py --require-tag`; this post-tag check requires a local annotated tag that directly references and peels to `{SOURCE_COMMIT}`.
+
+Publish only the verified tag with `git push origin refs/tags/{BASELINE_TAG}` and record the tag object ID plus peeled commit ID as the authoritative tag evidence.
+
 ## Rollback and ownership
 
 Before tag publication, rollback is a normal revert of the migration-baseline change; a failed or unavailable target keeps MW-MIG-001 open and prevents tag publication.
@@ -1558,6 +1568,292 @@ class MigrationBaselineGitSourceTests(unittest.TestCase):
                 ),
             ],
         )
+
+
+class MigrationBaselineTagTests(unittest.TestCase):
+    GIT_IDENTITY = (
+        "-c",
+        "user.name=Mac-Win Baseline Tests",
+        "-c",
+        "user.email=baseline-tests@example.invalid",
+    )
+
+    def setUp(self):
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+        self.test_root = Path(self.temporary_directory.name)
+
+    def runGit(
+        self,
+        repository,
+        *arguments,
+        environment=None,
+        input_bytes=None,
+        check=True,
+    ):
+        repository = Path(repository)
+        repository.mkdir(parents=True, exist_ok=True)
+        result = subprocess.run(
+            ["git", *self.GIT_IDENTITY, *arguments],
+            cwd=repository,
+            env=environment,
+            input=input_bytes,
+            capture_output=True,
+            text=input_bytes is None,
+            shell=False,
+            check=False,
+        )
+        if check and result.returncode != 0:
+            self.fail(
+                f"Git fixture command failed ({result.returncode}): "
+                f"{arguments!r}\nstdout: {result.stdout}\nstderr: {result.stderr}"
+            )
+        return result
+
+    def createRepository(self, name):
+        repository = self.test_root / name
+        self.runGit(repository, "init", "-b", "main")
+        tracked = repository / "tracked.txt"
+        tracked.write_text("source\n", encoding="utf-8")
+        self.runGit(repository, "add", "tracked.txt")
+        self.runGit(repository, "commit", "-m", "source")
+        source_commit = self.runGit(repository, "rev-parse", "HEAD").stdout.strip()
+        tracked.write_text("descendant\n", encoding="utf-8")
+        self.runGit(repository, "add", "tracked.txt")
+        self.runGit(repository, "commit", "-m", "descendant")
+        descendant_commit = self.runGit(
+            repository, "rev-parse", "HEAD"
+        ).stdout.strip()
+        return repository, source_commit, descendant_commit
+
+    def validateTag(self, repository, source_commit):
+        validator = load_validator()
+        validator.validate_baseline_tag(repository, BASELINE_TAG, source_commit)
+
+    def assertTagInvalid(self, repository, source_commit, diagnostic):
+        validator = load_validator()
+        with self.assertRaises(validator.BaselineValidationError) as caught:
+            validator.validate_baseline_tag(repository, BASELINE_TAG, source_commit)
+        self.assertEqual(str(caught.exception), diagnostic)
+
+    def test_default_main_does_not_require_a_preexisting_tag(self):
+        validator = load_validator()
+        with mock.patch.object(validator, "read_reviewed_text") as reviewed:
+            reviewed.side_effect = lambda _root, _path, approved, _limit: approved
+            with mock.patch.object(validator, "validate_source_commit"):
+                with mock.patch.object(
+                    validator,
+                    "validate_baseline_tag",
+                    side_effect=AssertionError("default validation must not inspect the tag"),
+                ) as tag_validation:
+                    with mock.patch("builtins.print") as printed:
+                        self.assertEqual(validator.main([]), 0)
+
+        tag_validation.assert_not_called()
+        printed.assert_called_once_with("Mac-Win migration baseline is valid.")
+
+    def test_require_tag_main_adds_tag_verification_after_repository_contract(self):
+        validator = load_validator()
+        events = []
+
+        def reviewed(_root, path, approved, _limit):
+            events.append(("reviewed", path))
+            return approved
+
+        with mock.patch.object(
+            validator, "read_reviewed_text", side_effect=reviewed
+        ):
+            with mock.patch.object(validator, "validate_source_commit"):
+                with mock.patch.object(
+                    validator,
+                    "validate_baseline_tag",
+                    side_effect=lambda root, tag, source: events.append(
+                        ("tag", root, tag, source)
+                    ),
+                ):
+                    with mock.patch("builtins.print"):
+                        self.assertEqual(validator.main(["--require-tag"]), 0)
+
+        self.assertEqual(
+            events[-1],
+            ("tag", validator.ROOT, validator.TAG, validator.SOURCE_COMMIT),
+        )
+        self.assertEqual(
+            [event[1] for event in events[:-1]],
+            [
+                validator.MANIFEST_RELATIVE_PATH,
+                validator.README_RELATIVE_PATH,
+                validator.MIGRATION_DOCUMENT_RELATIVE_PATH,
+                validator.WORKFLOW_RELATIVE_PATH,
+            ],
+        )
+
+    def test_require_tag_rejects_missing_and_lightweight_tags(self):
+        for kind in ("missing", "lightweight"):
+            with self.subTest(kind=kind):
+                repository, source_commit, _ = self.createRepository(kind)
+                if kind == "lightweight":
+                    self.runGit(repository, "tag", BASELINE_TAG, source_commit)
+                self.assertTagInvalid(
+                    repository,
+                    source_commit,
+                    "baseline tag is not a local annotated tag object",
+                )
+
+    def test_require_tag_rejects_annotated_tag_at_wrong_commit(self):
+        repository, source_commit, descendant_commit = self.createRepository("wrong")
+        self.runGit(
+            repository,
+            "tag",
+            "-a",
+            BASELINE_TAG,
+            descendant_commit,
+            "-m",
+            "wrong baseline",
+        )
+        self.assertTagInvalid(
+            repository,
+            source_commit,
+            "baseline tag does not peel to the source commit",
+        )
+
+    def test_require_tag_accepts_annotated_tag_directly_at_source(self):
+        repository, source_commit, _ = self.createRepository("exact")
+        self.runGit(
+            repository,
+            "tag",
+            "-a",
+            BASELINE_TAG,
+            source_commit,
+            "-m",
+            "migration baseline",
+        )
+        self.validateTag(repository, source_commit)
+
+    def test_replace_ref_cannot_change_the_tag_object_or_peeled_commit(self):
+        repository, source_commit, descendant_commit = self.createRepository("replace")
+        self.runGit(
+            repository,
+            "tag",
+            "-a",
+            BASELINE_TAG,
+            source_commit,
+            "-m",
+            "migration baseline",
+        )
+        self.runGit(
+            repository,
+            "tag",
+            "-a",
+            "replacement-tag",
+            descendant_commit,
+            "-m",
+            "hostile replacement",
+        )
+        baseline_tag_object = self.runGit(
+            repository, "rev-parse", f"refs/tags/{BASELINE_TAG}"
+        ).stdout.strip()
+        replacement_tag_object = self.runGit(
+            repository, "rev-parse", "refs/tags/replacement-tag"
+        ).stdout.strip()
+        self.runGit(
+            repository,
+            "update-ref",
+            f"refs/replace/{baseline_tag_object}",
+            replacement_tag_object,
+        )
+        unprotected_environment = os.environ.copy()
+        unprotected_environment.pop("GIT_NO_REPLACE_OBJECTS", None)
+        self.assertEqual(
+            self.runGit(
+                repository,
+                "rev-parse",
+                f"refs/tags/{BASELINE_TAG}^{{}}",
+                environment=unprotected_environment,
+            ).stdout.strip(),
+            descendant_commit,
+        )
+
+        self.validateTag(repository, source_commit)
+
+    def test_rejects_annotated_tag_that_points_to_another_tag_object(self):
+        repository, source_commit, _ = self.createRepository("nested")
+        self.runGit(
+            repository,
+            "tag",
+            "-a",
+            "inner-baseline",
+            source_commit,
+            "-m",
+            "inner",
+        )
+        inner_object = self.runGit(
+            repository, "rev-parse", "refs/tags/inner-baseline"
+        ).stdout.strip()
+        outer_input = (
+            f"object {inner_object}\n"
+            "type tag\n"
+            f"tag {BASELINE_TAG}\n"
+            "tagger Baseline Tests <baseline-tests@example.invalid> 0 +0000\n"
+            "\nouter\n"
+        ).encode("utf-8")
+        outer_object = self.runGit(
+            repository, "mktag", input_bytes=outer_input
+        ).stdout.strip()
+        self.runGit(
+            repository,
+            "update-ref",
+            f"refs/tags/{BASELINE_TAG}",
+            outer_object,
+        )
+
+        self.assertTagInvalid(
+            repository,
+            source_commit,
+            "baseline tag does not directly reference the source commit",
+        )
+
+    def test_tag_diagnostics_do_not_echo_untrusted_git_output(self):
+        validator = load_validator()
+        hostile = b"hostile\n\x1b[31mspoof"
+        failed = SimpleNamespace(returncode=17, stdout=hostile, stderr=hostile)
+        with mock.patch.object(validator, "_run_git", return_value=failed):
+            with self.assertRaises(validator.BaselineValidationError) as caught:
+                validator.validate_baseline_tag(Path("repository"), BASELINE_TAG, SOURCE_COMMIT)
+        self.assertEqual(
+            str(caught.exception),
+            "baseline tag is not a local annotated tag object",
+        )
+        self.assertNotIn("hostile", str(caught.exception))
+
+    def test_cli_rejects_extra_arguments_with_argparse_usage_status(self):
+        result = subprocess.run(
+            [sys.executable, str(VALIDATOR_PATH), "unexpected"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            shell=False,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("usage:", result.stderr)
+        self.assertIn("unrecognized arguments: unexpected", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_import_does_not_change_global_bytecode_policy(self):
+        original = sys.dont_write_bytecode
+        try:
+            sys.dont_write_bytecode = False
+            namespace = {
+                "__file__": str(VALIDATOR_PATH),
+                "__name__": "validate_migration_baseline_import_probe",
+            }
+            source = VALIDATOR_PATH.read_text(encoding="utf-8")
+            exec(compile(source, str(VALIDATOR_PATH), "exec"), namespace)
+            self.assertIs(sys.dont_write_bytecode, False)
+        finally:
+            sys.dont_write_bytecode = original
 
 
 class MigrationBaselineReviewedFileTests(unittest.TestCase):

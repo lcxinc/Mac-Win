@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Validate the closed Mac-Win migration baseline manifest contract."""
 
+import argparse
 import hashlib
 import json
 import os
@@ -77,6 +78,18 @@ MIGRATION_DOCUMENT_REQUIRED_STATEMENTS = (
     "be converted into passing expectations.",
     "Tag evidence must record both the annotated tag object ID and its peeled "
     "commit ID before MW-MIG-001 closes.",
+    "Before tag creation, run `python tools/validate_migration_baseline.py`; "
+    "this pre-tag check intentionally does not require the tag and is not tag "
+    "evidence.",
+    "After the merge commit passes both macOS evidence jobs, create the annotated "
+    f"tag directly at the frozen source with `git tag --no-sign -a {TAG} "
+    f"{SOURCE_COMMIT} -m \"Mac-Win migration baseline 4e421fb\"`.",
+    "Before publication, run `python tools/validate_migration_baseline.py "
+    "--require-tag`; this post-tag check requires a local annotated tag that "
+    f"directly references and peels to `{SOURCE_COMMIT}`.",
+    f"Publish only the verified tag with `git push origin refs/tags/{TAG}` and "
+    "record the tag object ID plus peeled commit ID as the authoritative tag "
+    "evidence.",
     "Before tag publication, rollback is a normal revert of the migration-baseline "
     "change; a failed or unavailable target keeps MW-MIG-001 open and prevents "
     "tag publication.",
@@ -120,7 +133,7 @@ APPROVED_MIGRATION_DOCUMENT_TEXT = f"""# Mac-Win migration baseline
 
 {MIGRATION_DOCUMENT_REQUIRED_STATEMENTS[13]}
 
-## Rollback and ownership
+## Tag verification procedure
 
 {MIGRATION_DOCUMENT_REQUIRED_STATEMENTS[14]}
 
@@ -129,6 +142,16 @@ APPROVED_MIGRATION_DOCUMENT_TEXT = f"""# Mac-Win migration baseline
 {MIGRATION_DOCUMENT_REQUIRED_STATEMENTS[16]}
 
 {MIGRATION_DOCUMENT_REQUIRED_STATEMENTS[17]}
+
+## Rollback and ownership
+
+{MIGRATION_DOCUMENT_REQUIRED_STATEMENTS[18]}
+
+{MIGRATION_DOCUMENT_REQUIRED_STATEMENTS[19]}
+
+{MIGRATION_DOCUMENT_REQUIRED_STATEMENTS[20]}
+
+{MIGRATION_DOCUMENT_REQUIRED_STATEMENTS[21]}
 """
 APPROVED_WORKFLOW_TEXT = """name: Migration baseline
 
@@ -462,6 +485,36 @@ def validate_source_commit(repository_root, source_commit):
     )
     if ancestor.returncode != 0:
         raise BaselineValidationError("source commit is not an ancestor of HEAD")
+
+
+def validate_baseline_tag(repository_root, tag_name, source_commit):
+    """Require one local annotated tag directly bound to the source commit."""
+    tag_ref = f"refs/tags/{tag_name}"
+    object_type = _run_git(repository_root, ["cat-file", "-t", tag_ref])
+    if object_type.returncode != 0 or object_type.stdout.strip() != b"tag":
+        raise BaselineValidationError(
+            "baseline tag is not a local annotated tag object"
+        )
+
+    peeled = _run_git(repository_root, ["rev-parse", f"{tag_ref}^{{}}"])
+    if (
+        peeled.returncode != 0
+        or peeled.stdout.strip() != source_commit.encode("ascii")
+    ):
+        raise BaselineValidationError(
+            "baseline tag does not peel to the source commit"
+        )
+
+    tag_object = _run_git(repository_root, ["cat-file", "tag", tag_ref])
+    expected_headers = (
+        f"object {source_commit}".encode("ascii"),
+        b"type commit",
+    )
+    headers = tuple(tag_object.stdout.splitlines()[:2])
+    if tag_object.returncode != 0 or headers != expected_headers:
+        raise BaselineValidationError(
+            "baseline tag does not directly reference the source commit"
+        )
 
 
 def _normalize_lf(text):
@@ -884,7 +937,20 @@ def read_reviewed_text(
     return worktree_text
 
 
-def main():
+def _argument_parser():
+    parser = argparse.ArgumentParser(
+        description="Validate the closed Mac-Win migration baseline."
+    )
+    parser.add_argument(
+        "--require-tag",
+        action="store_true",
+        help="also require the immutable annotated source-baseline tag",
+    )
+    return parser
+
+
+def main(arguments=()):
+    options = _argument_parser().parse_args(arguments)
     try:
         reviewed_manifest = read_reviewed_text(
             ROOT,
@@ -916,14 +982,16 @@ def main():
             MAX_WORKFLOW_BYTES,
         )
         validate_workflow_document(reviewed_workflow)
+        if options.require_tag:
+            validate_baseline_tag(ROOT, TAG, SOURCE_COMMIT)
     except (BaselineValidationError, OSError) as error:
         print(f"migration baseline validation failed: {error}", file=sys.stderr)
         return 1
 
-    print("Mac-Win migration baseline manifest is valid.")
+    print("Mac-Win migration baseline is valid.")
     return 0
 
 
 if __name__ == "__main__":
     sys.dont_write_bytecode = True
-    raise SystemExit(main())
+    raise SystemExit(main(sys.argv[1:]))

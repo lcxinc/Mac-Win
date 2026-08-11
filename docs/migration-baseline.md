@@ -32,6 +32,16 @@ Known failures must be recorded in MW-MIG-001 with the affected runner, observed
 
 Tag evidence must record both the annotated tag object ID and its peeled commit ID before MW-MIG-001 closes.
 
+## Tag verification procedure
+
+Before tag creation, run `python tools/validate_migration_baseline.py`; this pre-tag check intentionally does not require the tag and is not tag evidence.
+
+After the merge commit passes both macOS evidence jobs, create the annotated tag directly at the frozen source with `git tag --no-sign -a mw-migration-baseline-4e421fb 4e421fbea6f59e73e4f813c1f0a14e8db9e36de7 -m "Mac-Win migration baseline 4e421fb"`.
+
+Before publication, run `python tools/validate_migration_baseline.py --require-tag`; this post-tag check requires a local annotated tag that directly references and peels to `4e421fbea6f59e73e4f813c1f0a14e8db9e36de7`.
+
+Publish only the verified tag with `git push origin refs/tags/mw-migration-baseline-4e421fb` and record the tag object ID plus peeled commit ID as the authoritative tag evidence.
+
 ## Rollback and ownership
 
 Before tag publication, rollback is a normal revert of the migration-baseline change; a failed or unavailable target keeps MW-MIG-001 open and prevents tag publication.
