@@ -1,8 +1,11 @@
 import copy
 import importlib.util
 import json
+import os
 from pathlib import Path
-import re
+import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -23,6 +26,16 @@ CANONICAL = {
     ],
     "frozenFeatureAreas": ["SwiftUI", "Bridge", "legacy-launcher"],
 }
+HOSTILE_JSON_INPUTS = (
+    ("deep nesting", ("[" * 3000 + "0" + "]" * 3000).encode("ascii")),
+    ("oversized integer", ("9" * 5000).encode("ascii")),
+)
+HOSTILE_KEYS = (
+    "line\nbreak",
+    "escape\x1b[31m",
+    "lone-surrogate-\ud800",
+    "k" * 10_000,
+)
 
 
 def load_validator():
@@ -43,17 +56,54 @@ def load_validator():
 class MigrationBaselineManifestTests(unittest.TestCase):
     def assertInvalid(self, manifest, diagnostic):
         validator = load_validator()
-        with self.assertRaisesRegex(
-            validator.BaselineValidationError, f"^{re.escape(diagnostic)}$"
-        ):
+        with self.assertRaises(validator.BaselineValidationError) as caught:
             validator.validate_manifest(manifest)
+        self.assertEqual(str(caught.exception), diagnostic)
 
     def assertRawInvalid(self, raw, diagnostic):
         validator = load_validator()
-        with self.assertRaisesRegex(
-            validator.BaselineValidationError, f"^{re.escape(diagnostic)}$"
-        ):
+        with self.assertRaises(validator.BaselineValidationError) as caught:
             validator.parse_manifest_bytes(raw)
+        self.assertEqual(str(caught.exception), diagnostic)
+
+    def runIsolatedValidator(self, raw):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tools = root / "tools"
+            migration = root / "migration"
+            tools.mkdir()
+            migration.mkdir()
+            validator_path = tools / VALIDATOR_PATH.name
+            shutil.copyfile(VALIDATOR_PATH, validator_path)
+            (migration / "baseline.json").write_bytes(raw)
+
+            environment = os.environ.copy()
+            bytecode_variables = {"PYTHONDONTWRITEBYTECODE", "PYTHONPYCACHEPREFIX"}
+            for key in tuple(environment):
+                if key.upper() in bytecode_variables:
+                    del environment[key]
+            result = subprocess.run(
+                [sys.executable, str(validator_path)],
+                cwd=root,
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(list(root.rglob("__pycache__")), [])
+            self.assertEqual(list(root.rglob("*.pyc")), [])
+            return result
+
+    def assertEntrypointInvalid(self, raw, diagnostic):
+        result = self.runIsolatedValidator(raw)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(
+            result.stderr,
+            f"migration baseline validation failed: {diagnostic}\n",
+        )
+        self.assertNotIn("Traceback", result.stderr)
 
     def test_validator_module_exists(self):
         self.assertTrue(VALIDATOR_PATH.is_file(), "validator module is missing")
@@ -76,7 +126,7 @@ class MigrationBaselineManifestTests(unittest.TestCase):
     def test_rejects_unknown_top_level_field(self):
         mutated = copy.deepcopy(CANONICAL)
         mutated["unexpected"] = True
-        self.assertInvalid(mutated, "manifest has unknown field: unexpected")
+        self.assertInvalid(mutated, "manifest has unknown field")
 
     def test_rejects_each_missing_top_level_field(self):
         for field in CANONICAL:
@@ -220,20 +270,76 @@ class MigrationBaselineManifestTests(unittest.TestCase):
     def test_rejects_duplicate_raw_json_keys(self):
         self.assertRawInvalid(
             b'{"schemaVersion":1,"schemaVersion":1}',
-            "duplicate JSON key: schemaVersion",
+            "manifest has duplicate JSON key",
         )
 
     def test_rejects_unicode_escaped_duplicate_json_keys(self):
         self.assertRawInvalid(
             b'{"repository":"a1112/Mac-Win","repos\\u0069tory":"other"}',
-            "duplicate JSON key: repository",
+            "manifest has duplicate JSON key",
         )
 
     def test_rejects_duplicate_nested_json_keys(self):
         self.assertRawInvalid(
             b'{"evidenceTargets":[{"runner":"macos-15","runn\\u0065r":"other"}]}',
-            "duplicate JSON key: runner",
+            "manifest has duplicate JSON key",
         )
+
+    def test_direct_hostile_json_failures_have_one_stable_error(self):
+        validator = load_validator()
+        for name, raw in HOSTILE_JSON_INPUTS:
+            with self.subTest(name=name):
+                self.assertLessEqual(len(raw), validator.MAX_MANIFEST_BYTES)
+                self.assertRawInvalid(raw, "manifest is not valid JSON")
+
+    def test_entrypoint_hostile_json_failures_have_one_stable_error(self):
+        validator = load_validator()
+        for name, raw in HOSTILE_JSON_INPUTS:
+            with self.subTest(name=name):
+                self.assertLessEqual(len(raw), validator.MAX_MANIFEST_BYTES)
+                self.assertEntrypointInvalid(raw, "manifest is not valid JSON")
+
+    def test_direct_duplicate_key_diagnostics_never_echo_hostile_keys(self):
+        validator = load_validator()
+        for key in HOSTILE_KEYS:
+            with self.subTest(key=repr(key[:40])):
+                encoded_key = json.dumps(key, ensure_ascii=True)
+                raw = f"{{{encoded_key}:1,{encoded_key}:2}}".encode("ascii")
+                self.assertLessEqual(len(raw), validator.MAX_MANIFEST_BYTES)
+                self.assertRawInvalid(raw, "manifest has duplicate JSON key")
+
+    def test_entrypoint_duplicate_key_diagnostics_never_echo_hostile_keys(self):
+        validator = load_validator()
+        for key in HOSTILE_KEYS:
+            with self.subTest(key=repr(key[:40])):
+                encoded_key = json.dumps(key, ensure_ascii=True)
+                raw = f"{{{encoded_key}:1,{encoded_key}:2}}".encode("ascii")
+                self.assertLessEqual(len(raw), validator.MAX_MANIFEST_BYTES)
+                self.assertEntrypointInvalid(raw, "manifest has duplicate JSON key")
+
+    def test_direct_unknown_key_diagnostics_never_echo_hostile_keys(self):
+        validator = load_validator()
+        for key in HOSTILE_KEYS:
+            with self.subTest(key=repr(key[:40])):
+                mutated = copy.deepcopy(CANONICAL)
+                mutated[key] = True
+                raw = json.dumps(
+                    mutated, ensure_ascii=True, separators=(",", ":")
+                ).encode("ascii")
+                self.assertLessEqual(len(raw), validator.MAX_MANIFEST_BYTES)
+                self.assertInvalid(mutated, "manifest has unknown field")
+
+    def test_entrypoint_unknown_key_diagnostics_never_echo_hostile_keys(self):
+        validator = load_validator()
+        for key in HOSTILE_KEYS:
+            with self.subTest(key=repr(key[:40])):
+                mutated = copy.deepcopy(CANONICAL)
+                mutated[key] = True
+                raw = json.dumps(
+                    mutated, ensure_ascii=True, separators=(",", ":")
+                ).encode("ascii")
+                self.assertLessEqual(len(raw), validator.MAX_MANIFEST_BYTES)
+                self.assertEntrypointInvalid(raw, "manifest has unknown field")
 
     def test_accepts_exactly_65536_bytes(self):
         validator = load_validator()

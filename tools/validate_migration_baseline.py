@@ -8,6 +8,7 @@ import sys
 
 
 MAX_MANIFEST_BYTES = 65_536
+MAX_JSON_INTEGER_DIGITS = 128
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = ROOT / "migration" / "baseline.json"
 
@@ -40,9 +41,16 @@ def _reject_duplicate_keys(pairs):
     decoded = {}
     for key, value in pairs:
         if key in decoded:
-            raise BaselineValidationError(f"duplicate JSON key: {key}")
+            raise BaselineValidationError("manifest has duplicate JSON key")
         decoded[key] = value
     return decoded
+
+
+def _parse_bounded_int(value):
+    digits = value.removeprefix("-")
+    if len(digits) > MAX_JSON_INTEGER_DIGITS:
+        raise ValueError("JSON integer exceeds reviewed digit limit")
+    return int(value)
 
 
 def parse_manifest_bytes(raw):
@@ -56,8 +64,14 @@ def parse_manifest_bytes(raw):
         raise BaselineValidationError("manifest is not valid UTF-8") from error
 
     try:
-        return json.loads(text, object_pairs_hook=_reject_duplicate_keys)
-    except json.JSONDecodeError as error:
+        return json.loads(
+            text,
+            object_pairs_hook=_reject_duplicate_keys,
+            parse_int=_parse_bounded_int,
+        )
+    except BaselineValidationError:
+        raise
+    except (json.JSONDecodeError, RecursionError, ValueError) as error:
         raise BaselineValidationError("manifest is not valid JSON") from error
 
 
@@ -72,9 +86,9 @@ def validate_manifest(manifest):
     if missing:
         raise BaselineValidationError(f"manifest is missing field: {missing[0]}")
 
-    unknown = sorted(actual_fields - expected_fields)
+    unknown = actual_fields - expected_fields
     if unknown:
-        raise BaselineValidationError(f"manifest has unknown field: {unknown[0]}")
+        raise BaselineValidationError("manifest has unknown field")
 
     schema_version = manifest["schemaVersion"]
     if type(schema_version) is not int or schema_version != SCHEMA_VERSION:
