@@ -36,7 +36,9 @@ Tag evidence must record both the annotated tag object ID and its peeled commit 
 
 Before tag creation, run `python tools/validate_migration_baseline.py`; this pre-tag check intentionally does not require the tag and is not tag evidence.
 
-After the merge commit passes both macOS evidence jobs, create the annotated tag directly at the frozen source with `git tag --no-sign -a mw-migration-baseline-4e421fb 4e421fbea6f59e73e4f813c1f0a14e8db9e36de7 -m "Mac-Win migration baseline 4e421fb"`.
+After the merge commit passes all three required jobs—the `repository-contract` job, Apple Silicon `macos-15` / `arm64`, and Intel `macos-15-intel` / `x86_64`—create the annotated tag directly at the frozen source with `git tag --no-sign -a mw-migration-baseline-4e421fb 4e421fbea6f59e73e4f813c1f0a14e8db9e36de7 -m "Mac-Win migration source baseline 4e421fb"`.
+
+If any of the three required jobs fails, is cancelled, or is unavailable, do not create or publish the baseline tag.
 
 Before publication, run `python tools/validate_migration_baseline.py --require-tag`; this post-tag check requires a local annotated tag that directly references and peels to `4e421fbea6f59e73e4f813c1f0a14e8db9e36de7`.
 

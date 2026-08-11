@@ -81,9 +81,13 @@ MIGRATION_DOCUMENT_REQUIRED_STATEMENTS = (
     "Before tag creation, run `python tools/validate_migration_baseline.py`; "
     "this pre-tag check intentionally does not require the tag and is not tag "
     "evidence.",
-    "After the merge commit passes both macOS evidence jobs, create the annotated "
-    f"tag directly at the frozen source with `git tag --no-sign -a {TAG} "
-    f"{SOURCE_COMMIT} -m \"Mac-Win migration baseline 4e421fb\"`.",
+    "After the merge commit passes all three required jobs—the `repository-contract` "
+    "job, Apple Silicon `macos-15` / `arm64`, and Intel `macos-15-intel` / "
+    f"`x86_64`—create the annotated tag directly at the frozen source with `git "
+    f"tag --no-sign -a {TAG} {SOURCE_COMMIT} -m \"Mac-Win migration source "
+    "baseline 4e421fb\"`.",
+    "If any of the three required jobs fails, is cancelled, or is unavailable, "
+    "do not create or publish the baseline tag.",
     "Before publication, run `python tools/validate_migration_baseline.py "
     "--require-tag`; this post-tag check requires a local annotated tag that "
     f"directly references and peels to `{SOURCE_COMMIT}`.",
@@ -143,15 +147,17 @@ APPROVED_MIGRATION_DOCUMENT_TEXT = f"""# Mac-Win migration baseline
 
 {MIGRATION_DOCUMENT_REQUIRED_STATEMENTS[17]}
 
-## Rollback and ownership
-
 {MIGRATION_DOCUMENT_REQUIRED_STATEMENTS[18]}
+
+## Rollback and ownership
 
 {MIGRATION_DOCUMENT_REQUIRED_STATEMENTS[19]}
 
 {MIGRATION_DOCUMENT_REQUIRED_STATEMENTS[20]}
 
 {MIGRATION_DOCUMENT_REQUIRED_STATEMENTS[21]}
+
+{MIGRATION_DOCUMENT_REQUIRED_STATEMENTS[22]}
 """
 APPROVED_WORKFLOW_TEXT = """name: Migration baseline
 

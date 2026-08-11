@@ -25,6 +25,17 @@ WORKFLOW_PATH = ROOT / ".github" / "workflows" / "migration-baseline.yml"
 
 SOURCE_COMMIT = "4e421fbea6f59e73e4f813c1f0a14e8db9e36de7"
 BASELINE_TAG = "mw-migration-baseline-4e421fb"
+TAG_CREATION_GATE_STATEMENT = (
+    "After the merge commit passes all three required jobs—the `repository-contract` "
+    "job, Apple Silicon `macos-15` / `arm64`, and Intel `macos-15-intel` / "
+    f"`x86_64`—create the annotated tag directly at the frozen source with `git "
+    f"tag --no-sign -a {BASELINE_TAG} {SOURCE_COMMIT} -m \"Mac-Win migration "
+    "source baseline 4e421fb\"`."
+)
+TAG_FAILURE_GATE_STATEMENT = (
+    "If any of the three required jobs fails, is cancelled, or is unavailable, "
+    "do not create or publish the baseline tag."
+)
 README_FREEZE_STATEMENT = (
     f"Mac-Win is frozen at {SOURCE_COMMIT} for migration evidence. "
     "New SwiftUI, Bridge, and legacy launcher product features are not accepted."
@@ -73,7 +84,9 @@ Tag evidence must record both the annotated tag object ID and its peeled commit 
 
 Before tag creation, run `python tools/validate_migration_baseline.py`; this pre-tag check intentionally does not require the tag and is not tag evidence.
 
-After the merge commit passes both macOS evidence jobs, create the annotated tag directly at the frozen source with `git tag --no-sign -a {BASELINE_TAG} {SOURCE_COMMIT} -m "Mac-Win migration baseline 4e421fb"`.
+{TAG_CREATION_GATE_STATEMENT}
+
+{TAG_FAILURE_GATE_STATEMENT}
 
 Before publication, run `python tools/validate_migration_baseline.py --require-tag`; this post-tag check requires a local annotated tag that directly references and peels to `{SOURCE_COMMIT}`.
 
@@ -756,6 +769,36 @@ class MigrationBaselineDocumentTests(unittest.TestCase):
                         f"{statement}\n", ""
                     )
                 self.assertMigrationDocumentInvalid(mutated, diagnostic)
+
+    def test_document_requires_all_three_jobs_and_canonical_tag_message(self):
+        diagnostic = (
+            "migration document is missing a required standalone evidence statement"
+        )
+        old_two_job_gate = (
+            "After the merge commit passes both macOS evidence jobs, create the "
+            "annotated tag directly at the frozen source with `git tag --no-sign "
+            f"-a {BASELINE_TAG} {SOURCE_COMMIT} -m \"Mac-Win migration baseline "
+            "4e421fb\"`."
+        )
+        mutations = (
+            MIGRATION_DOCUMENT_CANONICAL.replace(
+                TAG_CREATION_GATE_STATEMENT, old_two_job_gate
+            ),
+            MIGRATION_DOCUMENT_CANONICAL.replace(
+                "all three required jobs", "both macOS evidence jobs"
+            ),
+            MIGRATION_DOCUMENT_CANONICAL.replace(
+                "Mac-Win migration source baseline 4e421fb",
+                "Mac-Win migration baseline 4e421fb",
+            ),
+            MIGRATION_DOCUMENT_CANONICAL.replace(
+                TAG_FAILURE_GATE_STATEMENT,
+                "A failed required job may still permit tag publication.",
+            ),
+        )
+        for text in mutations:
+            with self.subTest(text=text):
+                self.assertMigrationDocumentInvalid(text, diagnostic)
 
     def test_document_statement_matching_normalizes_only_ascii_whitespace(self):
         validator = load_validator()
