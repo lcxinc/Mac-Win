@@ -93,13 +93,67 @@ GROUP_FIELDS = frozenset(
 DEPENDENCY_POLICY_FIELDS = frozenset(
     ("externalRefs", "developmentDependencies")
 )
-DEPENDENCY_FIELDS = frozenset(("sourcePath", "locator", "kind", "status"))
+DEPENDENCY_GROUP_FIELDS = frozenset(
+    ("sourcePath", "kind", "status", "locators")
+)
 EXTERNAL_DEPENDENCY_CONTRACT = {"url": "external-unverified"}
 DEVELOPMENT_DEPENDENCY_CONTRACT = {
     "absolute-path": "development-machine-only",
     "environment-path": "unexpanded",
     "repository-path": "not-in-baseline",
 }
+
+_URL_LOCATOR_PATTERN = re.compile(r"https?://[^\x00-\x20\"'<>`{}|]+")
+_ABSOLUTE_PATH_LOCATOR_PATTERN = re.compile(r"/Users/a1-6/[^\r\n\"'}]+")
+_HOME_PATH_LOCATOR_PATTERN = re.compile(r"\$HOME/[^\r\n\"'}]+")
+_REPOSITORY_PATH_LOCATOR_PATTERN = re.compile(
+    r"(?:\$(?:PROJECT_ROOT|ROOT_DIR|ROOT)/refs/[^\x00-\x20\"'<>`\\]+"
+    r"|(?<![/A-Za-z0-9_$.-])refs/[^\x00-\x20\"'<>`\\]+)"
+)
+_ENVIRONMENT_PATH_LOCATORS = frozenset(
+    (
+        "MACWIN_APP_PATH",
+        "MACWIN_DXVK_MACOS_DIR",
+        "MACWIN_JASP_CONAN_BIN",
+        "MACWIN_JASP_CONAN_HOME",
+        "MACWIN_JASP_CONAN_VENV",
+        "MACWIN_JASP_DESKTOP_EXE_OVERRIDE",
+        "MACWIN_JASP_LIBARCHIVE_PREFIX",
+        "MACWIN_JASP_PATCHED_BUILD_DIR",
+        "MACWIN_JASP_PATCHED_CONFIGURE_LOG",
+        "MACWIN_JASP_PATCHED_SOURCE_DIR",
+        "MACWIN_JASP_RENV_PACKAGE",
+        "MACWIN_JASP_RENV_PACKAGE_URL",
+        "MACWIN_JASP_WINDOWS_QT_PREFIX",
+        "MACWIN_JASP_WINDOWS_R_HOME",
+        "MACWIN_LENOVO_APPSTORE_SOURCE_DIR",
+        "MACWIN_ONLYOFFICE_ALLFONTS_SOURCE",
+        "MACWIN_PDFINFO_BIN",
+        "MACWIN_PGADMIN_RESOURCES",
+        "MACWIN_POWETOYS_EVENT_PROBE",
+        "MACWIN_POWETOYS_EXE",
+        "MACWIN_POWETOYS_PREFIX",
+        "MACWIN_POWETOYS_WINDOW_PROBE",
+        "MACWIN_QET_FIXTURE_PATH",
+        "MACWIN_ROOT",
+        "MACWIN_ROSETTA_X87_BUILD",
+        "MACWIN_ROSETTA_X87_PATH",
+        "MACWIN_ROSETTA_X87_SOURCE",
+        "MACWIN_SMOKE_PREFIX",
+        "MACWIN_VISUAL_ANALYSIS_JSON",
+        "MACWIN_VISUAL_OUTPUT_DIR",
+        "MACWIN_VISUAL_PROBE",
+        "MACWIN_VISUAL_SCREENSHOT",
+        "MACWIN_VISUAL_RESULT_JSON",
+        "MACWIN_WINE_BUILD_DIR",
+        "MACWIN_WINE_LOADER",
+    )
+)
+_ENVIRONMENT_PATH_PATTERN = re.compile(
+    r"(?<![A-Z0-9_])(?:"
+    + "|".join(sorted(_ENVIRONMENT_PATH_LOCATORS))
+    + r")(?![A-Z0-9_])"
+)
 
 
 class InventoryError(ValueError):
@@ -259,24 +313,72 @@ def _validate_string_list(value):
         seen.add(text)
 
 
-def _validate_dependency_entries(entries, contract, governed_paths):
-    seen = set()
+def _dependency_sort_key(value):
+    return value.encode("utf-8")
+
+
+def _validate_dependency_locator(locator, kind):
+    text = _require_string(locator, "inventory policy dependency is invalid")
+    if not text or any(
+        character in text for character in ('"', "'", "<", ">", "`", "\n", "\r")
+    ):
+        raise InventoryError("inventory policy dependency is invalid")
+    if kind == "url":
+        if _URL_LOCATOR_PATTERN.fullmatch(text) is None:
+            raise InventoryError("inventory policy dependency is invalid")
+    elif kind == "absolute-path":
+        if _ABSOLUTE_PATH_LOCATOR_PATTERN.fullmatch(text) is None:
+            raise InventoryError("inventory policy dependency is invalid")
+    elif kind == "environment-path":
+        if not (
+            _HOME_PATH_LOCATOR_PATTERN.fullmatch(text)
+            or text in _ENVIRONMENT_PATH_LOCATORS
+        ):
+            raise InventoryError("inventory policy dependency is invalid")
+    elif kind == "repository-path":
+        if _REPOSITORY_PATH_LOCATOR_PATTERN.fullmatch(text) is None:
+            raise InventoryError("inventory policy dependency is invalid")
+    return text
+
+
+def _validate_dependency_groups(entries, contract, governed_paths):
+    previous_group_key = None
     for entry in _require_list(entries):
-        dependency = _require_exact_fields(entry, DEPENDENCY_FIELDS)
+        dependency = _require_exact_fields(entry, DEPENDENCY_GROUP_FIELDS)
         source_path = _validate_path(dependency["sourcePath"])
-        locator = _require_string(
-            dependency["locator"], "inventory policy dependency is invalid"
-        )
         kind = _require_string(dependency["kind"])
         status = _require_string(dependency["status"])
-        if source_path not in governed_paths or not locator:
+        if source_path not in governed_paths:
             raise InventoryError("inventory policy dependency is invalid")
         if kind not in contract or status != contract.get(kind):
             raise InventoryError("inventory policy enum value is invalid")
-        identity = (source_path, locator, kind)
-        if identity in seen:
-            raise InventoryError("inventory policy dependency is duplicated")
-        seen.add(identity)
+
+        group_key = (source_path.encode("ascii"), kind.encode("ascii"))
+        if previous_group_key is not None and group_key <= previous_group_key:
+            if group_key == previous_group_key:
+                raise InventoryError("inventory policy dependency is duplicated")
+            raise InventoryError("inventory policy dependency is invalid")
+        previous_group_key = group_key
+
+        locators = _require_list(dependency["locators"])
+        if not locators:
+            raise InventoryError("inventory policy dependency is invalid")
+        previous_locator = None
+        folded_locators = set()
+        for raw_locator in locators:
+            locator = _validate_dependency_locator(raw_locator, kind)
+            locator_key = _dependency_sort_key(locator)
+            if previous_locator is not None and locator_key <= previous_locator:
+                if locator_key == previous_locator:
+                    raise InventoryError("inventory policy dependency is duplicated")
+                raise InventoryError("inventory policy dependency is invalid")
+            previous_locator = locator_key
+            folded = locator.casefold()
+            if folded in folded_locators:
+                raise InventoryError(
+                    "inventory policy dependency has a case-fold collision"
+                )
+            folded_locators.add(folded)
 
 
 def validate_policy(policy):
@@ -338,12 +440,12 @@ def validate_policy(policy):
     dependency_policy = _require_exact_fields(
         root["dependencyPolicy"], DEPENDENCY_POLICY_FIELDS
     )
-    _validate_dependency_entries(
+    _validate_dependency_groups(
         dependency_policy["externalRefs"],
         EXTERNAL_DEPENDENCY_CONTRACT,
         governed_paths,
     )
-    _validate_dependency_entries(
+    _validate_dependency_groups(
         dependency_policy["developmentDependencies"],
         DEVELOPMENT_DEPENDENCY_CONTRACT,
         governed_paths,
@@ -354,6 +456,109 @@ def validate_policy(policy):
 def parse_policy_bytes(raw):
     """Parse and validate one bounded strict-UTF-8 policy document."""
     return validate_policy(_parse_json_document(raw))
+
+
+def _dependency_policy_evidence(policy):
+    """Expand the bounded source-grouped policy to canonical evidence rows."""
+    result = {"externalRefs": [], "developmentDependencies": []}
+    for field in result:
+        for group in policy["dependencyPolicy"][field]:
+            for locator in group["locators"]:
+                result[field].append(
+                    {
+                        "sourcePath": group["sourcePath"],
+                        "locator": locator,
+                        "kind": group["kind"],
+                        "status": group["status"],
+                    }
+                )
+    return result
+
+
+def _evidence_record(source_path, locator, kind, status):
+    return {
+        "sourcePath": source_path,
+        "locator": locator,
+        "kind": kind,
+        "status": status,
+    }
+
+
+def _evidence_record_sort_key(record):
+    return (
+        record["sourcePath"].encode("ascii"),
+        record["kind"].encode("ascii"),
+        record["status"].encode("ascii"),
+        record["locator"].encode("utf-8"),
+    )
+
+
+def _extract_blob_dependency_evidence(source_path, raw):
+    """Extract closed literal evidence from one bounded frozen text blob."""
+    if type(raw) is not bytes or len(raw) > MAX_ASSET_BYTES:
+        raise InventoryError("inventory dependency source is invalid")
+    try:
+        text = raw.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as error:
+        raise InventoryError("inventory dependency source is invalid") from error
+
+    external = {
+        locator: _evidence_record(
+            source_path, locator, "url", "external-unverified"
+        )
+        for locator in _URL_LOCATOR_PATTERN.findall(text)
+    }
+    development = {}
+
+    def add_development(locator, kind, status):
+        identity = (kind, locator)
+        development[identity] = _evidence_record(
+            source_path, locator, kind, status
+        )
+
+    for locator in _ABSOLUTE_PATH_LOCATOR_PATTERN.findall(text):
+        add_development(locator, "absolute-path", "development-machine-only")
+    for locator in _HOME_PATH_LOCATOR_PATTERN.findall(text):
+        add_development(locator, "environment-path", "unexpanded")
+    for locator in _ENVIRONMENT_PATH_PATTERN.findall(text):
+        add_development(locator, "environment-path", "unexpanded")
+    for locator in _REPOSITORY_PATH_LOCATOR_PATTERN.findall(text):
+        if locator.endswith("}") and "${" not in locator:
+            locator = locator[:-1]
+        add_development(locator, "repository-path", "not-in-baseline")
+
+    return {
+        "externalRefs": sorted(external.values(), key=_evidence_record_sort_key),
+        "developmentDependencies": sorted(
+            development.values(), key=_evidence_record_sort_key
+        ),
+    }
+
+
+def _extract_dependency_evidence(repository_root, records):
+    """Read only the already-bound raw blobs and combine their evidence."""
+    result = {"externalRefs": [], "developmentDependencies": []}
+    for record in records:
+        evidence = _extract_blob_dependency_evidence(
+            record["sourcePath"],
+            _read_blob(repository_root, record["gitBlobOid"]),
+        )
+        for field in result:
+            result[field].extend(evidence[field])
+    for field in result:
+        result[field].sort(key=_evidence_record_sort_key)
+    return result
+
+
+def _require_dependency_policy_match(policy, evidence):
+    """Fail closed unless extracted evidence equals the reviewed policy."""
+    expected = _dependency_policy_evidence(policy)
+    for field in expected:
+        expected[field].sort(key=_evidence_record_sort_key)
+    if evidence != expected:
+        raise InventoryError(
+            "inventory dependency evidence does not match policy"
+        )
 
 
 def load_policy(path=POLICY_PATH):
@@ -717,6 +922,8 @@ def main(arguments=()):
             records = _bind_governed_assets(
                 ROOT, policy, SOURCE_COMMIT, SOURCE_TAG
             )
+            dependency_evidence = _extract_dependency_evidence(ROOT, records)
+            _require_dependency_policy_match(policy, dependency_evidence)
             counts = {
                 category: sum(
                     record["category"] == category for record in records

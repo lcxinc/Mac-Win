@@ -349,9 +349,15 @@ class AssetPolicyTests(unittest.TestCase):
                     candidate["dependencyPolicy"]["developmentDependencies"] = [
                         {
                             "sourcePath": "scripts/example.sh",
-                            "locator": "reviewed-locator",
                             "kind": kind,
                             "status": status,
+                            "locators": [
+                                {
+                                    "absolute-path": "/Users/a1-6/reviewed-locator",
+                                    "environment-path": "MACWIN_APP_PATH",
+                                    "repository-path": "refs/reviewed-locator",
+                                }[kind]
+                            ],
                         }
                     ]
                     if status == allowed_status:
@@ -415,9 +421,9 @@ class AssetPolicyTests(unittest.TestCase):
                 candidate["dependencyPolicy"]["externalRefs"] = [
                     {
                         "sourcePath": "scripts/example.sh",
-                        "locator": hostile,
                         "kind": "url",
                         "status": "external-unverified",
+                        "locators": [hostile],
                     }
                 ]
                 self.assert_policy_error(
@@ -447,9 +453,9 @@ class AssetPolicyTests(unittest.TestCase):
                     candidate["dependencyPolicy"]["externalRefs"] = [
                         {
                             "sourcePath": "scripts/example.sh",
-                            "locator": hostile,
                             "kind": "url",
                             "status": "external-unverified",
+                            "locators": [hostile],
                         }
                     ]
                     raw = json.dumps(candidate, ensure_ascii=ensure_ascii).encode(
@@ -466,9 +472,9 @@ class AssetPolicyTests(unittest.TestCase):
         candidate["dependencyPolicy"]["externalRefs"] = [
             {
                 "sourcePath": "scripts/example.sh",
-                "locator": locator,
                 "kind": "url",
                 "status": "external-unverified",
+                "locators": [locator],
             }
         ]
         self.assertEqual(self.parse(candidate), candidate)
@@ -487,9 +493,9 @@ class AssetPolicyTests(unittest.TestCase):
         candidate["dependencyPolicy"]["externalRefs"] = [
             {
                 "sourcePath": "scripts/example.sh",
-                "locator": "https://example.invalid/file",
                 "kind": "url",
                 "status": "external-unverified",
+                "locators": ["https://example.invalid/file"],
             }
         ]
         self.assertEqual(self.parse(candidate), candidate)
@@ -545,6 +551,367 @@ class AssetPolicyTests(unittest.TestCase):
             owners_by_category["bottle-schema"],
             {"compatforge/bottle-schema"},
         )
+
+
+class AssetDependencyTests(unittest.TestCase):
+    def setUp(self):
+        self.policy = {
+            "schemaVersion": 1,
+            "repository": "a1112/Mac-Win",
+            "sourceCommit": SOURCE_COMMIT,
+            "sourceTag": "mw-migration-baseline-db12d5e",
+            "groups": [
+                {
+                    "category": "probes",
+                    "kind": "probe",
+                    "license": {"status": "unresolved"},
+                    "provenance": {"status": "unresolved"},
+                    "intendedOwner": "compatforge/probes",
+                    "externalRefs": [],
+                    "developmentDependencies": [],
+                    "paths": ["scripts/example.sh"],
+                }
+            ],
+            "dependencyPolicy": {
+                "externalRefs": [
+                    {
+                        "sourcePath": "scripts/example.sh",
+                        "kind": "url",
+                        "status": "external-unverified",
+                        "locators": ["https://example.invalid/archive.zip"],
+                    }
+                ],
+                "developmentDependencies": [
+                    {
+                        "sourcePath": "scripts/example.sh",
+                        "kind": "absolute-path",
+                        "status": "development-machine-only",
+                        "locators": ["/Users/a1-6/project/Mac-Win/refs/tool.exe"],
+                    },
+                    {
+                        "sourcePath": "scripts/example.sh",
+                        "kind": "environment-path",
+                        "status": "unexpanded",
+                        "locators": [
+                            "$HOME/Desktop/MacWinVisualAcceptance",
+                            "MACWIN_JASP_CONAN_HOME",
+                        ],
+                    },
+                    {
+                        "sourcePath": "scripts/example.sh",
+                        "kind": "repository-path",
+                        "status": "not-in-baseline",
+                        "locators": ["$PROJECT_ROOT/refs/exe-tests/bin/probe.exe"],
+                    },
+                ],
+            },
+        }
+
+    def parse(self, policy=None):
+        value = self.policy if policy is None else policy
+        return parse_policy_bytes(
+            json.dumps(value, ensure_ascii=True, separators=(",", ":")).encode(
+                "ascii"
+            )
+        )
+
+    def assert_policy_error(self, message, policy):
+        with self.assertRaisesRegex(InventoryError, f"^{message}$"):
+            self.parse(policy)
+
+    def test_policy_uses_closed_source_grouped_dependency_records(self):
+        parsed = self.parse()
+        evidence = generator._dependency_policy_evidence(parsed)
+        self.assertEqual(len(evidence["externalRefs"]), 1)
+        self.assertEqual(len(evidence["developmentDependencies"]), 4)
+        self.assertEqual(
+            evidence["externalRefs"][0],
+            {
+                "sourcePath": "scripts/example.sh",
+                "locator": "https://example.invalid/archive.zip",
+                "kind": "url",
+                "status": "external-unverified",
+            },
+        )
+
+    def test_policy_rejects_legacy_empty_unknown_and_unsorted_dependency_groups(self):
+        legacy = copy.deepcopy(self.policy)
+        legacy["dependencyPolicy"]["externalRefs"][0] = {
+            "sourcePath": "scripts/example.sh",
+            "locator": "https://example.invalid/archive.zip",
+            "kind": "url",
+            "status": "external-unverified",
+        }
+        self.assert_policy_error("inventory policy schema is invalid", legacy)
+
+        for mutation in ("empty", "unknown", "unsorted"):
+            with self.subTest(mutation=mutation):
+                candidate = copy.deepcopy(self.policy)
+                group = candidate["dependencyPolicy"]["externalRefs"][0]
+                if mutation == "empty":
+                    group["locators"] = []
+                elif mutation == "unknown":
+                    group["extra"] = True
+                else:
+                    group["locators"] = [
+                        "https://z.example.invalid/file",
+                        "https://a.example.invalid/file",
+                    ]
+                expected = (
+                    "inventory policy schema is invalid"
+                    if mutation == "unknown"
+                    else "inventory policy dependency is invalid"
+                )
+                self.assert_policy_error(expected, candidate)
+
+    def test_policy_rejects_duplicate_casefold_and_mixed_kind_status_locators(self):
+        mutations = []
+        duplicate = copy.deepcopy(self.policy)
+        duplicate["dependencyPolicy"]["externalRefs"][0]["locators"] *= 2
+        mutations.append(("inventory policy dependency is duplicated", duplicate))
+
+        casefolded = copy.deepcopy(self.policy)
+        casefolded["dependencyPolicy"]["externalRefs"][0]["locators"] = [
+            "https://EXAMPLE.invalid/archive.zip",
+            "https://example.invalid/archive.zip",
+        ]
+        mutations.append(
+            ("inventory policy dependency has a case-fold collision", casefolded)
+        )
+
+        mixed = copy.deepcopy(self.policy)
+        mixed["dependencyPolicy"]["developmentDependencies"][0]["status"] = (
+            "unexpanded"
+        )
+        mutations.append(("inventory policy enum value is invalid", mixed))
+
+        for message, candidate in mutations:
+            with self.subTest(message=message):
+                self.assert_policy_error(message, candidate)
+
+    def test_policy_rejects_malformed_and_case_mutated_locator_shapes(self):
+        mutations = (
+            ("externalRefs", 0, "HTTPS://example.invalid/file"),
+            ("externalRefs", 0, "https://example.invalid/file|command"),
+            ("developmentDependencies", 0, "/tmp/not-reviewed"),
+            ("developmentDependencies", 1, "$HOME"),
+            ("developmentDependencies", 1, "MACWIN_UNKNOWN_PATH"),
+            ("developmentDependencies", 2, "$PROJECT_ROOT/not-refs/input"),
+        )
+        for field, index, locator in mutations:
+            with self.subTest(field=field, locator=locator):
+                candidate = copy.deepcopy(self.policy)
+                candidate["dependencyPolicy"][field][index]["locators"] = [
+                    locator
+                ]
+                self.assert_policy_error(
+                    "inventory policy dependency is invalid", candidate
+                )
+
+    def test_policy_rejects_duplicate_and_unsorted_source_groups(self):
+        duplicate = copy.deepcopy(self.policy)
+        duplicate["dependencyPolicy"]["externalRefs"].append(
+            copy.deepcopy(duplicate["dependencyPolicy"]["externalRefs"][0])
+        )
+        self.assert_policy_error(
+            "inventory policy dependency is duplicated", duplicate
+        )
+
+        unsorted = copy.deepcopy(self.policy)
+        unsorted["dependencyPolicy"]["developmentDependencies"].reverse()
+        self.assert_policy_error("inventory policy dependency is invalid", unsorted)
+
+    def test_extracts_literal_dependencies_from_one_bounded_frozen_blob(self):
+        raw = (
+            b"https://example.invalid/archive.zip "
+            b"https://example.invalid/archive.zip\n"
+            b"https://zlib\\.net/fossils/zlib-1\\.2\\.13\\.tar\\.gz|ignored\n"
+            b"/Users/a1-6/project/Mac-Win/refs/tool.exe\n"
+            b"$PROJECT_ROOT/refs/exe-tests/bin/probe.exe\n"
+            b"$HOME/Desktop/MacWinVisualAcceptance\n"
+            b"${MACWIN_JASP_CONAN_HOME:-$PROJECT_ROOT/tmp/jasp-conan-home}\n"
+            b"${MACWIN_WINE_BUILD_DIR:-$ROOT_DIR/refs/wine-build}\n"
+        )
+        evidence = generator._extract_blob_dependency_evidence(
+            "scripts/example.sh", raw
+        )
+        self.assertEqual(
+            evidence["externalRefs"],
+            [
+                {
+                    "sourcePath": "scripts/example.sh",
+                    "locator": "https://example.invalid/archive.zip",
+                    "kind": "url",
+                    "status": "external-unverified",
+                },
+                {
+                    "sourcePath": "scripts/example.sh",
+                    "locator": "https://zlib\\.net/fossils/zlib-1\\.2\\.13\\.tar\\.gz",
+                    "kind": "url",
+                    "status": "external-unverified",
+                },
+            ],
+        )
+        self.assertEqual(
+            {
+                (entry["kind"], entry["locator"])
+                for entry in evidence["developmentDependencies"]
+            },
+            {
+                (
+                    "absolute-path",
+                    "/Users/a1-6/project/Mac-Win/refs/tool.exe",
+                ),
+                ("environment-path", "$HOME/Desktop/MacWinVisualAcceptance"),
+                ("environment-path", "MACWIN_JASP_CONAN_HOME"),
+                ("environment-path", "MACWIN_WINE_BUILD_DIR"),
+                (
+                    "repository-path",
+                    "$PROJECT_ROOT/refs/exe-tests/bin/probe.exe",
+                ),
+                ("repository-path", "$ROOT_DIR/refs/wine-build"),
+            },
+        )
+
+    def test_dependency_extraction_is_pure_and_does_not_probe_external_state(self):
+        raw = b"https://example.invalid/a $HOME/Desktop/a refs/missing/input\n"
+        with mock.patch("socket.socket", side_effect=AssertionError("network")), mock.patch.object(
+            generator.subprocess,
+            "run",
+            side_effect=AssertionError("asset execution"),
+        ), mock.patch.object(
+            generator.Path,
+            "exists",
+            side_effect=AssertionError("path probe"),
+        ), mock.patch(
+            "builtins.open",
+            side_effect=AssertionError("Bottle read"),
+        ):
+            evidence = generator._extract_blob_dependency_evidence(
+                "scripts/example.sh", raw
+            )
+        self.assertEqual(len(evidence["externalRefs"]), 1)
+        self.assertEqual(len(evidence["developmentDependencies"]), 2)
+
+    def test_frozen_blob_evidence_must_match_policy_exactly(self):
+        records = [{"sourcePath": "scripts/example.sh", "gitBlobOid": "1" * 40}]
+        raw = (
+            b"https://example.invalid/archive.zip\n"
+            b"/Users/a1-6/project/Mac-Win/refs/tool.exe\n"
+            b"$PROJECT_ROOT/refs/exe-tests/bin/probe.exe\n"
+            b"$HOME/Desktop/MacWinVisualAcceptance\n"
+            b"MACWIN_JASP_CONAN_HOME\n"
+        )
+        with mock.patch.object(generator, "_read_blob", return_value=raw) as read_blob:
+            evidence = generator._extract_dependency_evidence(ROOT, records)
+        read_blob.assert_called_once_with(ROOT, "1" * 40)
+        generator._require_dependency_policy_match(self.policy, evidence)
+
+        mutations = (
+            ("missing", lambda value: value["externalRefs"].clear()),
+            (
+                "extra",
+                lambda value: value["externalRefs"].append(
+                    {
+                        "sourcePath": "scripts/example.sh",
+                        "locator": "https://extra.invalid/file",
+                        "kind": "url",
+                        "status": "external-unverified",
+                    }
+                ),
+            ),
+            (
+                "changed-case",
+                lambda value: value["externalRefs"][0].update(
+                    locator="https://EXAMPLE.invalid/archive.zip"
+                ),
+            ),
+        )
+        for name, mutate in mutations:
+            with self.subTest(name=name):
+                candidate = copy.deepcopy(evidence)
+                mutate(candidate)
+                with self.assertRaisesRegex(
+                    InventoryError,
+                    "^inventory dependency evidence does not match policy$",
+                ):
+                    generator._require_dependency_policy_match(
+                        self.policy, candidate
+                    )
+
+    def test_rejects_unbounded_and_non_utf8_dependency_sources(self):
+        for raw in (b"x" * (MAX_ASSET_BYTES + 1), b"\xff"):
+            with self.subTest(length=len(raw)):
+                with self.assertRaisesRegex(
+                    InventoryError, "^inventory dependency source is invalid$"
+                ):
+                    generator._extract_blob_dependency_evidence(
+                        "scripts/example.sh", raw
+                    )
+
+    def test_real_frozen_evidence_has_exact_reviewed_counts_and_policy_coverage(self):
+        policy = parse_policy_bytes(POLICY_PATH.read_bytes())
+        records = _bind_governed_assets(
+            ROOT,
+            policy,
+            SOURCE_COMMIT,
+            "mw-migration-baseline-db12d5e",
+        )
+        evidence = generator._extract_dependency_evidence(ROOT, records)
+        external = evidence["externalRefs"]
+        development = evidence["developmentDependencies"]
+
+        self.assertEqual(len(external), 277)
+        self.assertEqual(len({entry["locator"] for entry in external}), 269)
+        self.assertEqual(
+            sum(
+                entry["sourcePath"] == "scripts/download-software-samples.sh"
+                for entry in external
+            ),
+            234,
+        )
+        self.assertEqual(
+            {
+                kind: sum(entry["kind"] == kind for entry in development)
+                for kind in (
+                    "absolute-path",
+                    "environment-path",
+                    "repository-path",
+                )
+            },
+            {
+                "absolute-path": 23,
+                "environment-path": 49,
+                "repository-path": 35,
+            },
+        )
+        absolute = [
+            entry for entry in development if entry["kind"] == "absolute-path"
+        ]
+        self.assertEqual(len({entry["locator"] for entry in absolute}), 17)
+        generator._require_dependency_policy_match(policy, evidence)
+
+    def test_list_cli_validates_frozen_dependency_evidence_before_reporting(self):
+        records = [
+            {
+                "sourcePath": "scripts/example.sh",
+                "category": "probes",
+                "gitBlobOid": "1" * 40,
+            }
+        ]
+        evidence = {"externalRefs": [], "developmentDependencies": []}
+        with mock.patch.object(generator, "load_policy", return_value=self.policy), mock.patch.object(
+            generator, "_bind_governed_assets", return_value=records
+        ), mock.patch.object(
+            generator, "_extract_dependency_evidence", return_value=evidence
+        ) as extract, mock.patch.object(
+            generator, "_require_dependency_policy_match"
+        ) as require_match, mock.patch(
+            "builtins.print"
+        ):
+            self.assertEqual(generator.main(["--list"]), 0)
+        extract.assert_called_once_with(ROOT, records)
+        require_match.assert_called_once_with(self.policy, evidence)
 
 
 class AssetGitBindingTests(unittest.TestCase):
