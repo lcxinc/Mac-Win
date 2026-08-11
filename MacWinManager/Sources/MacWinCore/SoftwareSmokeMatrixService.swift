@@ -150,7 +150,7 @@ public struct SoftwareSmokeMatrixService {
 
     public static func csv(report: SoftwareSmokeMatrixReport) -> String {
         let checkIds = orderedUnique(report.rows.flatMap { row in row.checklist.map(\.id) })
-        let header = [
+        var header = [
             "recipe_id",
             "name",
             "category",
@@ -164,11 +164,18 @@ public struct SoftwareSmokeMatrixService {
             "latest_log_path",
             "latest_launch_log_path",
             "latest_repair_state"
-        ] + checkIds.map { "\($0)_state" } + checkIds.map { "\($0)_detail" }
+        ]
+        header.append(contentsOf: checkIds.map { "\($0)_state" })
+        header.append(contentsOf: checkIds.map { "\($0)_detail" })
 
-        let rows = report.rows.map { row -> [String] in
-            let checklistById = Dictionary(uniqueKeysWithValues: row.checklist.map { ($0.id, $0) })
-            return [
+        let rows: [[String]] = report.rows.map { row in
+            let checklistPairs: [(String, SoftwareSmokeChecklistItem)] = row.checklist.map { item in
+                (item.id, item)
+            }
+            let checklistById: [String: SoftwareSmokeChecklistItem] = Dictionary(
+                uniqueKeysWithValues: checklistPairs
+            )
+            var columns = [
                 row.recipeId,
                 row.name,
                 row.category,
@@ -182,11 +189,17 @@ public struct SoftwareSmokeMatrixService {
                 row.latestLogPath ?? "",
                 row.latestLaunchLogPath ?? "",
                 row.latestRepairState?.rawValue ?? ""
-            ] + checkIds.map { checklistById[$0]?.state.rawValue ?? "" }
-                + checkIds.map { checklistById[$0]?.detail ?? "" }
+            ]
+            let states: [String] = checkIds.map { checklistById[$0]?.state.rawValue ?? "" }
+            let details: [String] = checkIds.map { checklistById[$0]?.detail ?? "" }
+            columns.append(contentsOf: states)
+            columns.append(contentsOf: details)
+            return columns
         }
 
-        return ([header] + rows)
+        var csvRows = [header]
+        csvRows.append(contentsOf: rows)
+        return csvRows
             .map { $0.map(csvEscaped).joined(separator: ",") }
             .joined(separator: "\n") + "\n"
     }
