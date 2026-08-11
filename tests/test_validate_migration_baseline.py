@@ -22,6 +22,7 @@ MANIFEST_PATH = ROOT / "migration" / "baseline.json"
 README_PATH = ROOT / "README.md"
 MIGRATION_DOCUMENT_PATH = ROOT / "docs" / "migration-baseline.md"
 WORKFLOW_PATH = ROOT / ".github" / "workflows" / "migration-baseline.yml"
+WORKFLOW_RELATIVE_PATH = ".github/workflows/migration-baseline.yml"
 
 SOURCE_COMMIT = "4e421fbea6f59e73e4f813c1f0a14e8db9e36de7"
 BASELINE_TAG = "mw-migration-baseline-4e421fb"
@@ -152,6 +153,8 @@ jobs:
             architecture: x86_64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.2.app/Contents/Developer
     steps:
       - name: Check out repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -554,6 +557,54 @@ class MigrationBaselineManifestTests(unittest.TestCase):
             "manifest has duplicate JSON key",
         )
 
+    def test_rejects_json_nesting_above_128_before_decoder_recursion(self):
+        validator = load_validator()
+        nested_inputs = (
+            b"[" * 129 + b"0" + b"]" * 129,
+            b'{"value":' * 129 + b"0" + b"}" * 129,
+        )
+        original_recursion_limit = sys.getrecursionlimit()
+        try:
+            sys.setrecursionlimit(max(original_recursion_limit, 10_000))
+            for raw in nested_inputs:
+                with self.subTest(opening=raw[:1]):
+                    with mock.patch.object(
+                        validator.json,
+                        "loads",
+                        wraps=validator.json.loads,
+                    ) as decoder:
+                        with self.assertRaises(
+                            validator.BaselineValidationError
+                        ) as caught:
+                            validator.parse_manifest_bytes(raw)
+                    self.assertEqual(
+                        str(caught.exception),
+                        "manifest is not valid JSON",
+                    )
+                    decoder.assert_not_called()
+        finally:
+            sys.setrecursionlimit(original_recursion_limit)
+
+    def test_accepts_exact_json_nesting_limit_and_ignores_string_delimiters(self):
+        validator = load_validator()
+        self.assertEqual(validator.MAX_JSON_NESTING_DEPTH, 128)
+        exact_inputs = (
+            b"[" * 128 + b"0" + b"]" * 128,
+            b'{"value":' * 128 + b"0" + b"}" * 128,
+        )
+        for raw in exact_inputs:
+            with self.subTest(opening=raw[:1]):
+                validator.parse_manifest_bytes(raw)
+
+        string_value = ('[{]} escaped quote: " and slash: \\' * 256)
+        raw = json.dumps({"value": string_value}).encode("utf-8")
+        self.assertGreater(raw.count(b"{"), 128)
+        self.assertIn(b'\\"', raw)
+        self.assertEqual(
+            validator.parse_manifest_bytes(raw),
+            {"value": string_value},
+        )
+
     def test_direct_hostile_json_failures_have_one_stable_error(self):
         validator = load_validator()
         for name, raw in HOSTILE_JSON_INPUTS:
@@ -944,6 +995,53 @@ class MigrationBaselineWorkflowTests(unittest.TestCase):
             WORKFLOW_SHA256,
         )
         validator.validate_workflow_document(WORKFLOW_CANONICAL)
+
+    def test_xcode_16_2_pin_is_job_wide_and_exact(self):
+        pin = "      DEVELOPER_DIR: /Applications/Xcode_16.2.app/Contents/Developer"
+        job_env = f"    env:\n{pin}\n"
+        self.assertEqual(WORKFLOW_CANONICAL.count(pin), 1)
+        self.assertIn(
+            "    timeout-minutes: 30\n" + job_env + "    steps:\n",
+            WORKFLOW_CANONICAL,
+        )
+        pin_index = WORKFLOW_CANONICAL.index(pin)
+        self.assertLess(
+            pin_index,
+            WORKFLOW_CANONICAL.index("      - name: Record and verify host facts"),
+        )
+        self.assertLess(
+            pin_index,
+            WORKFLOW_CANONICAL.index("      - name: Test Swift package"),
+        )
+
+        without_pin = WORKFLOW_CANONICAL.replace(job_env, "", 1)
+        step_only = without_pin.replace(
+            "      - name: Test Swift package\n        shell: bash\n",
+            "      - name: Test Swift package\n"
+            "        shell: bash\n"
+            "        env:\n"
+            "          DEVELOPER_DIR: /Applications/Xcode_16.2.app/Contents/Developer\n",
+            1,
+        )
+        mutations = {
+            "pin deleted": without_pin,
+            "wrong Xcode version": WORKFLOW_CANONICAL.replace(
+                "/Applications/Xcode_16.2.app/Contents/Developer",
+                "/Applications/Xcode_16.4.app/Contents/Developer",
+                1,
+            ),
+            "pin moved to one step": step_only,
+        }
+        validator = load_validator()
+        for name, text in mutations.items():
+            with self.subTest(name=name):
+                self.assertNotEqual(text, WORKFLOW_CANONICAL)
+                self.assertWorkflowInvalid(text)
+                with self.assertRaises(
+                    validator.BaselineValidationError
+                ) as caught:
+                    validator._validate_workflow_semantics(text)
+                self.assertEqual(str(caught.exception), self.SEMANTIC_DIAGNOSTIC)
 
     def test_accepts_crlf_equivalent_workflow(self):
         validator = load_validator()
@@ -1774,6 +1872,11 @@ class MigrationBaselineTagTests(unittest.TestCase):
             VALIDATOR_PATH,
             repository / "tools" / "validate_migration_baseline.py",
         )
+        shutil.copyfile(
+            WORKFLOW_PATH,
+            repository / WORKFLOW_PATH.relative_to(ROOT),
+        )
+        self.runGit(repository, "add", WORKFLOW_RELATIVE_PATH)
         return repository
 
     def createRawTagObject(
@@ -1854,7 +1957,7 @@ class MigrationBaselineTagTests(unittest.TestCase):
         printed.assert_called_once_with("Mac-Win migration baseline is valid.")
 
     def test_cli_fixture_clone_handles_dubious_worktree_ownership_locally(self):
-        with mock.patch.object(self, "runGit") as checkout:
+        with mock.patch.object(self, "runGit") as git_commands:
             with mock.patch.dict(
                 os.environ,
                 {"GIT_TEST_ASSUME_DIFFERENT_OWNER": "1"},
@@ -1864,11 +1967,18 @@ class MigrationBaselineTagTests(unittest.TestCase):
         self.assertTrue(
             (repository / "tools" / "validate_migration_baseline.py").is_file()
         )
-        checkout.assert_called_once()
-        checkout_repository, command, mode, current_head = checkout.call_args.args
+        self.assertTrue((repository / WORKFLOW_PATH.relative_to(ROOT)).is_file())
+        self.assertEqual(git_commands.call_count, 2)
+        checkout_repository, command, mode, current_head = (
+            git_commands.call_args_list[0].args
+        )
         self.assertEqual(checkout_repository, repository)
         self.assertEqual((command, mode), ("checkout", "--detach"))
         self.assertRegex(current_head, r"\A[0-9a-f]{40}(?:[0-9a-f]{24})?\Z")
+        self.assertEqual(
+            git_commands.call_args_list[1].args,
+            (repository, "add", WORKFLOW_RELATIVE_PATH),
+        )
 
     def test_require_tag_main_adds_tag_verification_after_repository_contract(self):
         validator = load_validator()

@@ -19,6 +19,7 @@ MAX_MIGRATION_DOCUMENT_BYTES = 32_768
 MAX_WORKFLOW_BYTES = 16_384
 MAX_TAG_OBJECT_BYTES = 16_384
 MAX_JSON_INTEGER_DIGITS = 128
+MAX_JSON_NESTING_DEPTH = 128
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = ROOT / "migration" / "baseline.json"
 MANIFEST_RELATIVE_PATH = "migration/baseline.json"
@@ -204,6 +205,8 @@ jobs:
             architecture: x86_64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.2.app/Contents/Developer
     steps:
       - name: Check out repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -323,7 +326,7 @@ jobs:
           echo >> "$summary_path"
           exit "$swift_status"
 """
-WORKFLOW_SHA256 = "81113e5384f96b1b5ef01247504c4dd1c770e9d300deb81a9fb783eeeda79766"
+WORKFLOW_SHA256 = "41d65d01b6c0c308c81253de6b80877d98d4d5748604ac4269e0219e8e449947"
 TOP_LEVEL_FIELDS = (
     "schemaVersion",
     "repository",
@@ -369,6 +372,30 @@ def _parse_bounded_int(value):
     return int(value)
 
 
+def _reject_excessive_json_nesting(text):
+    """Reject structural nesting beyond the reviewed bound before decoding."""
+    depth = 0
+    in_string = False
+    escaped = False
+    for character in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+        elif character in "[{":
+            depth += 1
+            if depth > MAX_JSON_NESTING_DEPTH:
+                raise BaselineValidationError("manifest is not valid JSON")
+        elif character in "]}" and depth > 0:
+            depth -= 1
+
+
 def parse_manifest_bytes(raw):
     """Parse bounded strict-UTF-8 JSON while rejecting decoded duplicate keys."""
     if len(raw) > MAX_MANIFEST_BYTES:
@@ -378,6 +405,8 @@ def parse_manifest_bytes(raw):
         text = raw.decode("utf-8", errors="strict")
     except UnicodeDecodeError as error:
         raise BaselineValidationError("manifest is not valid UTF-8") from error
+
+    _reject_excessive_json_nesting(text)
 
     try:
         return json.loads(
