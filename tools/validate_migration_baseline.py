@@ -344,8 +344,11 @@ GIT_ENVIRONMENT_OVERRIDES = (
     "GIT_OBJECT_DIRECTORY",
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
     "GIT_NAMESPACE",
+    "GIT_SHALLOW_FILE",
 )
 GIT_SAFETY_ENVIRONMENT = {
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_CONFIG_NOSYSTEM": "1",
     "GIT_NO_LAZY_FETCH": "1",
     "GIT_TERMINAL_PROMPT": "0",
     "GIT_NO_REPLACE_OBJECTS": "1",
@@ -478,11 +481,14 @@ def load_manifest(path=MANIFEST_PATH):
     return manifest
 
 
-def _git_environment():
+def _git_environment(source=None):
     """Return a local-only Git environment independent of caller overrides."""
-    environment = os.environ.copy()
-    for variable in GIT_ENVIRONMENT_OVERRIDES:
-        environment.pop(variable, None)
+    environment = dict(os.environ if source is None else source)
+    blocked = frozenset(GIT_ENVIRONMENT_OVERRIDES)
+    for variable in tuple(environment):
+        upper_variable = variable.upper()
+        if upper_variable in blocked or upper_variable.startswith("GIT_CONFIG"):
+            del environment[variable]
     environment.update(GIT_SAFETY_ENVIRONMENT)
     return environment
 
@@ -490,10 +496,12 @@ def _git_environment():
 def _run_git(repository_root, arguments, check=False):
     """Run Git without a shell at one resolved repository root."""
     try:
+        root = Path(repository_root).resolve(strict=True)
         result = subprocess.run(
-            ["git", *arguments],
-            cwd=Path(repository_root).resolve(),
+            ["git", "-c", f"safe.directory={root}", *arguments],
+            cwd=root,
             env=_git_environment(),
+            stdin=subprocess.DEVNULL,
             shell=False,
             capture_output=True,
             text=False,

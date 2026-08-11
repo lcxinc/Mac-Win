@@ -286,6 +286,24 @@ GIT_SIGNING_POLLUTION = {
     "GIT_CONFIG_VALUE_2": "codex-no-such-gpg-program",
 }
 
+GIT_HOSTILE_REPOSITORY_POLLUTION = {
+    "git_dir": "decoy-git-dir",
+    "Git_Work_Tree": "decoy-worktree",
+    "GIT_COMMON_DIR": "decoy-common-dir",
+    "git_index_file": "decoy-index",
+    "GIT_OBJECT_DIRECTORY": "decoy-objects",
+    "git_alternate_object_directories": "decoy-alternates",
+    "GIT_NAMESPACE": "decoy-namespace",
+    "Git_Config_Count": "2",
+    "GIT_CONFIG_KEY_0": "core.hooksPath",
+    "git_config_value_0": "decoy-hooks",
+    "git_config_key_1": "core.attributesFile",
+    "GIT_CONFIG_VALUE_1": "decoy-attributes",
+    "Git_Config_Global": "decoy-global-config",
+    "GIT_CONFIG_SYSTEM": "decoy-system-config",
+    "git_config_parameters": "'core.fsmonitor'='decoy-monitor'",
+}
+
 CANONICAL = {
     "schemaVersion": 1,
     "repository": "a1112/Mac-Win",
@@ -379,6 +397,54 @@ def run_sanitized_git(root, *arguments, text=True):
         env=sanitized_git_test_environment(),
         capture_output=True,
         text=text,
+        shell=False,
+        check=False,
+    )
+
+
+def fixture_git_environment(source=None):
+    """Preserve process facilities without inheriting ambient Git policy."""
+    environment = dict(os.environ if source is None else source)
+    for key in tuple(environment):
+        if key.upper().startswith("GIT_"):
+            del environment[key]
+    environment.update(
+        {
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_TERMINAL_PROMPT": "0",
+        }
+    )
+    return environment
+
+
+def run_fixture_git(
+    root,
+    *arguments,
+    configuration=(),
+    environment=None,
+    input_bytes=None,
+):
+    """Run one fixture Git command without ambient repositories, hooks, or signing."""
+    repository = Path(root)
+    repository.mkdir(parents=True, exist_ok=True)
+    resolved_root = repository.resolve(strict=True)
+    command = [
+        "git",
+        "-c",
+        f"safe.directory={resolved_root}",
+        "-c",
+        f"core.hooksPath={os.devnull}",
+        *configuration,
+        *arguments,
+    ]
+    return subprocess.run(
+        command,
+        cwd=resolved_root,
+        env=fixture_git_environment(environment),
+        input=input_bytes,
+        capture_output=True,
+        text=input_bytes is None,
         shell=False,
         check=False,
     )
@@ -587,14 +653,7 @@ class MigrationBaselineManifestTests(unittest.TestCase):
     def test_git_check_attr_ignores_ambient_repository_redirection(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             decoy = Path(temporary_directory).resolve()
-            init = subprocess.run(
-                ["git", "init", "-q"],
-                cwd=decoy,
-                capture_output=True,
-                text=True,
-                shell=False,
-                check=False,
-            )
+            init = run_sanitized_git(decoy, "init", "-q")
             self.assertEqual(init.returncode, 0, init.stderr)
             (decoy / ".gitattributes").write_text(
                 "migration/*.json text eol=crlf\n",
@@ -1735,6 +1794,8 @@ class MigrationBaselineGitSourceTests(unittest.TestCase):
         "GIT_NAMESPACE",
     )
     GIT_SAFETY_VARIABLES = {
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_NO_LAZY_FETCH": "1",
         "GIT_TERMINAL_PROMPT": "0",
         "GIT_NO_REPLACE_OBJECTS": "1",
@@ -1746,22 +1807,16 @@ class MigrationBaselineGitSourceTests(unittest.TestCase):
         self.test_root = Path(self.temporary_directory.name)
 
     def runGit(self, repository, *arguments, environment=None, check=True):
-        repository = Path(repository)
-        repository.mkdir(parents=True, exist_ok=True)
-        command = ["git", *self.GIT_IDENTITY, *arguments]
-        result = subprocess.run(
-            command,
-            cwd=repository,
-            env=environment,
-            capture_output=True,
-            text=True,
-            shell=False,
-            check=False,
+        result = run_fixture_git(
+            repository,
+            *arguments,
+            configuration=self.GIT_IDENTITY,
+            environment=environment,
         )
         if check and result.returncode != 0:
             self.fail(
                 f"Git fixture command failed ({result.returncode}): "
-                f"{command!r}\nstdout: {result.stdout}\nstderr: {result.stderr}"
+                f"{arguments!r}\nstdout: {result.stdout}\nstderr: {result.stderr}"
             )
         return result
 
@@ -1803,7 +1858,12 @@ class MigrationBaselineGitSourceTests(unittest.TestCase):
         validator.validate_source_commit(repository, source_commit)
 
     def test_git_fixture_ignores_ambient_commit_signing(self):
-        with mock.patch.dict(os.environ, GIT_SIGNING_POLLUTION, clear=False):
+        pollution = {
+            **GIT_SIGNING_POLLUTION,
+            **GIT_HOSTILE_REPOSITORY_POLLUTION,
+            "GIT_TEST_ASSUME_DIFFERENT_OWNER": "1",
+        }
+        with mock.patch.dict(os.environ, pollution, clear=False):
             repository, source_commit, _ = self.createRepository(
                 "signing-pollution"
             )
@@ -1920,6 +1980,13 @@ class MigrationBaselineGitSourceTests(unittest.TestCase):
             "GIT_OBJECT_DIRECTORY": str(alternate_git / "objects"),
             "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(alternate_git / "objects"),
             "GIT_NAMESPACE": "redirected",
+            "GIT_CONFIG_COUNT": "2",
+            "GIT_CONFIG_KEY_0": "core.hooksPath",
+            "GIT_CONFIG_VALUE_0": str(alternate / "hooks"),
+            "GIT_CONFIG_KEY_1": "core.attributesFile",
+            "GIT_CONFIG_VALUE_1": str(alternate / "attributes"),
+            "GIT_CONFIG_GLOBAL": str(alternate / "global-config"),
+            "GIT_CONFIG_SYSTEM": str(alternate / "system-config"),
         }
         validator = load_validator()
         real_run = subprocess.run
@@ -1939,9 +2006,18 @@ class MigrationBaselineGitSourceTests(unittest.TestCase):
         self.assertEqual(
             [call[0][0] for call in recorded_calls],
             [
-                ["git", "cat-file", "-t", source_commit],
                 [
                     "git",
+                    "-c",
+                    f"safe.directory={repository.resolve()}",
+                    "cat-file",
+                    "-t",
+                    source_commit,
+                ],
+                [
+                    "git",
+                    "-c",
+                    f"safe.directory={repository.resolve()}",
                     "merge-base",
                     "--is-ancestor",
                     source_commit,
@@ -1957,11 +2033,121 @@ class MigrationBaselineGitSourceTests(unittest.TestCase):
                 self.assertIs(keywords["capture_output"], True)
                 self.assertIs(keywords["text"], False)
                 self.assertIs(keywords["check"], False)
+                self.assertIs(keywords["stdin"], subprocess.DEVNULL)
                 child_environment = keywords["env"]
-                for variable in self.GIT_OVERRIDE_VARIABLES:
-                    self.assertNotIn(variable, child_environment)
+                self.assertFalse(
+                    any(
+                        key.upper() in self.GIT_OVERRIDE_VARIABLES
+                        for key in child_environment
+                    )
+                )
+                self.assertFalse(
+                    any(
+                        key.upper().startswith("GIT_CONFIG")
+                        and key.upper() not in self.GIT_SAFETY_VARIABLES
+                        for key in child_environment
+                    )
+                )
                 for variable, value in self.GIT_SAFETY_VARIABLES.items():
                     self.assertEqual(child_environment.get(variable), value)
+
+    def test_git_environment_scrubs_casefolded_repository_and_config_injection(self):
+        hostile = {
+            "PATH": os.environ.get("PATH", ""),
+            "KEEP_ME": "yes",
+            "git_dir": "decoy",
+            "Git_Work_Tree": "decoy",
+            "gIt_CoMmOn_DiR": "decoy",
+            "git_index_file": "decoy",
+            "Git_Object_Directory": "decoy",
+            "git_alternate_object_directories": "decoy",
+            "Git_Namespace": "decoy",
+            "git_shallow_file": "decoy",
+            "Git_Config_Count": "1",
+            "git_config_key_0": "core.bare",
+            "GIT_CONFIG_VALUE_0": "true",
+            "Git_Config_Global": "decoy",
+            "git_config_system": "decoy",
+            "GIT_CONFIG_PARAMETERS": "'core.worktree'='decoy'",
+            "GIT_TEST_ASSUME_DIFFERENT_OWNER": "1",
+        }
+        validator = load_validator()
+
+        cleaned = validator._git_environment(hostile)
+
+        self.assertEqual(cleaned["PATH"], hostile["PATH"])
+        self.assertEqual(cleaned["KEEP_ME"], "yes")
+        self.assertEqual(cleaned["GIT_TEST_ASSUME_DIFFERENT_OWNER"], "1")
+        self.assertFalse(
+            any(
+                key.upper() in {*self.GIT_OVERRIDE_VARIABLES, "GIT_SHALLOW_FILE"}
+                or (
+                    key.upper().startswith("GIT_CONFIG")
+                    and key.upper() not in self.GIT_SAFETY_VARIABLES
+                )
+                for key in cleaned
+            )
+        )
+        for variable, value in self.GIT_SAFETY_VARIABLES.items():
+            self.assertEqual(cleaned.get(variable), value)
+        self.assertEqual(hostile["git_dir"], "decoy")
+
+    def test_fixture_git_environment_scrubs_all_ambient_git_state(self):
+        hostile = {
+            "PATH": os.environ.get("PATH", ""),
+            "KEEP_ME": "yes",
+            "git_dir": "decoy",
+            "Git_Config_Count": "1",
+            "git_config_key_0": "core.hooksPath",
+            "GIT_CONFIG_VALUE_0": "decoy-hooks",
+            "GIT_TEST_ASSUME_DIFFERENT_OWNER": "1",
+        }
+
+        cleaned = fixture_git_environment(hostile)
+
+        self.assertEqual(cleaned["PATH"], hostile["PATH"])
+        self.assertEqual(cleaned["KEEP_ME"], "yes")
+        self.assertEqual(
+            {key for key in cleaned if key.upper().startswith("GIT_")},
+            {"GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "GIT_TERMINAL_PROMPT"},
+        )
+        self.assertEqual(cleaned["GIT_CONFIG_GLOBAL"], os.devnull)
+        self.assertEqual(cleaned["GIT_CONFIG_NOSYSTEM"], "1")
+        self.assertEqual(cleaned["GIT_TERMINAL_PROMPT"], "0")
+        self.assertEqual(hostile["git_dir"], "decoy")
+
+    def test_git_runner_handles_forced_dubious_ownership_with_exact_safe_root(self):
+        repository, source_commit, _ = self.createRepository("forced-owner")
+        validator = load_validator()
+
+        with mock.patch.dict(
+            os.environ,
+            {"GIT_TEST_ASSUME_DIFFERENT_OWNER": "1"},
+            clear=False,
+        ):
+            validator.validate_source_commit(repository, source_commit)
+
+    def test_default_and_require_tag_cli_handle_forced_dubious_ownership(self):
+        environment = os.environ.copy()
+        environment["GIT_TEST_ASSUME_DIFFERENT_OWNER"] = "1"
+
+        for arguments in ((), ("--require-tag",)):
+            with self.subTest(arguments=arguments):
+                result = subprocess.run(
+                    [sys.executable, "-B", str(VALIDATOR_PATH), *arguments],
+                    cwd=ROOT,
+                    env=environment,
+                    capture_output=True,
+                    text=True,
+                    shell=False,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(
+                    result.stdout,
+                    "Mac-Win migration baseline is valid.\n",
+                )
+                self.assertEqual(result.stderr, "")
 
     def test_main_binds_reviewed_bytes_before_semantic_validation(self):
         validator = load_validator()
@@ -2104,17 +2290,12 @@ class MigrationBaselineTagTests(unittest.TestCase):
         input_bytes=None,
         check=True,
     ):
-        repository = Path(repository)
-        repository.mkdir(parents=True, exist_ok=True)
-        result = subprocess.run(
-            ["git", *self.GIT_IDENTITY, *arguments],
-            cwd=repository,
-            env=environment,
-            input=input_bytes,
-            capture_output=True,
-            text=input_bytes is None,
-            shell=False,
-            check=False,
+        result = run_fixture_git(
+            repository,
+            *arguments,
+            configuration=self.GIT_IDENTITY,
+            environment=environment,
+            input_bytes=input_bytes,
         )
         if check and result.returncode != 0:
             self.fail(
@@ -2145,6 +2326,8 @@ class MigrationBaselineTagTests(unittest.TestCase):
         git_directory_result = subprocess.run(
             ["git", "-c", safe_root, "rev-parse", "--absolute-git-dir"],
             cwd=ROOT,
+            env=sanitized_git_test_environment(),
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             shell=False,
@@ -2167,6 +2350,8 @@ class MigrationBaselineTagTests(unittest.TestCase):
                 "HEAD",
             ],
             cwd=ROOT,
+            env=sanitized_git_test_environment(),
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             shell=False,
@@ -2188,6 +2373,8 @@ class MigrationBaselineTagTests(unittest.TestCase):
                 str(repository),
             ],
             cwd=self.test_root,
+            env=sanitized_git_test_environment(),
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             shell=False,
@@ -3018,24 +3205,18 @@ class MigrationBaselineReviewedFileTests(unittest.TestCase):
         input_bytes=None,
         check=True,
     ):
-        repository = Path(repository)
-        repository.mkdir(parents=True, exist_ok=True)
-        command = ["git", *self.GIT_IDENTITY, *arguments]
-        result = subprocess.run(
-            command,
-            cwd=repository,
-            input=input_bytes,
-            capture_output=True,
-            text=input_bytes is None,
-            shell=False,
-            check=False,
+        result = run_fixture_git(
+            repository,
+            *arguments,
+            configuration=self.GIT_IDENTITY,
+            input_bytes=input_bytes,
         )
         if check and result.returncode != 0:
             stdout = result.stdout
             stderr = result.stderr
             self.fail(
                 f"Git fixture command failed ({result.returncode}): "
-                f"{command!r}\nstdout: {stdout!r}\nstderr: {stderr!r}"
+                f"{arguments!r}\nstdout: {stdout!r}\nstderr: {stderr!r}"
             )
         return result
 
