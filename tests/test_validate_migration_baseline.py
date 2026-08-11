@@ -273,6 +273,16 @@ jobs:
 """
 WORKFLOW_SHA256 = hashlib.sha256(WORKFLOW_CANONICAL.encode("utf-8")).hexdigest()
 
+GIT_SIGNING_POLLUTION = {
+    "GIT_CONFIG_COUNT": "3",
+    "GIT_CONFIG_KEY_0": "commit.gpgSign",
+    "GIT_CONFIG_VALUE_0": "true",
+    "GIT_CONFIG_KEY_1": "tag.gpgSign",
+    "GIT_CONFIG_VALUE_1": "true",
+    "GIT_CONFIG_KEY_2": "gpg.program",
+    "GIT_CONFIG_VALUE_2": "codex-no-such-gpg-program",
+}
+
 CANONICAL = {
     "schemaVersion": 1,
     "repository": "a1112/Mac-Win",
@@ -1083,6 +1093,19 @@ class MigrationBaselineWorkflowTests(unittest.TestCase):
         self.assertNotIn('tee -a "$GITHUB_STEP_SUMMARY"', test_step)
         self.assertNotIn("```", test_step)
 
+    def test_swift_failure_status_is_preserved_in_summary_and_process(self):
+        raw_output = b"intentional Swift failure\n"
+        result, summary, leaked, temporary_evidence = self.runSwiftEvidence(
+            raw_output,
+            swift_status=7,
+        )
+
+        self.assertEqual(result.returncode, 7)
+        self.assertEqual(result.stdout, raw_output)
+        self.assertIn("Swift test exit status: 7", summary)
+        self.assertFalse(leaked, "the Swift child inherited a summary path")
+        self.assertEqual(temporary_evidence, [])
+
     def test_current_swift_six_output_passes_new_limit_and_old_limit_regresses(self):
         raw_output = b"```html\n<script>unsafe()</script>\n```\n" + self.swiftSixPassingOutput()
         self.assertGreater(len(raw_output), 65_536)
@@ -1268,6 +1291,10 @@ class MigrationBaselineGitSourceTests(unittest.TestCase):
         "user.name=Mac-Win Baseline Tests",
         "-c",
         "user.email=baseline-tests@example.invalid",
+        "-c",
+        "commit.gpgSign=false",
+        "-c",
+        "tag.gpgSign=false",
     )
     GIT_OVERRIDE_VARIABLES = (
         "GIT_DIR",
@@ -1344,6 +1371,15 @@ class MigrationBaselineGitSourceTests(unittest.TestCase):
         repository, source_commit, _ = self.createRepository("target")
         validator = load_validator()
 
+        validator.validate_source_commit(repository, source_commit)
+
+    def test_git_fixture_ignores_ambient_commit_signing(self):
+        with mock.patch.dict(os.environ, GIT_SIGNING_POLLUTION, clear=False):
+            repository, source_commit, _ = self.createRepository(
+                "signing-pollution"
+            )
+
+        validator = load_validator()
         validator.validate_source_commit(repository, source_commit)
 
     def test_rejects_missing_source_object_with_stable_diagnostic(self):
@@ -1620,6 +1656,10 @@ class MigrationBaselineTagTests(unittest.TestCase):
         "user.name=Mac-Win Baseline Tests",
         "-c",
         "user.email=baseline-tests@example.invalid",
+        "-c",
+        "commit.gpgSign=false",
+        "-c",
+        "tag.gpgSign=false",
     )
 
     def setUp(self):
@@ -1906,6 +1946,23 @@ class MigrationBaselineTagTests(unittest.TestCase):
             "-m",
             TAG_MESSAGE,
         )
+        self.validateTag(repository, source_commit)
+
+    def test_git_fixture_ignores_ambient_commit_and_tag_signing(self):
+        with mock.patch.dict(os.environ, GIT_SIGNING_POLLUTION, clear=False):
+            repository, source_commit, _ = self.createRepository(
+                "signing-pollution"
+            )
+            self.runGit(
+                repository,
+                "tag",
+                "-a",
+                BASELINE_TAG,
+                source_commit,
+                "-m",
+                TAG_MESSAGE,
+            )
+
         self.validateTag(repository, source_commit)
 
     def test_rejects_case_variant_ref_when_exact_spelling_is_absent(self):
@@ -2464,6 +2521,10 @@ class MigrationBaselineReviewedFileTests(unittest.TestCase):
         "-c",
         "user.email=baseline-tests@example.invalid",
         "-c",
+        "commit.gpgSign=false",
+        "-c",
+        "tag.gpgSign=false",
+        "-c",
         "core.autocrlf=false",
     )
     RELATIVE_PATH = "reviewed.txt"
@@ -2585,6 +2646,19 @@ class MigrationBaselineReviewedFileTests(unittest.TestCase):
                 ["cat-file", "-s", oid],
                 ["cat-file", "blob", oid],
             ],
+        )
+
+    def test_git_fixture_ignores_ambient_commit_signing(self):
+        with mock.patch.dict(os.environ, GIT_SIGNING_POLLUTION, clear=False):
+            repository, _, oid = self.createRepository("signing-pollution")
+
+        self.assertEqual(
+            self.runGit(
+                repository,
+                "rev-parse",
+                f"HEAD:{self.RELATIVE_PATH}",
+            ).stdout.strip(),
+            oid,
         )
 
     def test_accepts_crlf_worktree_equivalent(self):
