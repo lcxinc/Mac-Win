@@ -308,6 +308,73 @@ HOSTILE_KEYS = (
     "lone-surrogate-\ud800",
     "k" * 10_000,
 )
+GIT_CHECK_ATTR_BLOCKED_VARIABLES = frozenset(
+    {
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_NAMESPACE",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_SYSTEM",
+        "GIT_CONFIG_NOSYSTEM",
+        "GIT_CONFIG_PARAMETERS",
+    }
+)
+
+
+def assert_canonical_json_presentation(test_case, raw, expected):
+    content_without_crlf = raw.replace(b"\r\n", b"")
+    test_case.assertNotIn(
+        b"\r",
+        content_without_crlf,
+        "canonical JSON contains a lone CR or CRCRLF",
+    )
+    if b"\r\n" in raw:
+        test_case.assertNotIn(
+            b"\n",
+            content_without_crlf,
+            "canonical JSON mixes LF and CRLF line endings",
+        )
+    test_case.assertEqual(raw.replace(b"\r\n", b"\n"), expected)
+
+
+def run_git_check_attr(relative_path):
+    environment = os.environ.copy()
+    for key in tuple(environment):
+        upper_key = key.upper()
+        if upper_key in GIT_CHECK_ATTR_BLOCKED_VARIABLES or re.fullmatch(
+            r"GIT_CONFIG_(?:KEY|VALUE)_\d+", upper_key
+        ):
+            del environment[key]
+    environment.update(
+        {
+            "GIT_NO_LAZY_FETCH": "1",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_TERMINAL_PROMPT": "0",
+        }
+    )
+    resolved_root = ROOT.resolve(strict=True)
+    return subprocess.run(
+        [
+            "git",
+            "-c",
+            f"safe.directory={resolved_root}",
+            "check-attr",
+            "eol",
+            "--",
+            relative_path,
+        ],
+        cwd=resolved_root,
+        env=environment,
+        capture_output=True,
+        text=True,
+        shell=False,
+        check=False,
+    )
 
 
 def load_validator():
@@ -377,6 +444,13 @@ class MigrationBaselineManifestTests(unittest.TestCase):
         )
         self.assertNotIn("Traceback", result.stderr)
 
+    def assertGitAttribute(self, result, relative_path, value):
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout.strip(),
+            f"{relative_path}: eol: {value}",
+        )
+
     def test_validator_module_exists(self):
         self.assertTrue(VALIDATOR_PATH.is_file(), "validator module is missing")
 
@@ -388,39 +462,132 @@ class MigrationBaselineManifestTests(unittest.TestCase):
         self.assertTrue(MANIFEST_PATH.is_file(), "canonical manifest is missing")
         expected = (json.dumps(CANONICAL, indent=2) + "\n").encode("utf-8")
         raw = MANIFEST_PATH.read_bytes()
-        self.assertNotIn(b"\r\r\n", raw)
-        self.assertEqual(raw.replace(b"\r\n", b"\n"), expected)
+        assert_canonical_json_presentation(self, raw, expected)
 
         validator = load_validator()
         self.assertEqual(validator.load_manifest(MANIFEST_PATH), CANONICAL)
 
+    def test_canonical_serialization_accepts_only_uniform_lf_or_crlf(self):
+        expected = (json.dumps(CANONICAL, indent=2) + "\n").encode("utf-8")
+        for raw in (expected, expected.replace(b"\n", b"\r\n")):
+            with self.subTest(raw=raw):
+                assert_canonical_json_presentation(self, raw, expected)
+
+    def test_canonical_serialization_rejects_invalid_newline_presentations(self):
+        expected = (json.dumps(CANONICAL, indent=2) + "\n").encode("utf-8")
+        first_newline_end = expected.index(b"\n") + 1
+        mutants = {
+            "first newline CRLF, remainder LF": expected.replace(
+                b"\n", b"\r\n", 1
+            ),
+            "first newline LF, remainder CRLF": (
+                expected[:first_newline_end]
+                + expected[first_newline_end:].replace(b"\n", b"\r\n")
+            ),
+            "lone CR": expected.replace(b"\n", b"\r", 1),
+            "CRCRLF": expected.replace(b"\n", b"\r\r\n", 1),
+        }
+        for name, raw in mutants.items():
+            with self.subTest(name=name):
+                with self.assertRaises(AssertionError):
+                    assert_canonical_json_presentation(self, raw, expected)
+
     def test_manifest_file_is_checked_out_with_lf_line_endings(self):
-        result = subprocess.run(
-            ["git", "check-attr", "eol", "--", "migration/baseline.json"],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(
-            result.stdout.strip(),
-            "migration/baseline.json: eol: lf",
-        )
+        result = run_git_check_attr("migration/baseline.json")
+        self.assertGitAttribute(result, "migration/baseline.json", "lf")
 
     def test_nested_migration_json_is_checked_out_with_lf_line_endings(self):
-        result = subprocess.run(
-            ["git", "check-attr", "eol", "--", "migration/assets/recipes.json"],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            check=False,
+        result = run_git_check_attr("migration/assets/recipes.json")
+        self.assertGitAttribute(result, "migration/assets/recipes.json", "lf")
+
+    def test_git_check_attr_ignores_ambient_repository_redirection(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            decoy = Path(temporary_directory).resolve()
+            init = subprocess.run(
+                ["git", "init", "-q"],
+                cwd=decoy,
+                capture_output=True,
+                text=True,
+                shell=False,
+                check=False,
+            )
+            self.assertEqual(init.returncode, 0, init.stderr)
+            (decoy / ".gitattributes").write_text(
+                "migration/*.json text eol=crlf\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            pollution = {
+                "GIT_DIR": str(decoy / ".git"),
+                "GIT_WORK_TREE": str(decoy),
+            }
+            with mock.patch.dict(os.environ, pollution, clear=False):
+                result = run_git_check_attr("migration/baseline.json")
+
+        self.assertGitAttribute(result, "migration/baseline.json", "lf")
+
+    def test_git_check_attr_handles_dubious_ownership_locally(self):
+        with mock.patch.dict(
+            os.environ,
+            {"GIT_TEST_ASSUME_DIFFERENT_OWNER": "1"},
+            clear=False,
+        ):
+            result = run_git_check_attr("migration/baseline.json")
+
+        self.assertGitAttribute(result, "migration/baseline.json", "lf")
+
+    def test_git_check_attr_uses_exact_sanitized_process_contract(self):
+        pollution = {
+            key: f"redirected-{key.lower()}"
+            for key in GIT_CHECK_ATTR_BLOCKED_VARIABLES
+        }
+        pollution.update(
+            {
+                "PATH": os.environ.get("PATH", os.defpath),
+                "GIT_CONFIG_COUNT": "2",
+                "GIT_CONFIG_KEY_0": "core.attributesFile",
+                "GIT_CONFIG_VALUE_0": "redirected-attributes",
+                "GIT_CONFIG_KEY_1": "safe.directory",
+                "GIT_CONFIG_VALUE_1": "*",
+            }
         )
-        self.assertEqual(result.returncode, 0, result.stderr)
+        completed = SimpleNamespace(returncode=0, stdout="", stderr="")
+        with mock.patch.dict(os.environ, pollution, clear=True):
+            with mock.patch.object(
+                subprocess,
+                "run",
+                return_value=completed,
+            ) as run:
+                self.assertIs(
+                    run_git_check_attr("migration/baseline.json"),
+                    completed,
+                )
+
+        run.assert_called_once()
+        command = run.call_args.args[0]
+        options = run.call_args.kwargs
         self.assertEqual(
-            result.stdout.strip(),
-            "migration/assets/recipes.json: eol: lf",
+            command,
+            [
+                "git",
+                "-c",
+                f"safe.directory={ROOT}",
+                "check-attr",
+                "eol",
+                "--",
+                "migration/baseline.json",
+            ],
         )
+        self.assertEqual(options["cwd"], ROOT)
+        self.assertFalse(options["shell"])
+        environment = options["env"]
+        self.assertEqual(environment["PATH"], pollution["PATH"])
+        for key in pollution:
+            if key != "PATH":
+                self.assertNotIn(key, environment)
+        self.assertEqual(environment["GIT_NO_LAZY_FETCH"], "1")
+        self.assertEqual(environment["GIT_NO_REPLACE_OBJECTS"], "1")
+        self.assertEqual(environment["GIT_TERMINAL_PROMPT"], "0")
 
     def test_rejects_non_object_top_level_value(self):
         self.assertInvalid([], "manifest must be a JSON object")
