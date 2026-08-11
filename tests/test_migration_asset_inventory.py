@@ -1029,27 +1029,63 @@ class AssetGitBindingTests(unittest.TestCase):
                     "worktree", "remove", "--force", str(linked), check=False
                 )
 
-    def test_worktree_config_unavailable_accepts_only_the_exact_git_response(self):
-        expected = generator._WORKTREE_CONFIG_UNAVAILABLE
-        accepted = subprocess.CompletedProcess([], 128, b"", expected)
-        with mock.patch.object(generator, "_run_git", return_value=accepted):
-            self.assertEqual(
-                generator._git_config_scope_keys(self.repository, "worktree"), ()
-            )
+    def test_worktree_config_enabled_uses_only_machine_readable_boolean_output(self):
+        accepted = (
+            (1, b"", b"localized or changed diagnostic\n", False),
+            (0, b"false", b"localized warning\n", False),
+            (0, b"false\n", b"", False),
+            (0, b"true", b"localized warning\n", True),
+            (0, b"true\r\n", b"", True),
+        )
+        for returncode, stdout, stderr, expected in accepted:
+            with self.subTest(returncode=returncode, stdout=stdout):
+                result = subprocess.CompletedProcess([], returncode, stdout, stderr)
+                with mock.patch.object(generator, "_run_git", return_value=result):
+                    self.assertIs(
+                        generator._worktree_config_enabled(self.repository), expected
+                    )
 
         rejected = (
-            subprocess.CompletedProcess([], 1, b"", b""),
-            subprocess.CompletedProcess([], 128, b"", expected + b"hostile\n"),
-            subprocess.CompletedProcess([], 128, b"hostile\n", expected),
+            subprocess.CompletedProcess([], 2, b"", b"localized\n"),
+            subprocess.CompletedProcess([], 0, b"", b""),
+            subprocess.CompletedProcess([], 0, b"yes\n", b""),
+            subprocess.CompletedProcess([], 0, b"true\nfalse\n", b""),
+            subprocess.CompletedProcess([], 0, b" true\n", b""),
         )
         for result in rejected:
             with self.subTest(returncode=result.returncode, stdout=result.stdout):
                 with mock.patch.object(generator, "_run_git", return_value=result):
                     with self.assertRaisesRegex(
                         InventoryError,
-                        "^inventory Git (?:worktree )?config scope is invalid$",
+                        "^inventory Git worktree config state is invalid$",
                     ):
-                        generator._git_config_scope_keys(self.repository, "worktree")
+                        generator._worktree_config_enabled(self.repository)
+
+    def test_promisor_check_skips_disabled_worktree_scope_and_fails_closed_when_enabled(self):
+        for enabled in (False,):
+            with mock.patch.object(
+                generator, "_worktree_config_enabled", return_value=enabled
+            ), mock.patch.object(
+                generator, "_git_config_scope_keys", return_value=()
+            ) as scope_keys:
+                generator._validate_promisor_configuration(self.repository)
+            scope_keys.assert_called_once_with(self.repository, "local")
+
+        with mock.patch.object(
+            generator, "_worktree_config_enabled", return_value=True
+        ), mock.patch.object(
+            generator,
+            "_git_config_scope_keys",
+            side_effect=((), InventoryError("inventory Git config scope is invalid")),
+        ) as scope_keys:
+            with self.assertRaisesRegex(
+                InventoryError, "^inventory Git config scope is invalid$"
+            ):
+                generator._validate_promisor_configuration(self.repository)
+        self.assertEqual(
+            [call.args[1] for call in scope_keys.call_args_list],
+            ["local", "worktree"],
+        )
 
     def test_reads_the_same_binding_from_packed_objects(self):
         expected = self.bind()

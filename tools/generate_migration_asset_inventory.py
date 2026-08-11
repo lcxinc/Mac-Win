@@ -439,8 +439,15 @@ def _validate_primary_object_database(repository_root):
     except OSError as error:
         raise InventoryError("inventory Git object database is invalid") from error
 
-    for scope in ("local", "worktree"):
-        for key in _git_config_scope_keys(root, scope):
+    _validate_promisor_configuration(root)
+
+
+def _validate_promisor_configuration(repository_root):
+    scopes = ["local"]
+    if _worktree_config_enabled(repository_root):
+        scopes.append("worktree")
+    for scope in scopes:
+        for key in _git_config_scope_keys(repository_root, scope):
             folded = key.casefold()
             if folded == "extensions.partialclone" or (
                 folded.startswith("remote.") and folded.endswith(".promisor")
@@ -450,11 +457,25 @@ def _validate_primary_object_database(repository_root):
                 )
 
 
-_WORKTREE_CONFIG_UNAVAILABLE = (
-    b"fatal: --worktree cannot be used with multiple working trees unless the config\n"
-    b"extension worktreeConfig is enabled. Please read \"CONFIGURATION FILE\"\n"
-    b"section in \"git help worktree\" for details\n"
-)
+def _worktree_config_enabled(repository_root):
+    result = _run_git(
+        repository_root,
+        "config",
+        "--local",
+        "--type=bool",
+        "--get",
+        "extensions.worktreeConfig",
+        allowed_returncodes=None,
+    )
+    if result.returncode == 1 and result.stdout == b"":
+        return False
+    if result.returncode != 0:
+        raise InventoryError("inventory Git worktree config state is invalid")
+    if result.stdout in (b"true", b"true\n", b"true\r\n"):
+        return True
+    if result.stdout in (b"false", b"false\n", b"false\r\n"):
+        return False
+    raise InventoryError("inventory Git worktree config state is invalid")
 
 
 def _git_config_scope_keys(repository_root, scope):
@@ -466,10 +487,6 @@ def _git_config_scope_keys(repository_root, scope):
         "--list",
         allowed_returncodes=None,
     )
-    if scope == "worktree" and result.returncode == 128:
-        if result.stdout == b"" and result.stderr == _WORKTREE_CONFIG_UNAVAILABLE:
-            return ()
-        raise InventoryError("inventory Git worktree config scope is invalid")
     if result.returncode != 0 or result.stderr:
         raise InventoryError("inventory Git config scope is invalid")
     if len(result.stdout) > MAX_GIT_CONFIG_LIST_BYTES or b"\0" in result.stdout:
