@@ -232,38 +232,133 @@ def _reviewed_relative_path(relative_path):
     return path
 
 
+def _is_reparse(status):
+    reparse_attribute = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return bool(getattr(status, "st_file_attributes", 0) & reparse_attribute)
+
+
+def _component_identity(status):
+    """Return stable identity fields used to detect path-component replacement."""
+    return (
+        getattr(status, "st_dev", None),
+        getattr(status, "st_ino", None),
+        stat.S_IFMT(status.st_mode),
+        _is_reparse(status),
+    )
+
+
+def _leaf_identity(status):
+    """Include file content metadata when comparing the opened reviewed leaf."""
+    return (
+        *_component_identity(status),
+        getattr(status, "st_size", None),
+        getattr(status, "st_mtime_ns", None),
+    )
+
+
+def _inspect_reviewed_path(repository_root, relative_path):
+    """lstat every path component without resolving symlinks or reparse points."""
+    repository = Path(os.path.abspath(os.fspath(repository_root)))
+    components = [repository]
+    current = repository
+    for part in relative_path.parts:
+        current = current / part
+        components.append(current)
+
+    statuses = []
+    last_index = len(components) - 1
+    for index, component in enumerate(components):
+        try:
+            status = component.lstat()
+        except FileNotFoundError as error:
+            if index == last_index:
+                diagnostic = "reviewed working-tree input is missing"
+            else:
+                diagnostic = "reviewed parent path component is missing"
+            raise BaselineValidationError(diagnostic) from error
+        except OSError as error:
+            raise BaselineValidationError(
+                "reviewed path component could not be inspected"
+            ) from error
+
+        is_link = stat.S_ISLNK(status.st_mode) or _is_reparse(status)
+        if is_link:
+            if index == last_index:
+                diagnostic = (
+                    "reviewed working-tree input must be a regular non-reparse file"
+                )
+            else:
+                diagnostic = (
+                    "reviewed path components must not be symlinks or reparse points"
+                )
+            raise BaselineValidationError(diagnostic)
+        if index < last_index and not stat.S_ISDIR(status.st_mode):
+            raise BaselineValidationError(
+                "reviewed parent path components must be directories"
+            )
+        if index == last_index and not stat.S_ISREG(status.st_mode):
+            raise BaselineValidationError(
+                "reviewed working-tree input must be a regular non-reparse file"
+            )
+        statuses.append(status)
+    return components[-1], statuses
+
+
 def _read_worktree_text(repository_root, relative_path, maximum_bytes):
     """Read one regular non-reparse working-tree file with a byte bound."""
-    reviewed_path = Path(repository_root).resolve().joinpath(*relative_path.parts)
+    reviewed_path, initial_statuses = _inspect_reviewed_path(
+        repository_root, relative_path
+    )
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
-        status = reviewed_path.lstat()
+        descriptor = os.open(reviewed_path, flags)
     except FileNotFoundError as error:
         raise BaselineValidationError(
             "reviewed working-tree input is missing"
         ) from error
     except OSError as error:
         raise BaselineValidationError(
-            "reviewed working-tree input could not be inspected"
+            "reviewed working-tree input could not be opened without following links"
         ) from error
-
-    reparse_attribute = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
-    file_attributes = getattr(status, "st_file_attributes", 0)
-    if not stat.S_ISREG(status.st_mode) or file_attributes & reparse_attribute:
-        raise BaselineValidationError(
-            "reviewed working-tree input must be a regular non-reparse file"
-        )
 
     try:
-        with reviewed_path.open("rb") as stream:
+        with os.fdopen(descriptor, "rb") as stream:
+            descriptor = None
+            opened_status = os.fstat(stream.fileno())
+            if (
+                not stat.S_ISREG(opened_status.st_mode)
+                or _is_reparse(opened_status)
+                or _component_identity(opened_status)
+                != _component_identity(initial_statuses[-1])
+            ):
+                raise BaselineValidationError(
+                    "reviewed working-tree input changed before bounded read"
+                )
             raw = stream.read(maximum_bytes + 1)
-    except FileNotFoundError as error:
-        raise BaselineValidationError(
-            "reviewed working-tree input is missing"
-        ) from error
+            opened_after_read = os.fstat(stream.fileno())
+    except BaselineValidationError:
+        raise
     except OSError as error:
         raise BaselineValidationError(
             "reviewed working-tree input could not be read"
         ) from error
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+    _, final_statuses = _inspect_reviewed_path(repository_root, relative_path)
+    if (
+        len(initial_statuses) != len(final_statuses)
+        or any(
+            _component_identity(before) != _component_identity(after)
+            for before, after in zip(initial_statuses, final_statuses)
+        )
+        or _leaf_identity(initial_statuses[-1]) != _leaf_identity(opened_after_read)
+        or _leaf_identity(initial_statuses[-1]) != _leaf_identity(final_statuses[-1])
+    ):
+        raise BaselineValidationError(
+            "reviewed working-tree path changed during bounded read"
+        )
 
     if len(raw) > maximum_bytes:
         raise BaselineValidationError(
@@ -409,13 +504,14 @@ def read_reviewed_text(
 
 def main():
     try:
-        load_manifest()
-        read_reviewed_text(
+        reviewed_manifest = read_reviewed_text(
             ROOT,
             MANIFEST_RELATIVE_PATH,
             APPROVED_MANIFEST_TEXT,
             MAX_MANIFEST_BYTES,
         )
+        manifest = parse_manifest_bytes(reviewed_manifest.encode("utf-8"))
+        validate_manifest(manifest)
         validate_source_commit(ROOT, SOURCE_COMMIT)
     except (BaselineValidationError, OSError) as error:
         print(f"migration baseline validation failed: {error}", file=sys.stderr)

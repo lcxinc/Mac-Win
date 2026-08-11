@@ -300,7 +300,10 @@ class MigrationBaselineManifestTests(unittest.TestCase):
         for name, raw in HOSTILE_JSON_INPUTS:
             with self.subTest(name=name):
                 self.assertLessEqual(len(raw), validator.MAX_MANIFEST_BYTES)
-                self.assertEntrypointInvalid(raw, "manifest is not valid JSON")
+                self.assertEntrypointInvalid(
+                    raw,
+                    "reviewed working-tree content does not match approved content",
+                )
 
     def test_direct_duplicate_key_diagnostics_never_echo_hostile_keys(self):
         validator = load_validator()
@@ -318,7 +321,10 @@ class MigrationBaselineManifestTests(unittest.TestCase):
                 encoded_key = json.dumps(key, ensure_ascii=True)
                 raw = f"{{{encoded_key}:1,{encoded_key}:2}}".encode("ascii")
                 self.assertLessEqual(len(raw), validator.MAX_MANIFEST_BYTES)
-                self.assertEntrypointInvalid(raw, "manifest has duplicate JSON key")
+                self.assertEntrypointInvalid(
+                    raw,
+                    "reviewed working-tree content does not match approved content",
+                )
 
     def test_direct_unknown_key_diagnostics_never_echo_hostile_keys(self):
         validator = load_validator()
@@ -342,7 +348,10 @@ class MigrationBaselineManifestTests(unittest.TestCase):
                     mutated, ensure_ascii=True, separators=(",", ":")
                 ).encode("ascii")
                 self.assertLessEqual(len(raw), validator.MAX_MANIFEST_BYTES)
-                self.assertEntrypointInvalid(raw, "manifest has unknown field")
+                self.assertEntrypointInvalid(
+                    raw,
+                    "reviewed working-tree content does not match approved content",
+                )
 
     def test_accepts_exactly_65536_bytes(self):
         validator = load_validator()
@@ -613,13 +622,17 @@ class MigrationBaselineGitSourceTests(unittest.TestCase):
                 for variable, value in self.GIT_SAFETY_VARIABLES.items():
                     self.assertEqual(child_environment.get(variable), value)
 
-    def test_main_validates_source_after_loading_manifest(self):
+    def test_main_binds_manifest_before_parsing_the_same_verified_text(self):
         validator = load_validator()
         events = []
+        parsed_manifest = object()
 
-        def load_manifest():
-            events.append("manifest")
-            return copy.deepcopy(CANONICAL)
+        def parse_manifest_bytes(raw):
+            events.append(("parse", raw))
+            return parsed_manifest
+
+        def validate_manifest(manifest):
+            events.append(("validate", manifest))
 
         def validate_source_commit(repository, source_commit):
             events.append(("source", repository, source_commit))
@@ -638,22 +651,37 @@ class MigrationBaselineGitSourceTests(unittest.TestCase):
             )
             return expected_text
 
-        with mock.patch.object(validator, "load_manifest", side_effect=load_manifest):
+        with mock.patch.object(
+            validator,
+            "load_manifest",
+            side_effect=AssertionError("main must not read the manifest twice"),
+        ):
             with mock.patch.object(
-                validator, "read_reviewed_text", side_effect=read_reviewed_text
+                validator,
+                "read_reviewed_text",
+                side_effect=read_reviewed_text,
             ):
                 with mock.patch.object(
                     validator,
-                    "validate_source_commit",
-                    side_effect=validate_source_commit,
+                    "parse_manifest_bytes",
+                    side_effect=parse_manifest_bytes,
                 ):
-                    with mock.patch("builtins.print"):
-                        self.assertEqual(validator.main(), 0)
+                    with mock.patch.object(
+                        validator,
+                        "validate_manifest",
+                        side_effect=validate_manifest,
+                    ):
+                        with mock.patch.object(
+                            validator,
+                            "validate_source_commit",
+                            side_effect=validate_source_commit,
+                        ):
+                            with mock.patch("builtins.print"):
+                                self.assertEqual(validator.main(), 0)
 
         self.assertEqual(
             events,
             [
-                "manifest",
                 (
                     "reviewed",
                     validator.ROOT,
@@ -661,6 +689,8 @@ class MigrationBaselineGitSourceTests(unittest.TestCase):
                     validator.APPROVED_MANIFEST_TEXT,
                     validator.MAX_MANIFEST_BYTES,
                 ),
+                ("parse", validator.APPROVED_MANIFEST_TEXT.encode("utf-8")),
+                ("validate", parsed_manifest),
                 ("source", validator.ROOT, validator.SOURCE_COMMIT),
             ],
         )
@@ -712,15 +742,18 @@ class MigrationBaselineReviewedFileTests(unittest.TestCase):
             )
         return result
 
-    def createRepository(self, name="target"):
+    def createRepository(self, name="target", relative_path=None):
+        if relative_path is None:
+            relative_path = self.RELATIVE_PATH
         repository = self.test_root / name
         self.runGit(repository, "init", "-b", "main")
-        reviewed = repository / self.RELATIVE_PATH
+        reviewed = repository / Path(relative_path)
+        reviewed.parent.mkdir(parents=True, exist_ok=True)
         reviewed.write_text(self.APPROVED_TEXT, encoding="utf-8", newline="")
-        self.runGit(repository, "add", self.RELATIVE_PATH)
+        self.runGit(repository, "add", relative_path)
         self.runGit(repository, "commit", "-m", "reviewed baseline")
         oid = self.runGit(
-            repository, "rev-parse", f"HEAD:{self.RELATIVE_PATH}"
+            repository, "rev-parse", f"HEAD:{relative_path}"
         ).stdout.strip()
         return repository, reviewed, oid
 
@@ -838,8 +871,16 @@ class MigrationBaselineReviewedFileTests(unittest.TestCase):
             st_file_attributes=getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400),
         )
         validator = load_validator()
+        real_lstat = Path.lstat
 
-        with mock.patch.object(Path, "lstat", return_value=reparse_status):
+        def leaf_reparse_lstat(path):
+            if path == reviewed:
+                return reparse_status
+            return real_lstat(path)
+
+        with mock.patch.object(
+            Path, "lstat", autospec=True, side_effect=leaf_reparse_lstat
+        ):
             with self.assertRaises(validator.BaselineValidationError) as caught:
                 validator.read_reviewed_text(
                     repository,
@@ -850,6 +891,53 @@ class MigrationBaselineReviewedFileTests(unittest.TestCase):
         self.assertEqual(
             str(caught.exception),
             "reviewed working-tree input must be a regular non-reparse file",
+        )
+
+    def test_rejects_parent_directory_symlink_to_outside_repository(self):
+        relative_path = "reviewed-parent/reviewed.txt"
+        repository, reviewed, _ = self.createRepository(
+            "parent-symlink", relative_path=relative_path
+        )
+        external_parent = self.test_root / "external-reviewed-parent"
+        external_parent.mkdir()
+        (external_parent / reviewed.name).write_text(
+            self.APPROVED_TEXT, encoding="utf-8", newline=""
+        )
+        shutil.rmtree(reviewed.parent)
+        reviewed.parent.symlink_to(external_parent, target_is_directory=True)
+
+        self.assertReviewedInvalid(
+            repository,
+            "reviewed path components must not be symlinks or reparse points",
+            relative_path=relative_path,
+        )
+
+    def test_rejects_absolute_parent_and_dotdot_reviewed_paths(self):
+        repository, _, _ = self.createRepository()
+        for relative_path in (
+            str((repository / self.RELATIVE_PATH).resolve()),
+            "../reviewed.txt",
+            "reviewed-parent/../reviewed.txt",
+        ):
+            with self.subTest(relative_path=relative_path):
+                self.assertReviewedInvalid(
+                    repository,
+                    "reviewed file path is not repository-relative",
+                    relative_path=relative_path,
+                )
+
+    def test_rejects_non_directory_parent_component(self):
+        relative_path = "reviewed-parent/reviewed.txt"
+        repository, reviewed, _ = self.createRepository(
+            "non-directory-parent", relative_path=relative_path
+        )
+        shutil.rmtree(reviewed.parent)
+        reviewed.parent.write_text("not a directory\n", encoding="utf-8")
+
+        self.assertReviewedInvalid(
+            repository,
+            "reviewed parent path components must be directories",
+            relative_path=relative_path,
         )
 
     def test_rejects_missing_oversized_and_invalid_utf8_worktree_inputs(self):
@@ -874,6 +962,26 @@ class MigrationBaselineReviewedFileTests(unittest.TestCase):
                 else:
                     reviewed.write_bytes(raw)
                 self.assertReviewedInvalid(repository, diagnostic)
+
+    def test_wraps_worktree_read_os_errors_with_stable_diagnostic(self):
+        repository, _, _ = self.createRepository()
+        validator = load_validator()
+        hostile_error = OSError("hostile path\n\x1b[31m")
+
+        with mock.patch.object(validator.os, "fdopen", side_effect=hostile_error):
+            with self.assertRaises(validator.BaselineValidationError) as caught:
+                validator.read_reviewed_text(
+                    repository,
+                    self.RELATIVE_PATH,
+                    self.APPROVED_TEXT,
+                    self.MAXIMUM_BYTES,
+                )
+
+        self.assertEqual(
+            str(caught.exception),
+            "reviewed working-tree input could not be read",
+        )
+        self.assertNotIn("hostile", str(caught.exception))
 
     def test_rejects_missing_conflicted_and_unexpected_index_entries(self):
         repository, _, oid = self.createRepository("missing-index")
