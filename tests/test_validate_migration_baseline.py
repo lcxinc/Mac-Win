@@ -1670,6 +1670,42 @@ class MigrationBaselineTagTests(unittest.TestCase):
         ).stdout.strip()
         return repository, source_commit, descendant_commit
 
+    def cloneCurrentRepository(self, name):
+        repository = self.test_root / name
+        current_head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            shell=False,
+            check=True,
+        ).stdout.strip()
+        result = subprocess.run(
+            [
+                "git",
+                "clone",
+                "--no-hardlinks",
+                str(ROOT),
+                str(repository),
+            ],
+            cwd=self.test_root,
+            capture_output=True,
+            text=True,
+            shell=False,
+            check=False,
+        )
+        if result.returncode != 0:
+            self.fail(
+                f"Git CLI fixture clone failed ({result.returncode})\n"
+                f"stdout: {result.stdout}\nstderr: {result.stderr}"
+            )
+        self.runGit(repository, "checkout", "--detach", current_head)
+        shutil.copyfile(
+            VALIDATOR_PATH,
+            repository / "tools" / "validate_migration_baseline.py",
+        )
+        return repository
+
     def createRawTagObject(
         self,
         repository,
@@ -1931,6 +1967,8 @@ class MigrationBaselineTagTests(unittest.TestCase):
             "tagger Baseline Tests 0 +0000",
             "tagger Baseline Tests <baseline-tests@example.invalid> bad +0000",
             "tagger Baseline Tests <baseline-tests@example.invalid> 0 +0x00",
+            "tagger Baseline Tests <baseline-tests@example.invalid> 00 +0000",
+            "tagger Baseline Tests <baseline-tests@example.invalid> 0001 +0000",
         )
         for index, tagger_line in enumerate(invalid_taggers):
             with self.subTest(tagger_line=tagger_line):
@@ -1981,6 +2019,8 @@ class MigrationBaselineTagTests(unittest.TestCase):
                 "utf-8"
             ),
             b"tagger Name <mail address@example.invalid> 0 +0000",
+            b"tagger Name <mail@example.invalid> 00 +0000",
+            b"tagger Name <mail@example.invalid> 0001 +0000",
             b"tagger Name <mail@example.invalid> 12345678901234567890 +0000",
             b"tagger Name <mail@example.invalid> 0 +1460",
             b"tagger Name <mail@example.invalid> 0 +1500",
@@ -2006,6 +2046,43 @@ class MigrationBaselineTagTests(unittest.TestCase):
         for line in valid_lines:
             with self.subTest(line=line):
                 validator._validate_tag_tagger_line(line.encode("utf-8"))
+
+    def test_require_tag_cli_rejects_zero_padded_timestamps(self):
+        repository = self.cloneCurrentRepository("zero-padded-cli")
+        for timestamp in ("00", "0001"):
+            with self.subTest(timestamp=timestamp):
+                tag_object = self.createUncheckedTagObject(
+                    repository,
+                    SOURCE_COMMIT,
+                    "tagger Baseline Tests <baseline-tests@example.invalid> "
+                    f"{timestamp} +0000",
+                )
+                self.runGit(
+                    repository,
+                    "update-ref",
+                    f"refs/tags/{BASELINE_TAG}",
+                    tag_object,
+                )
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        str(repository / "tools" / "validate_migration_baseline.py"),
+                        "--require-tag",
+                    ],
+                    cwd=repository,
+                    capture_output=True,
+                    text=True,
+                    shell=False,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(result.stdout, "")
+                self.assertEqual(
+                    result.stderr,
+                    "migration baseline validation failed: baseline tag object "
+                    "has an invalid tagger identity\n",
+                )
+                self.assertNotIn("Traceback", result.stderr)
 
     def test_strict_validation_is_scoped_and_does_not_write_repository_state(self):
         repository, source_commit, _ = self.createRepository("strict-read-only")

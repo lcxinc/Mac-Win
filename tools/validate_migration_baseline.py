@@ -507,7 +507,7 @@ def _validate_tag_tagger_line(raw_line):
         raise BaselineValidationError(diagnostic)
     matched = re.fullmatch(
         r"tagger (?P<name>[^<>]+) <(?P<email>[^<>]+)> "
-        r"(?P<timestamp>[0-9]{1,19}) (?P<timezone>[+-][0-9]{4})",
+        r"(?P<timestamp>0|[1-9][0-9]{0,18}) (?P<timezone>[+-][0-9]{4})",
         line,
     )
     if matched is None:
