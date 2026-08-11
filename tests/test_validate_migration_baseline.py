@@ -1672,17 +1672,47 @@ class MigrationBaselineTagTests(unittest.TestCase):
 
     def cloneCurrentRepository(self, name):
         repository = self.test_root / name
-        current_head = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
+        safe_root = f"safe.directory={ROOT}"
+        git_directory_result = subprocess.run(
+            ["git", "-c", safe_root, "rev-parse", "--absolute-git-dir"],
             cwd=ROOT,
             capture_output=True,
             text=True,
             shell=False,
-            check=True,
-        ).stdout.strip()
+            check=False,
+        )
+        if git_directory_result.returncode != 0:
+            self.fail("Git CLI fixture could not resolve the worktree admin directory")
+        git_directory = git_directory_result.stdout.strip()
+        if not git_directory:
+            self.fail("Git CLI fixture returned an empty worktree admin directory")
+        safe_git_directory = f"safe.directory={git_directory}"
+        current_head_result = subprocess.run(
+            [
+                "git",
+                "-c",
+                safe_root,
+                "-c",
+                safe_git_directory,
+                "rev-parse",
+                "HEAD",
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            shell=False,
+            check=False,
+        )
+        if current_head_result.returncode != 0:
+            self.fail("Git CLI fixture could not resolve the current commit")
+        current_head = current_head_result.stdout.strip()
         result = subprocess.run(
             [
                 "git",
+                "-c",
+                safe_root,
+                "-c",
+                safe_git_directory,
                 "clone",
                 "--no-hardlinks",
                 str(ROOT),
@@ -1782,6 +1812,23 @@ class MigrationBaselineTagTests(unittest.TestCase):
 
         tag_validation.assert_not_called()
         printed.assert_called_once_with("Mac-Win migration baseline is valid.")
+
+    def test_cli_fixture_clone_handles_dubious_worktree_ownership_locally(self):
+        with mock.patch.object(self, "runGit") as checkout:
+            with mock.patch.dict(
+                os.environ,
+                {"GIT_TEST_ASSUME_DIFFERENT_OWNER": "1"},
+            ):
+                repository = self.cloneCurrentRepository("dubious-owner")
+
+        self.assertTrue(
+            (repository / "tools" / "validate_migration_baseline.py").is_file()
+        )
+        checkout.assert_called_once()
+        checkout_repository, command, mode, current_head = checkout.call_args.args
+        self.assertEqual(checkout_repository, repository)
+        self.assertEqual((command, mode), ("checkout", "--detach"))
+        self.assertRegex(current_head, r"\A[0-9a-f]{40}(?:[0-9a-f]{24})?\Z")
 
     def test_require_tag_main_adds_tag_verification_after_repository_contract(self):
         validator = load_validator()
