@@ -134,6 +134,8 @@ APPROVED_WORKFLOW_TEXT = """name: Migration baseline
 
 on:
   pull_request:
+    branches:
+      - main
   push:
     branches:
       - main
@@ -210,22 +212,71 @@ jobs:
         shell: bash
         run: |
           set -uo pipefail
+          summary_path="$GITHUB_STEP_SUMMARY"
+          export -n summary_path
+          unset GITHUB_STEP_SUMMARY
+          swift_output_file="$(mktemp "${RUNNER_TEMP}/mac-win-swift-test.XXXXXX")"
+          swift_summary_copy_file=""
+          trap 'rm -f "$swift_output_file"; if [[ -n "$swift_summary_copy_file" ]]; then rm -f "$swift_summary_copy_file"; fi' EXIT
+          swift_summary_copy_file="$(mktemp "${RUNNER_TEMP}/mac-win-swift-summary.XXXXXX")"
           {
             echo "### swift test --package-path MacWinManager"
-            echo '```text'
-          } >> "$GITHUB_STEP_SUMMARY"
-          set +e
-          swift test --package-path MacWinManager 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
-          swift_status=${PIPESTATUS[0]}
-          set -e
-          {
-            echo '```'
             echo
-            echo "Swift test exit status: ${swift_status}"
-          } | tee -a "$GITHUB_STEP_SUMMARY"
+          } >> "$summary_path"
+          set +e
+          swift test --package-path MacWinManager 2>&1 | tee "$swift_output_file"
+          swift_pipeline_status=("${PIPESTATUS[@]}")
+          swift_status=${swift_pipeline_status[0]}
+          swift_tee_status=${swift_pipeline_status[1]}
+          set -e
+          swift_output_bytes="$(wc -c < "$swift_output_file" | tr -d '[:space:]')"
+          swift_summary_raw_limit_bytes=65536
+          swift_summary_copy_limit_bytes=524288
+          swift_summary_copy_bytes=0
+          swift_summary_copy_status="omitted; raw output limit exceeded; not truncated"
+          swift_summary_limit_exceeded=0
+          swift_capture_failed=0
+          if (( swift_tee_status != 0 )); then
+            swift_summary_copy_status="omitted; complete log capture failed; not truncated"
+            swift_capture_failed=1
+          fi
+          if (( swift_capture_failed != 0 )); then
+            :
+          elif (( swift_output_bytes > swift_summary_raw_limit_bytes )); then
+            swift_summary_limit_exceeded=1
+          else
+            while IFS= read -r line || [[ -n "$line" ]]; do
+              printf '    %q\\n' "$line"
+            done < "$swift_output_file" > "$swift_summary_copy_file"
+            swift_summary_copy_bytes="$(wc -c < "$swift_summary_copy_file" | tr -d '[:space:]')"
+            if (( swift_summary_copy_bytes > swift_summary_copy_limit_bytes )); then
+              swift_summary_copy_status="omitted; Markdown-safe copy limit exceeded; not truncated"
+              swift_summary_limit_exceeded=1
+            else
+              swift_summary_copy_status="complete; Markdown-safe shell-escaped indented code; not truncated"
+            fi
+          fi
+          {
+            echo "- Swift test exit status: ${swift_status}"
+            echo "- Swift test log capture exit status: ${swift_tee_status}"
+            echo "- Swift test raw output bytes: ${swift_output_bytes}"
+            echo "- Swift test raw output limit bytes: ${swift_summary_raw_limit_bytes}"
+            echo "- Swift test Markdown-safe copy bytes: ${swift_summary_copy_bytes}"
+            echo "- Swift test Markdown-safe copy limit bytes: ${swift_summary_copy_limit_bytes}"
+            echo "- Swift test summary copy status: ${swift_summary_copy_status}"
+            echo
+          } >> "$summary_path"
+          if (( swift_summary_limit_exceeded != 0 )); then
+            exit 1
+          fi
+          if (( swift_capture_failed != 0 )); then
+            exit 1
+          fi
+          cat "$swift_summary_copy_file" >> "$summary_path"
+          echo >> "$summary_path"
           exit "$swift_status"
 """
-WORKFLOW_SHA256 = "82c8ff0e1023ee51ed3916c114ab6a4cdceb75ee1865e173e1303d438bc172a6"
+WORKFLOW_SHA256 = "0032ec7b9080ccca8416a7bf1934922cc5d56897ad2fe4e3c24a761ab2efcdb0"
 TOP_LEVEL_FIELDS = (
     "schemaVersion",
     "repository",

@@ -87,6 +87,8 @@ WORKFLOW_CANONICAL = """name: Migration baseline
 
 on:
   pull_request:
+    branches:
+      - main
   push:
     branches:
       - main
@@ -163,19 +165,68 @@ jobs:
         shell: bash
         run: |
           set -uo pipefail
+          summary_path="$GITHUB_STEP_SUMMARY"
+          export -n summary_path
+          unset GITHUB_STEP_SUMMARY
+          swift_output_file="$(mktemp "${RUNNER_TEMP}/mac-win-swift-test.XXXXXX")"
+          swift_summary_copy_file=""
+          trap 'rm -f "$swift_output_file"; if [[ -n "$swift_summary_copy_file" ]]; then rm -f "$swift_summary_copy_file"; fi' EXIT
+          swift_summary_copy_file="$(mktemp "${RUNNER_TEMP}/mac-win-swift-summary.XXXXXX")"
           {
             echo "### swift test --package-path MacWinManager"
-            echo '```text'
-          } >> "$GITHUB_STEP_SUMMARY"
-          set +e
-          swift test --package-path MacWinManager 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
-          swift_status=${PIPESTATUS[0]}
-          set -e
-          {
-            echo '```'
             echo
-            echo "Swift test exit status: ${swift_status}"
-          } | tee -a "$GITHUB_STEP_SUMMARY"
+          } >> "$summary_path"
+          set +e
+          swift test --package-path MacWinManager 2>&1 | tee "$swift_output_file"
+          swift_pipeline_status=("${PIPESTATUS[@]}")
+          swift_status=${swift_pipeline_status[0]}
+          swift_tee_status=${swift_pipeline_status[1]}
+          set -e
+          swift_output_bytes="$(wc -c < "$swift_output_file" | tr -d '[:space:]')"
+          swift_summary_raw_limit_bytes=65536
+          swift_summary_copy_limit_bytes=524288
+          swift_summary_copy_bytes=0
+          swift_summary_copy_status="omitted; raw output limit exceeded; not truncated"
+          swift_summary_limit_exceeded=0
+          swift_capture_failed=0
+          if (( swift_tee_status != 0 )); then
+            swift_summary_copy_status="omitted; complete log capture failed; not truncated"
+            swift_capture_failed=1
+          fi
+          if (( swift_capture_failed != 0 )); then
+            :
+          elif (( swift_output_bytes > swift_summary_raw_limit_bytes )); then
+            swift_summary_limit_exceeded=1
+          else
+            while IFS= read -r line || [[ -n "$line" ]]; do
+              printf '    %q\\n' "$line"
+            done < "$swift_output_file" > "$swift_summary_copy_file"
+            swift_summary_copy_bytes="$(wc -c < "$swift_summary_copy_file" | tr -d '[:space:]')"
+            if (( swift_summary_copy_bytes > swift_summary_copy_limit_bytes )); then
+              swift_summary_copy_status="omitted; Markdown-safe copy limit exceeded; not truncated"
+              swift_summary_limit_exceeded=1
+            else
+              swift_summary_copy_status="complete; Markdown-safe shell-escaped indented code; not truncated"
+            fi
+          fi
+          {
+            echo "- Swift test exit status: ${swift_status}"
+            echo "- Swift test log capture exit status: ${swift_tee_status}"
+            echo "- Swift test raw output bytes: ${swift_output_bytes}"
+            echo "- Swift test raw output limit bytes: ${swift_summary_raw_limit_bytes}"
+            echo "- Swift test Markdown-safe copy bytes: ${swift_summary_copy_bytes}"
+            echo "- Swift test Markdown-safe copy limit bytes: ${swift_summary_copy_limit_bytes}"
+            echo "- Swift test summary copy status: ${swift_summary_copy_status}"
+            echo
+          } >> "$summary_path"
+          if (( swift_summary_limit_exceeded != 0 )); then
+            exit 1
+          fi
+          if (( swift_capture_failed != 0 )); then
+            exit 1
+          fi
+          cat "$swift_summary_copy_file" >> "$summary_path"
+          echo >> "$summary_path"
           exit "$swift_status"
 """
 WORKFLOW_SHA256 = hashlib.sha256(WORKFLOW_CANONICAL.encode("utf-8")).hexdigest()
@@ -755,6 +806,10 @@ class MigrationBaselineWorkflowTests(unittest.TestCase):
     def test_rejects_required_structure_mutations_and_comment_decoys(self):
         pinned = CHECKOUT_ACTION
         mutations = {
+            "pull requests not limited to main": WORKFLOW_CANONICAL.replace(
+                "  pull_request:\n    branches:\n      - main\n",
+                "  pull_request:\n",
+            ),
             "missing Intel row": WORKFLOW_CANONICAL.replace(
                 "          - runner: macos-15-intel\n"
                 "            architecture: x86_64\n",
@@ -837,6 +892,93 @@ class MigrationBaselineWorkflowTests(unittest.TestCase):
         }
         for name, text in mutations.items():
             with self.subTest(name=name):
+                self.assertWorkflowInvalid(text)
+
+    def test_swift_summary_isolated_bounded_safe_and_status_preserving(self):
+        test_step = WORKFLOW_CANONICAL.split(
+            "      - name: Test Swift package\n", 1
+        )[1]
+        summary_capture = 'summary_path="$GITHUB_STEP_SUMMARY"'
+        summary_unexport = "export -n summary_path"
+        summary_unset = "unset GITHUB_STEP_SUMMARY"
+        swift_command = (
+            "swift test --package-path MacWinManager 2>&1 | "
+            'tee "$swift_output_file"'
+        )
+        self.assertLess(
+            test_step.index(summary_capture), test_step.index(summary_unexport)
+        )
+        self.assertLess(test_step.index(summary_unexport), test_step.index(summary_unset))
+        self.assertLess(test_step.index(summary_unset), test_step.index(swift_command))
+        self.assertIn('swift_pipeline_status=("${PIPESTATUS[@]}")', test_step)
+        self.assertIn("swift_status=${swift_pipeline_status[0]}", test_step)
+        self.assertIn("swift_tee_status=${swift_pipeline_status[1]}", test_step)
+        self.assertIn("swift_summary_raw_limit_bytes=65536", test_step)
+        self.assertIn("swift_summary_copy_limit_bytes=524288", test_step)
+        self.assertIn("printf '    %q\\n' \"$line\"", test_step)
+        self.assertIn("if (( swift_summary_limit_exceeded != 0 )); then", test_step)
+        self.assertIn('exit "$swift_status"', test_step)
+        self.assertNotIn('tee -a "$GITHUB_STEP_SUMMARY"', test_step)
+        self.assertNotIn("```", test_step)
+
+    def test_rejects_summary_injection_isolation_limit_and_status_mutations(self):
+        mutations = {
+            "summary environment inherited": WORKFLOW_CANONICAL.replace(
+                "          unset GITHUB_STEP_SUMMARY\n", ""
+            ),
+            "summary path exported": WORKFLOW_CANONICAL.replace(
+                "          export -n summary_path\n", ""
+            ),
+            "raw output written into fenced summary": WORKFLOW_CANONICAL.replace(
+                "          cat \"$swift_summary_copy_file\" >> \"$summary_path\"\n",
+                "          echo '```text' >> \"$summary_path\"\n"
+                "          cat \"$swift_output_file\" >> \"$summary_path\"\n"
+                "          echo '```' >> \"$summary_path\"\n",
+            ),
+            "Markdown formatter removed": WORKFLOW_CANONICAL.replace(
+                "              printf '    %q\\n' \"$line\"\n",
+                "              printf '%s\\n' \"$line\"\n",
+            ),
+            "raw limit disabled": WORKFLOW_CANONICAL.replace(
+                "          swift_summary_raw_limit_bytes=65536\n",
+                "          swift_summary_raw_limit_bytes=999999999\n",
+            ),
+            "formatted limit disabled": WORKFLOW_CANONICAL.replace(
+                "          swift_summary_copy_limit_bytes=524288\n",
+                "          swift_summary_copy_limit_bytes=999999999\n",
+            ),
+            "overlimit gate removed": WORKFLOW_CANONICAL.replace(
+                "          if (( swift_summary_limit_exceeded != 0 )); then\n"
+                "            exit 1\n"
+                "          fi\n",
+                "",
+            ),
+            "wrong pipeline status": WORKFLOW_CANONICAL.replace(
+                "swift_status=${swift_pipeline_status[0]}",
+                "swift_status=${swift_pipeline_status[1]}",
+            ),
+            "tee failure gate removed": WORKFLOW_CANONICAL.replace(
+                "          if (( swift_capture_failed != 0 )); then\n"
+                "            exit 1\n"
+                "          fi\n",
+                "",
+            ),
+            "Swift status masked": WORKFLOW_CANONICAL.replace(
+                '          exit "$swift_status"\n',
+                "          exit 0\n",
+            ),
+            "summary status omitted": WORKFLOW_CANONICAL.replace(
+                "            echo \"- Swift test exit status: ${swift_status}\"\n",
+                "",
+            ),
+            "temporary cleanup removed": WORKFLOW_CANONICAL.replace(
+                "          trap 'rm -f \"$swift_output_file\"; if [[ -n \"$swift_summary_copy_file\" ]]; then rm -f \"$swift_summary_copy_file\"; fi' EXIT\n",
+                "",
+            ),
+        }
+        for name, text in mutations.items():
+            with self.subTest(name=name):
+                self.assertNotEqual(text, WORKFLOW_CANONICAL)
                 self.assertWorkflowInvalid(text)
 
     def test_semantic_structure_does_not_treat_yaml_comments_as_configuration(self):
