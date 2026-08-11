@@ -121,7 +121,7 @@ Use stable messages that never echo hostile keys or values.
 Run:
 
 ```powershell
-python -B -m unittest tests.test_migration_asset_inventory.AssetPolicyTests -v
+python -B -m unittest discover -s tests -p 'test_migration_asset_inventory.py' -k AssetPolicyTests -v
 ```
 
 Expected: import failure because the generator module and policy parser do not
@@ -158,7 +158,7 @@ License and provenance may be explicitly unresolved; do not infer SPDX values.
 Run:
 
 ```powershell
-python -B -m unittest tests.test_migration_asset_inventory.AssetPolicyTests -v
+python -B -m unittest discover -s tests -p 'test_migration_asset_inventory.py' -k AssetPolicyTests -v
 ```
 
 Expected: all policy tests pass.
