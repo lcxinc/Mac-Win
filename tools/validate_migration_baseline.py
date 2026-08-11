@@ -3,7 +3,7 @@
 
 import json
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
 import stat
 import subprocess
@@ -222,8 +222,13 @@ def _reviewed_relative_path(relative_path):
         raise BaselineValidationError("reviewed file path is not repository-relative")
 
     path = PurePosixPath(relative_path)
+    windows_path = PureWindowsPath(relative_path)
     if (
         path.is_absolute()
+        or windows_path.is_absolute()
+        or bool(windows_path.drive)
+        or bool(windows_path.root)
+        or ":" in relative_path
         or not path.parts
         or any(part in ("", ".", "..") for part in path.parts)
         or str(path) != relative_path

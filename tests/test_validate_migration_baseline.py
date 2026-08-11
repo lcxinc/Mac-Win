@@ -926,6 +926,56 @@ class MigrationBaselineReviewedFileTests(unittest.TestCase):
                     relative_path=relative_path,
                 )
 
+    def test_rejects_windows_qualified_rooted_unc_and_colon_paths_directly(self):
+        validator = load_validator()
+        unsafe_paths = (
+            "C:escape.txt",
+            "C:/escape.txt",
+            "nested/C:escape.txt",
+            "nested/file:stream",
+            "C:",
+            r"C:\escape.txt",
+            r"\rooted\escape.txt",
+            r"\\server\share\escape.txt",
+            "//server/share/escape.txt",
+        )
+
+        for relative_path in unsafe_paths:
+            with self.subTest(relative_path=relative_path):
+                with self.assertRaises(
+                    validator.BaselineValidationError
+                ) as caught:
+                    validator._reviewed_relative_path(relative_path)
+                self.assertEqual(
+                    str(caught.exception),
+                    "reviewed file path is not repository-relative",
+                )
+
+    @unittest.skipUnless(os.name == "nt", "Windows path semantics only")
+    def test_windows_join_semantics_explain_drive_and_stream_escape_risk(self):
+        repository, _, _ = self.createRepository()
+        drive_absolute = repository / "C:/escape.txt"
+        drive_relative = Path("C:escape.txt")
+        colon_component = repository / "nested" / "C:escape.txt"
+
+        self.assertEqual(drive_absolute.drive.upper(), "C:")
+        self.assertEqual(drive_absolute.root, "\\")
+        self.assertFalse(drive_absolute.is_relative_to(repository))
+        self.assertEqual(drive_relative.drive.upper(), "C:")
+        self.assertEqual(drive_relative.root, "")
+        self.assertEqual(colon_component.drive.upper(), "C:")
+        self.assertNotIn(":", colon_component.name)
+
+        validator = load_validator()
+        for relative_path in (
+            "C:/escape.txt",
+            "C:escape.txt",
+            "nested/C:escape.txt",
+        ):
+            with self.subTest(relative_path=relative_path):
+                with self.assertRaises(validator.BaselineValidationError):
+                    validator._reviewed_relative_path(relative_path)
+
     def test_rejects_non_directory_parent_component(self):
         relative_path = "reviewed-parent/reviewed.txt"
         repository, reviewed, _ = self.createRepository(
