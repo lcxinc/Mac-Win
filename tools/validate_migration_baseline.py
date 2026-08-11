@@ -16,6 +16,7 @@ MAX_MANIFEST_BYTES = 65_536
 MAX_README_BYTES = 4_096
 MAX_MIGRATION_DOCUMENT_BYTES = 32_768
 MAX_WORKFLOW_BYTES = 16_384
+MAX_TAG_OBJECT_BYTES = 16_384
 MAX_JSON_INTEGER_DIGITS = 128
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = ROOT / "migration" / "baseline.json"
@@ -28,6 +29,7 @@ SCHEMA_VERSION = 1
 REPOSITORY = "a1112/Mac-Win"
 SOURCE_COMMIT = "4e421fbea6f59e73e4f813c1f0a14e8db9e36de7"
 TAG = "mw-migration-baseline-4e421fb"
+TAG_MESSAGE = "Mac-Win migration source baseline 4e421fb"
 SWIFT_PACKAGE_PATH = "MacWinManager"
 EVIDENCE_TARGETS = [
     {"runner": "macos-15", "architecture": "arm64"},
@@ -84,8 +86,7 @@ MIGRATION_DOCUMENT_REQUIRED_STATEMENTS = (
     "After the merge commit passes all three required jobs—the `repository-contract` "
     "job, Apple Silicon `macos-15` / `arm64`, and Intel `macos-15-intel` / "
     f"`x86_64`—create the annotated tag directly at the frozen source with `git "
-    f"tag --no-sign -a {TAG} {SOURCE_COMMIT} -m \"Mac-Win migration source "
-    "baseline 4e421fb\"`.",
+    f"tag --no-sign -a {TAG} {SOURCE_COMMIT} -m \"{TAG_MESSAGE}\"`.",
     "If any of the three required jobs fails, is cancelled, or is unavailable, "
     "do not create or publish the baseline tag.",
     "Before publication, run `python tools/validate_migration_baseline.py "
@@ -496,6 +497,41 @@ def validate_source_commit(repository_root, source_commit):
 def validate_baseline_tag(repository_root, tag_name, source_commit):
     """Require one local annotated tag directly bound to the source commit."""
     tag_ref = f"refs/tags/{tag_name}"
+
+    listed_refs = _run_git(
+        repository_root,
+        ["for-each-ref", "--format=%(refname)", "refs/tags"],
+    )
+    if listed_refs.returncode != 0:
+        raise BaselineValidationError("baseline tag refs could not be enumerated")
+    try:
+        tag_refs = listed_refs.stdout.decode("utf-8", errors="strict").splitlines()
+    except UnicodeDecodeError as error:
+        raise BaselineValidationError(
+            "baseline tag refs could not be enumerated"
+        ) from error
+    casefold_matches = [
+        ref_name for ref_name in tag_refs if ref_name.casefold() == tag_ref.casefold()
+    ]
+    if tag_ref not in tag_refs:
+        if casefold_matches:
+            raise BaselineValidationError(
+                "baseline tag ref is not stored with exact canonical spelling"
+            )
+        raise BaselineValidationError(
+            "baseline tag is not a local annotated tag object"
+        )
+    if casefold_matches != [tag_ref]:
+        raise BaselineValidationError(
+            "baseline tag ref is not stored with exact canonical spelling"
+        )
+
+    symbolic_ref = _run_git(repository_root, ["symbolic-ref", "-q", tag_ref])
+    if symbolic_ref.returncode == 0:
+        raise BaselineValidationError("baseline tag ref must not be symbolic")
+    if symbolic_ref.returncode != 1:
+        raise BaselineValidationError("baseline tag ref could not be inspected")
+
     object_type = _run_git(repository_root, ["cat-file", "-t", tag_ref])
     if object_type.returncode != 0 or object_type.stdout.strip() != b"tag":
         raise BaselineValidationError(
@@ -511,15 +547,51 @@ def validate_baseline_tag(repository_root, tag_name, source_commit):
             "baseline tag does not peel to the source commit"
         )
 
+    object_size = _run_git(repository_root, ["cat-file", "-s", tag_ref])
+    encoded_size = object_size.stdout.strip()
+    if (
+        object_size.returncode != 0
+        or len(encoded_size) > 20
+        or re.fullmatch(rb"[0-9]+", encoded_size) is None
+    ):
+        raise BaselineValidationError("baseline tag object size is invalid")
+    size = int(encoded_size)
+    if size > MAX_TAG_OBJECT_BYTES:
+        raise BaselineValidationError(
+            f"baseline tag object exceeds {MAX_TAG_OBJECT_BYTES}-byte limit"
+        )
+
     tag_object = _run_git(repository_root, ["cat-file", "tag", tag_ref])
-    expected_headers = (
+    if tag_object.returncode != 0:
+        raise BaselineValidationError("baseline tag object could not be read")
+    if len(tag_object.stdout) != size:
+        raise BaselineValidationError(
+            "baseline tag object length does not match Git metadata"
+        )
+
+    raw_headers, separator, raw_message = tag_object.stdout.partition(b"\n\n")
+    header_lines = raw_headers.split(b"\n")
+    expected_direct_headers = (
         f"object {source_commit}".encode("ascii"),
         b"type commit",
     )
-    headers = tuple(tag_object.stdout.splitlines()[:2])
-    if tag_object.returncode != 0 or headers != expected_headers:
+    expected_message = TAG_MESSAGE.encode("utf-8") + b"\n"
+    if (
+        separator != b"\n\n"
+        or len(header_lines) != 4
+        or tuple(header_lines[:2]) != expected_direct_headers
+    ):
         raise BaselineValidationError(
             "baseline tag does not directly reference the source commit"
+        )
+    if (
+        header_lines[2] != f"tag {tag_name}".encode("utf-8")
+        or not header_lines[3].startswith(b"tagger ")
+        or len(header_lines[3]) == len(b"tagger ")
+        or raw_message != expected_message
+    ):
+        raise BaselineValidationError(
+            "baseline tag object content does not match the approved source baseline"
         )
 
 
@@ -943,8 +1015,18 @@ def read_reviewed_text(
     return worktree_text
 
 
+class _StableArgumentParser(argparse.ArgumentParser):
+    """Preserve argparse usage semantics without reflecting hostile argv."""
+
+    def error(self, _message):
+        self.print_usage(sys.stderr)
+        self.exit(2, f"{self.prog}: error: invalid command-line arguments\n")
+
+
 def _argument_parser():
-    parser = argparse.ArgumentParser(
+    parser = _StableArgumentParser(
+        prog="validate_migration_baseline.py",
+        allow_abbrev=False,
         description="Validate the closed Mac-Win migration baseline."
     )
     parser.add_argument(

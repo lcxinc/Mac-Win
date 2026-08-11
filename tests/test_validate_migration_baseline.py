@@ -25,12 +25,13 @@ WORKFLOW_PATH = ROOT / ".github" / "workflows" / "migration-baseline.yml"
 
 SOURCE_COMMIT = "4e421fbea6f59e73e4f813c1f0a14e8db9e36de7"
 BASELINE_TAG = "mw-migration-baseline-4e421fb"
+TAG_MESSAGE = "Mac-Win migration source baseline 4e421fb"
+MAX_TAG_OBJECT_BYTES = 16_384
 TAG_CREATION_GATE_STATEMENT = (
     "After the merge commit passes all three required jobs—the `repository-contract` "
     "job, Apple Silicon `macos-15` / `arm64`, and Intel `macos-15-intel` / "
     f"`x86_64`—create the annotated tag directly at the frozen source with `git "
-    f"tag --no-sign -a {BASELINE_TAG} {SOURCE_COMMIT} -m \"Mac-Win migration "
-    "source baseline 4e421fb\"`."
+    f"tag --no-sign -a {BASELINE_TAG} {SOURCE_COMMIT} -m \"{TAG_MESSAGE}\"`."
 )
 TAG_FAILURE_GATE_STATEMENT = (
     "If any of the three required jobs fails, is cancelled, or is unavailable, "
@@ -1669,6 +1670,25 @@ class MigrationBaselineTagTests(unittest.TestCase):
         ).stdout.strip()
         return repository, source_commit, descendant_commit
 
+    def createRawTagObject(
+        self,
+        repository,
+        source_commit,
+        *,
+        internal_name=BASELINE_TAG,
+        message=TAG_MESSAGE,
+    ):
+        raw = (
+            f"object {source_commit}\n"
+            "type commit\n"
+            f"tag {internal_name}\n"
+            "tagger Baseline Tests <baseline-tests@example.invalid> 0 +0000\n"
+            "\n"
+            f"{message}\n"
+        ).encode("utf-8")
+        result = self.runGit(repository, "mktag", input_bytes=raw)
+        return result.stdout.decode("ascii").strip()
+
     def validateTag(self, repository, source_commit):
         validator = load_validator()
         validator.validate_baseline_tag(repository, BASELINE_TAG, source_commit)
@@ -1769,9 +1789,148 @@ class MigrationBaselineTagTests(unittest.TestCase):
             BASELINE_TAG,
             source_commit,
             "-m",
-            "migration baseline",
+            TAG_MESSAGE,
         )
         self.validateTag(repository, source_commit)
+
+    def test_rejects_case_variant_ref_when_exact_spelling_is_absent(self):
+        repository, source_commit, _ = self.createRepository("case-variant")
+        tag_object = self.createRawTagObject(repository, source_commit)
+        self.runGit(
+            repository,
+            "update-ref",
+            f"refs/tags/{BASELINE_TAG.upper()}",
+            tag_object,
+        )
+
+        self.assertTagInvalid(
+            repository,
+            source_commit,
+            "baseline tag ref is not stored with exact canonical spelling",
+        )
+
+    def test_rejects_casefold_collision_even_when_exact_ref_is_enumerated(self):
+        validator = load_validator()
+        expected_ref = f"refs/tags/{BASELINE_TAG}"
+        enumerated = SimpleNamespace(
+            returncode=0,
+            stdout=f"{expected_ref}\n{expected_ref.upper()}\n".encode("ascii"),
+            stderr=b"",
+        )
+        with mock.patch.object(validator, "_run_git", return_value=enumerated):
+            with self.assertRaises(validator.BaselineValidationError) as caught:
+                validator.validate_baseline_tag(
+                    Path("repository"), BASELINE_TAG, SOURCE_COMMIT
+                )
+        self.assertEqual(
+            str(caught.exception),
+            "baseline tag ref is not stored with exact canonical spelling",
+        )
+
+    def test_rejects_symbolic_expected_tag_ref(self):
+        repository, source_commit, _ = self.createRepository("symbolic")
+        tag_object = self.createRawTagObject(repository, source_commit)
+        target_ref = "refs/tags/symbolic-target"
+        self.runGit(repository, "update-ref", target_ref, tag_object)
+        self.runGit(
+            repository,
+            "symbolic-ref",
+            f"refs/tags/{BASELINE_TAG}",
+            target_ref,
+        )
+
+        self.assertTagInvalid(
+            repository,
+            source_commit,
+            "baseline tag ref must not be symbolic",
+        )
+
+    def test_rejects_tag_object_with_different_internal_tag_name(self):
+        repository, source_commit, _ = self.createRepository("internal-name")
+        tag_object = self.createRawTagObject(
+            repository,
+            source_commit,
+            internal_name="different-name",
+        )
+        self.runGit(
+            repository,
+            "update-ref",
+            f"refs/tags/{BASELINE_TAG}",
+            tag_object,
+        )
+
+        self.assertTagInvalid(
+            repository,
+            source_commit,
+            "baseline tag object content does not match the approved source baseline",
+        )
+
+    def test_rejects_wrong_extra_and_signed_tag_messages(self):
+        messages = (
+            "wrong message",
+            f"{TAG_MESSAGE}\nextra body",
+            f"{TAG_MESSAGE}\n-----BEGIN PGP SIGNATURE-----\nhostile",
+        )
+        for index, message in enumerate(messages):
+            with self.subTest(message=message):
+                repository, source_commit, _ = self.createRepository(
+                    f"message-{index}"
+                )
+                tag_object = self.createRawTagObject(
+                    repository,
+                    source_commit,
+                    message=message,
+                )
+                self.runGit(
+                    repository,
+                    "update-ref",
+                    f"refs/tags/{BASELINE_TAG}",
+                    tag_object,
+                )
+                self.assertTagInvalid(
+                    repository,
+                    source_commit,
+                    "baseline tag object content does not match the approved source baseline",
+                )
+
+    def test_rejects_oversized_tag_before_reading_the_object(self):
+        repository, source_commit, _ = self.createRepository("oversized")
+        tag_object = self.createRawTagObject(
+            repository,
+            source_commit,
+            message="x" * (5 * 1024 * 1024),
+        )
+        self.runGit(
+            repository,
+            "update-ref",
+            f"refs/tags/{BASELINE_TAG}",
+            tag_object,
+        )
+        validator = load_validator()
+        real_run_git = validator._run_git
+        calls = []
+
+        def recording_run_git(repository_root, arguments, check=False):
+            calls.append(list(arguments))
+            return real_run_git(repository_root, arguments, check=check)
+
+        with mock.patch.object(
+            validator, "_run_git", side_effect=recording_run_git
+        ):
+            with self.assertRaises(validator.BaselineValidationError) as caught:
+                validator.validate_baseline_tag(
+                    repository, BASELINE_TAG, source_commit
+                )
+        self.assertEqual(
+            str(caught.exception),
+            f"baseline tag object exceeds {MAX_TAG_OBJECT_BYTES}-byte limit",
+        )
+        self.assertIn(
+            ["cat-file", "-s", f"refs/tags/{BASELINE_TAG}"], calls
+        )
+        self.assertNotIn(
+            ["cat-file", "tag", f"refs/tags/{BASELINE_TAG}"], calls
+        )
 
     def test_replace_ref_cannot_change_the_tag_object_or_peeled_commit(self):
         repository, source_commit, descendant_commit = self.createRepository("replace")
@@ -1782,7 +1941,7 @@ class MigrationBaselineTagTests(unittest.TestCase):
             BASELINE_TAG,
             source_commit,
             "-m",
-            "migration baseline",
+            TAG_MESSAGE,
         )
         self.runGit(
             repository,
@@ -1818,6 +1977,93 @@ class MigrationBaselineTagTests(unittest.TestCase):
         )
 
         self.validateTag(repository, source_commit)
+
+    def test_tag_validation_checks_size_before_bounded_content_read(self):
+        repository, source_commit, _ = self.createRepository("command-order")
+        tag_object = self.createRawTagObject(repository, source_commit)
+        self.runGit(
+            repository,
+            "update-ref",
+            f"refs/tags/{BASELINE_TAG}",
+            tag_object,
+        )
+        validator = load_validator()
+        real_run_git = validator._run_git
+        calls = []
+
+        def recording_run_git(repository_root, arguments, check=False):
+            calls.append(list(arguments))
+            return real_run_git(repository_root, arguments, check=check)
+
+        with mock.patch.object(
+            validator, "_run_git", side_effect=recording_run_git
+        ):
+            validator.validate_baseline_tag(
+                repository, BASELINE_TAG, source_commit
+            )
+
+        tag_ref = f"refs/tags/{BASELINE_TAG}"
+        self.assertEqual(
+            calls,
+            [
+                ["for-each-ref", "--format=%(refname)", "refs/tags"],
+                ["symbolic-ref", "-q", tag_ref],
+                ["cat-file", "-t", tag_ref],
+                ["rev-parse", f"{tag_ref}^{{}}"],
+                ["cat-file", "-s", tag_ref],
+                ["cat-file", "tag", tag_ref],
+            ],
+        )
+
+    def test_rejects_invalid_size_and_content_length_with_stable_diagnostics(self):
+        repository, source_commit, _ = self.createRepository("corrupt-read")
+        tag_object = self.createRawTagObject(repository, source_commit)
+        self.runGit(
+            repository,
+            "update-ref",
+            f"refs/tags/{BASELINE_TAG}",
+            tag_object,
+        )
+        validator = load_validator()
+        real_run_git = validator._run_git
+        hostile = b"invalid-size\n\x1b[31m"
+
+        def invalid_size(repository_root, arguments, check=False):
+            if arguments == ["cat-file", "-s", f"refs/tags/{BASELINE_TAG}"]:
+                return SimpleNamespace(returncode=0, stdout=hostile, stderr=hostile)
+            return real_run_git(repository_root, arguments, check=check)
+
+        with mock.patch.object(validator, "_run_git", side_effect=invalid_size):
+            with self.assertRaises(validator.BaselineValidationError) as caught:
+                validator.validate_baseline_tag(
+                    repository, BASELINE_TAG, source_commit
+                )
+        self.assertEqual(
+            str(caught.exception), "baseline tag object size is invalid"
+        )
+        self.assertNotIn("invalid-size", str(caught.exception))
+
+        def truncated_content(repository_root, arguments, check=False):
+            result = real_run_git(repository_root, arguments, check=check)
+            if arguments == ["cat-file", "tag", f"refs/tags/{BASELINE_TAG}"]:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout=result.stdout[:-1],
+                    stderr=b"",
+                )
+            return result
+
+        with mock.patch.object(
+            validator, "_run_git", side_effect=truncated_content
+        ):
+            with self.assertRaises(validator.BaselineValidationError) as caught:
+                validator.validate_baseline_tag(
+                    repository, BASELINE_TAG, source_commit
+                )
+        self.assertEqual(
+            str(caught.exception),
+            "baseline tag object length does not match Git metadata",
+        )
 
     def test_rejects_annotated_tag_that_points_to_another_tag_object(self):
         repository, source_commit, _ = self.createRepository("nested")
@@ -1865,7 +2111,7 @@ class MigrationBaselineTagTests(unittest.TestCase):
                 validator.validate_baseline_tag(Path("repository"), BASELINE_TAG, SOURCE_COMMIT)
         self.assertEqual(
             str(caught.exception),
-            "baseline tag is not a local annotated tag object",
+            "baseline tag refs could not be enumerated",
         )
         self.assertNotIn("hostile", str(caught.exception))
 
@@ -1881,7 +2127,41 @@ class MigrationBaselineTagTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertEqual(result.stdout, "")
         self.assertIn("usage:", result.stderr)
-        self.assertIn("unrecognized arguments: unexpected", result.stderr)
+        self.assertIn("error: invalid command-line arguments", result.stderr)
+        self.assertNotIn("unexpected", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_cli_does_not_echo_control_characters_from_unknown_arguments(self):
+        hostile_argument = "hostile\n\x1b[31mspoofed"
+        result = subprocess.run(
+            [sys.executable, str(VALIDATOR_PATH), hostile_argument],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            shell=False,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("usage:", result.stderr)
+        self.assertIn("error: invalid command-line arguments", result.stderr)
+        self.assertNotIn("hostile", result.stderr)
+        self.assertNotIn("spoofed", result.stderr)
+        self.assertNotIn("\x1b", result.stderr)
+
+    def test_cli_does_not_accept_abbreviated_require_tag_option(self):
+        result = subprocess.run(
+            [sys.executable, str(VALIDATOR_PATH), "--require-t"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            shell=False,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("usage:", result.stderr)
+        self.assertIn("error: invalid command-line arguments", result.stderr)
         self.assertNotIn("Traceback", result.stderr)
 
     def test_import_does_not_change_global_bytecode_policy(self):
