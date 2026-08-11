@@ -198,7 +198,7 @@ variables.
 **Step 2: Run RED**
 
 ```powershell
-python -B -m unittest tests.test_migration_asset_inventory.AssetGitBindingTests -v
+python -B -m unittest discover -s tests -p 'test_migration_asset_inventory.py' -k AssetGitBindingTests -v
 ```
 
 Expected: missing Git reader and governed-scope functions.
@@ -223,7 +223,7 @@ over the raw bytes. Never read asset content from the worktree.
 **Step 4: Run GREEN and verify the real frozen tree count**
 
 ```powershell
-python -B -m unittest tests.test_migration_asset_inventory.AssetGitBindingTests -v
+python -B -m unittest discover -s tests -p 'test_migration_asset_inventory.py' -k AssetGitBindingTests -v
 python -B tools/generate_migration_asset_inventory.py --list
 ```
 
