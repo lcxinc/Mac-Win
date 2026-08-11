@@ -4,11 +4,13 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import stat
 import subprocess
 import sys
 import tempfile
+import textwrap
 from types import SimpleNamespace
 import unittest
 from unittest import mock
@@ -183,12 +185,15 @@ jobs:
           swift_tee_status=${swift_pipeline_status[1]}
           set -e
           swift_output_bytes="$(wc -c < "$swift_output_file" | tr -d '[:space:]')"
-          swift_summary_raw_limit_bytes=65536
+          swift_summary_raw_limit_bytes=262144
           swift_summary_copy_limit_bytes=524288
           swift_summary_copy_bytes=0
           swift_summary_copy_status="omitted; raw output limit exceeded; not truncated"
           swift_summary_limit_exceeded=0
           swift_capture_failed=0
+          swift_format_failed=0
+          swift_base64_status=-1
+          swift_indent_status=-1
           if (( swift_tee_status != 0 )); then
             swift_summary_copy_status="omitted; complete log capture failed; not truncated"
             swift_capture_failed=1
@@ -198,20 +203,30 @@ jobs:
           elif (( swift_output_bytes > swift_summary_raw_limit_bytes )); then
             swift_summary_limit_exceeded=1
           else
-            while IFS= read -r line || [[ -n "$line" ]]; do
-              printf '    %q\\n' "$line"
-            done < "$swift_output_file" > "$swift_summary_copy_file"
-            swift_summary_copy_bytes="$(wc -c < "$swift_summary_copy_file" | tr -d '[:space:]')"
-            if (( swift_summary_copy_bytes > swift_summary_copy_limit_bytes )); then
+            set +e
+            base64 < "$swift_output_file" | sed 's/^/    /' > "$swift_summary_copy_file"
+            swift_format_pipeline_status=("${PIPESTATUS[@]}")
+            set -e
+            swift_base64_status=${swift_format_pipeline_status[0]}
+            swift_indent_status=${swift_format_pipeline_status[1]}
+            if (( swift_base64_status != 0 || swift_indent_status != 0 )); then
+              swift_summary_copy_status="omitted; Markdown-safe formatting failed; not truncated"
+              swift_format_failed=1
+            else
+              swift_summary_copy_bytes="$(wc -c < "$swift_summary_copy_file" | tr -d '[:space:]')"
+            fi
+            if (( swift_format_failed == 0 && swift_summary_copy_bytes > swift_summary_copy_limit_bytes )); then
               swift_summary_copy_status="omitted; Markdown-safe copy limit exceeded; not truncated"
               swift_summary_limit_exceeded=1
-            else
-              swift_summary_copy_status="complete; Markdown-safe shell-escaped indented code; not truncated"
+            elif (( swift_format_failed == 0 )); then
+              swift_summary_copy_status="complete; Markdown-safe base64 indented code; not truncated"
             fi
           fi
           {
             echo "- Swift test exit status: ${swift_status}"
             echo "- Swift test log capture exit status: ${swift_tee_status}"
+            echo "- Swift test base64 formatter exit status: ${swift_base64_status}"
+            echo "- Swift test indent formatter exit status: ${swift_indent_status}"
             echo "- Swift test raw output bytes: ${swift_output_bytes}"
             echo "- Swift test raw output limit bytes: ${swift_summary_raw_limit_bytes}"
             echo "- Swift test Markdown-safe copy bytes: ${swift_summary_copy_bytes}"
@@ -223,6 +238,9 @@ jobs:
             exit 1
           fi
           if (( swift_capture_failed != 0 )); then
+            exit 1
+          fi
+          if (( swift_format_failed != 0 )); then
             exit 1
           fi
           cat "$swift_summary_copy_file" >> "$summary_path"
@@ -761,6 +779,93 @@ class MigrationBaselineWorkflowTests(unittest.TestCase):
             diagnostic or self.DIGEST_DIAGNOSTIC,
         )
 
+    def bashExecutable(self):
+        if os.name == "nt":
+            program_files = Path(
+                os.environ.get("ProgramFiles", r"C:\Program Files")
+            )
+            for candidate in (
+                program_files / "Git" / "bin" / "bash.exe",
+                program_files / "Git" / "usr" / "bin" / "bash.exe",
+            ):
+                if candidate.is_file():
+                    return str(candidate)
+        executable = shutil.which("bash")
+        if executable is None:
+            self.skipTest("Bash is required to execute the sealed workflow step")
+        return executable
+
+    def swiftTestNames(self):
+        names = []
+        pattern = re.compile(r'@Test(?:\("((?:[^"\\]|\\.)*)"\))?')
+        for path in sorted((ROOT / "MacWinManager" / "Tests").rglob("*.swift")):
+            text = path.read_text(encoding="utf-8")
+            for match in pattern.finditer(text):
+                line_number = text.count("\n", 0, match.start()) + 1
+                names.append(match.group(1) or f"{path.name}:{line_number}")
+        self.assertEqual(
+            len(names),
+            492,
+            "the migration baseline test-name fixture must cover every current @Test",
+        )
+        return names
+
+    def swiftSixPassingOutput(self):
+        return "".join(
+            f'◇ Test "{name}" started.\n'
+            f'✔ Test "{name}" passed after 0.001 seconds.\n'
+            for name in self.swiftTestNames()
+        ).encode("utf-8")
+
+    def swiftEvidenceScript(self):
+        return textwrap.dedent(WORKFLOW_CANONICAL.rsplit("        run: |\n", 1)[1])
+
+    def runSwiftEvidence(self, raw_output, swift_status=0, script=None):
+        if script is None:
+            script = self.swiftEvidenceScript()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "fixture.log").write_bytes(raw_output)
+            fake_swift = root / "swift"
+            fake_swift.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [[ -n \"${GITHUB_STEP_SUMMARY+x}\" || "
+                "-n \"${summary_path+x}\" ]]; then\n"
+                "  echo inherited-summary-path > env-leak\n"
+                "fi\n"
+                "cat fixture.log\n"
+                "exit \"${SWIFT_FAKE_STATUS}\"\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            fake_swift.chmod(0o755)
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "PATH": ".:/usr/bin:/bin",
+                    "RUNNER_TEMP": ".",
+                    "GITHUB_STEP_SUMMARY": "summary.md",
+                    "SWIFT_FAKE_STATUS": str(swift_status),
+                }
+            )
+            result = subprocess.run(
+                [self.bashExecutable(), "-c", script],
+                cwd=root,
+                env=environment,
+                capture_output=True,
+                text=False,
+                shell=False,
+                check=False,
+            )
+            summary_path = root / "summary.md"
+            self.assertTrue(summary_path.is_file(), result.stderr.decode(errors="replace"))
+            summary = summary_path.read_text(encoding="utf-8")
+            leaked_summary_path = (root / "env-leak").exists()
+            temporary_evidence = sorted(
+                path.name for path in root.glob("mac-win-swift-*")
+            )
+            return result, summary, leaked_summary_path, temporary_evidence
+
     def test_reviewed_workflow_is_exact_sealed_and_semantically_valid(self):
         self.assertTrue(WORKFLOW_PATH.is_file(), "migration workflow is missing")
         self.assertEqual(WORKFLOW_PATH.read_text(encoding="utf-8"), WORKFLOW_CANONICAL)
@@ -913,13 +1018,96 @@ class MigrationBaselineWorkflowTests(unittest.TestCase):
         self.assertIn('swift_pipeline_status=("${PIPESTATUS[@]}")', test_step)
         self.assertIn("swift_status=${swift_pipeline_status[0]}", test_step)
         self.assertIn("swift_tee_status=${swift_pipeline_status[1]}", test_step)
-        self.assertIn("swift_summary_raw_limit_bytes=65536", test_step)
+        self.assertIn("swift_summary_raw_limit_bytes=262144", test_step)
         self.assertIn("swift_summary_copy_limit_bytes=524288", test_step)
-        self.assertIn("printf '    %q\\n' \"$line\"", test_step)
+        self.assertIn(
+            "base64 < \"$swift_output_file\" | sed 's/^/    /'",
+            test_step,
+        )
         self.assertIn("if (( swift_summary_limit_exceeded != 0 )); then", test_step)
         self.assertIn('exit "$swift_status"', test_step)
         self.assertNotIn('tee -a "$GITHUB_STEP_SUMMARY"', test_step)
         self.assertNotIn("```", test_step)
+
+    def test_current_swift_six_output_passes_new_limit_and_old_limit_regresses(self):
+        raw_output = b"```html\n<script>unsafe()</script>\n```\n" + self.swiftSixPassingOutput()
+        self.assertGreater(len(raw_output), 65_536)
+        self.assertLessEqual(len(raw_output), 262_144)
+
+        current_script = self.swiftEvidenceScript()
+        old_script = current_script.replace(
+            "swift_summary_raw_limit_bytes=262144",
+            "swift_summary_raw_limit_bytes=65536",
+        )
+        self.assertNotEqual(old_script, current_script)
+        old_result, old_summary, _, _ = self.runSwiftEvidence(
+            raw_output, script=old_script
+        )
+        self.assertEqual(old_result.returncode, 1)
+        self.assertIn(
+            "Swift test summary copy status: omitted; raw output limit exceeded; not truncated",
+            old_summary,
+        )
+
+        result, summary, leaked, temporary_evidence = self.runSwiftEvidence(raw_output)
+        self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+        self.assertEqual(result.stdout, raw_output)
+        self.assertFalse(leaked, "the Swift child inherited a summary path")
+        self.assertEqual(temporary_evidence, [])
+        self.assertLess(len(summary.encode("utf-8")), 1_048_576)
+        self.assertIn("Swift test exit status: 0", summary)
+        self.assertIn("Swift test log capture exit status: 0", summary)
+        self.assertIn(f"Swift test raw output bytes: {len(raw_output)}", summary)
+        self.assertIn("Swift test raw output limit bytes: 262144", summary)
+        self.assertIn(
+            "Swift test summary copy status: complete; Markdown-safe base64 indented code; not truncated",
+            summary,
+        )
+        self.assertTrue(
+            all(not line.startswith("```") for line in summary.splitlines()),
+            "fence-like Swift output must remain Markdown code, never active GFM",
+        )
+
+    def test_raw_output_one_byte_over_limit_fails_closed_with_bounded_summary(self):
+        raw_output = b"x" * 262_145
+        result, summary, leaked, temporary_evidence = self.runSwiftEvidence(raw_output)
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, raw_output)
+        self.assertFalse(leaked)
+        self.assertEqual(temporary_evidence, [])
+        self.assertLess(len(summary.encode("utf-8")), 1_048_576)
+        self.assertIn("Swift test exit status: 0", summary)
+        self.assertIn("Swift test raw output bytes: 262145", summary)
+        self.assertIn(
+            "Swift test summary copy status: omitted; raw output limit exceeded; not truncated",
+            summary,
+        )
+
+    def test_markdown_safe_copy_over_limit_fails_closed_without_summary_overflow(self):
+        raw_output = b"\n" * 100_000
+        self.assertLessEqual(len(raw_output), 262_144)
+        script = self.swiftEvidenceScript().replace(
+            "swift_summary_copy_limit_bytes=524288",
+            "swift_summary_copy_limit_bytes=131072",
+        )
+        result, summary, leaked, temporary_evidence = self.runSwiftEvidence(
+            raw_output, script=script
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, raw_output)
+        self.assertFalse(leaked)
+        self.assertEqual(temporary_evidence, [])
+        self.assertLess(len(summary.encode("utf-8")), 1_048_576)
+        self.assertIn("Swift test exit status: 0", summary)
+        match = re.search(r"Swift test Markdown-safe copy bytes: ([0-9]+)", summary)
+        self.assertIsNotNone(match)
+        self.assertGreater(int(match.group(1)), 131_072)
+        self.assertIn(
+            "Swift test summary copy status: omitted; Markdown-safe copy limit exceeded; not truncated",
+            summary,
+        )
 
     def test_rejects_summary_injection_isolation_limit_and_status_mutations(self):
         mutations = {
@@ -936,11 +1124,11 @@ class MigrationBaselineWorkflowTests(unittest.TestCase):
                 "          echo '```' >> \"$summary_path\"\n",
             ),
             "Markdown formatter removed": WORKFLOW_CANONICAL.replace(
-                "              printf '    %q\\n' \"$line\"\n",
-                "              printf '%s\\n' \"$line\"\n",
+                "            base64 < \"$swift_output_file\" | sed 's/^/    /' > \"$swift_summary_copy_file\"\n",
+                "            cat \"$swift_output_file\" > \"$swift_summary_copy_file\"\n",
             ),
             "raw limit disabled": WORKFLOW_CANONICAL.replace(
-                "          swift_summary_raw_limit_bytes=65536\n",
+                "          swift_summary_raw_limit_bytes=262144\n",
                 "          swift_summary_raw_limit_bytes=999999999\n",
             ),
             "formatted limit disabled": WORKFLOW_CANONICAL.replace(
@@ -959,6 +1147,12 @@ class MigrationBaselineWorkflowTests(unittest.TestCase):
             ),
             "tee failure gate removed": WORKFLOW_CANONICAL.replace(
                 "          if (( swift_capture_failed != 0 )); then\n"
+                "            exit 1\n"
+                "          fi\n",
+                "",
+            ),
+            "formatter failure gate removed": WORKFLOW_CANONICAL.replace(
+                "          if (( swift_format_failed != 0 )); then\n"
                 "            exit 1\n"
                 "          fi\n",
                 "",

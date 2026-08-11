@@ -98,12 +98,15 @@ jobs:
           swift_tee_status=${swift_pipeline_status[1]}
           set -e
           swift_output_bytes="$(wc -c < "$swift_output_file" | tr -d '[:space:]')"
-          swift_summary_raw_limit_bytes=65536
+          swift_summary_raw_limit_bytes=262144
           swift_summary_copy_limit_bytes=524288
           swift_summary_copy_bytes=0
           swift_summary_copy_status="omitted; raw output limit exceeded; not truncated"
           swift_summary_limit_exceeded=0
           swift_capture_failed=0
+          swift_format_failed=0
+          swift_base64_status=-1
+          swift_indent_status=-1
           if (( swift_tee_status != 0 )); then
             swift_summary_copy_status="omitted; complete log capture failed; not truncated"
             swift_capture_failed=1
@@ -113,20 +116,30 @@ jobs:
           elif (( swift_output_bytes > swift_summary_raw_limit_bytes )); then
             swift_summary_limit_exceeded=1
           else
-            while IFS= read -r line || [[ -n "$line" ]]; do
-              printf '    %q\n' "$line"
-            done < "$swift_output_file" > "$swift_summary_copy_file"
-            swift_summary_copy_bytes="$(wc -c < "$swift_summary_copy_file" | tr -d '[:space:]')"
-            if (( swift_summary_copy_bytes > swift_summary_copy_limit_bytes )); then
+            set +e
+            base64 < "$swift_output_file" | sed 's/^/    /' > "$swift_summary_copy_file"
+            swift_format_pipeline_status=("${PIPESTATUS[@]}")
+            set -e
+            swift_base64_status=${swift_format_pipeline_status[0]}
+            swift_indent_status=${swift_format_pipeline_status[1]}
+            if (( swift_base64_status != 0 || swift_indent_status != 0 )); then
+              swift_summary_copy_status="omitted; Markdown-safe formatting failed; not truncated"
+              swift_format_failed=1
+            else
+              swift_summary_copy_bytes="$(wc -c < "$swift_summary_copy_file" | tr -d '[:space:]')"
+            fi
+            if (( swift_format_failed == 0 && swift_summary_copy_bytes > swift_summary_copy_limit_bytes )); then
               swift_summary_copy_status="omitted; Markdown-safe copy limit exceeded; not truncated"
               swift_summary_limit_exceeded=1
-            else
-              swift_summary_copy_status="complete; Markdown-safe shell-escaped indented code; not truncated"
+            elif (( swift_format_failed == 0 )); then
+              swift_summary_copy_status="complete; Markdown-safe base64 indented code; not truncated"
             fi
           fi
           {
             echo "- Swift test exit status: ${swift_status}"
             echo "- Swift test log capture exit status: ${swift_tee_status}"
+            echo "- Swift test base64 formatter exit status: ${swift_base64_status}"
+            echo "- Swift test indent formatter exit status: ${swift_indent_status}"
             echo "- Swift test raw output bytes: ${swift_output_bytes}"
             echo "- Swift test raw output limit bytes: ${swift_summary_raw_limit_bytes}"
             echo "- Swift test Markdown-safe copy bytes: ${swift_summary_copy_bytes}"
@@ -138,6 +151,9 @@ jobs:
             exit 1
           fi
           if (( swift_capture_failed != 0 )); then
+            exit 1
+          fi
+          if (( swift_format_failed != 0 )); then
             exit 1
           fi
           cat "$swift_summary_copy_file" >> "$summary_path"
