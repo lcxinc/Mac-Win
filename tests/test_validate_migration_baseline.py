@@ -16,6 +16,70 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 VALIDATOR_PATH = ROOT / "tools" / "validate_migration_baseline.py"
 MANIFEST_PATH = ROOT / "migration" / "baseline.json"
+README_PATH = ROOT / "README.md"
+MIGRATION_DOCUMENT_PATH = ROOT / "docs" / "migration-baseline.md"
+
+SOURCE_COMMIT = "4e421fbea6f59e73e4f813c1f0a14e8db9e36de7"
+BASELINE_TAG = "mw-migration-baseline-4e421fb"
+README_FREEZE_STATEMENT = (
+    f"Mac-Win is frozen at {SOURCE_COMMIT} for migration evidence. "
+    "New SwiftUI, Bridge, and legacy launcher product features are not accepted."
+)
+README_CANONICAL = f"""# Mac-Win
+
+{README_FREEZE_STATEMENT}
+
+See [Migration baseline and evidence boundary](docs/migration-baseline.md).
+"""
+MIGRATION_DOCUMENT_CANONICAL = f"""# Mac-Win migration baseline
+
+## Baseline identity and freeze
+
+Mac-Win is frozen at `{SOURCE_COMMIT}` for migration evidence.
+
+New SwiftUI, Bridge, and legacy launcher product features are not accepted.
+
+The immutable annotated baseline tag is `{BASELINE_TAG}`.
+
+## Authoritative macOS evidence
+
+Required runner and architecture: `macos-15` / `arm64`.
+
+Required runner and architecture: `macos-15-intel` / `x86_64`.
+
+Required host/test command: `swift --version`.
+
+Required host/test command: `sw_vers`.
+
+Required host/test command: `uname -m`.
+
+Required host/test command: `sysctl -n machdep.cpu.brand_string`.
+
+Required host/test command: `swift test --package-path MacWinManager`.
+
+Windows output is not macOS evidence.
+
+The authoritative macOS evidence is the GitHub Actions run URL plus the logs and job summary for both required runner and architecture jobs.
+
+Known failures must be recorded in MW-MIG-001 with the affected runner, observed architecture, command, exit status, and CI run URL; they must not be converted into passing expectations.
+
+Tag evidence must record both the annotated tag object ID and its peeled commit ID before MW-MIG-001 closes.
+
+## Rollback and ownership
+
+Before tag publication, rollback is a normal revert of the migration-baseline change; a failed or unavailable target keeps MW-MIG-001 open and prevents tag publication.
+
+After publication, `{BASELINE_TAG}` must not be moved or deleted; corrections use a new superseding annotated tag and an explicit issue record.
+
+MW-MIG-002 is the next owner after MW-MIG-001 completes.
+
+Asset migration and CompatForge publication are explicitly excluded from MW-MIG-001.
+"""
+MIGRATION_DOCUMENT_REQUIRED_STATEMENTS = tuple(
+    block.rstrip("\n")
+    for block in MIGRATION_DOCUMENT_CANONICAL.split("\n\n")
+    if block and not block.startswith("#")
+)
 
 CANONICAL = {
     "schemaVersion": 1,
@@ -386,6 +450,154 @@ class MigrationBaselineManifestTests(unittest.TestCase):
         self.assertRawInvalid(b"{", "manifest is not valid JSON")
 
 
+class MigrationBaselineDocumentTests(unittest.TestCase):
+    def assertReadmeInvalid(self, text, diagnostic):
+        validator = load_validator()
+        with self.assertRaises(validator.BaselineValidationError) as caught:
+            validator.validate_readme_document(text)
+        self.assertEqual(str(caught.exception), diagnostic)
+
+    def assertMigrationDocumentInvalid(self, text, diagnostic):
+        validator = load_validator()
+        with self.assertRaises(validator.BaselineValidationError) as caught:
+            validator.validate_migration_document(text)
+        self.assertEqual(str(caught.exception), diagnostic)
+
+    def test_reviewed_documents_are_exact_and_semantically_valid(self):
+        self.assertTrue(README_PATH.is_file(), "README is missing")
+        self.assertTrue(
+            MIGRATION_DOCUMENT_PATH.is_file(), "migration document is missing"
+        )
+        self.assertEqual(README_PATH.read_text(encoding="utf-8"), README_CANONICAL)
+        self.assertEqual(
+            MIGRATION_DOCUMENT_PATH.read_text(encoding="utf-8"),
+            MIGRATION_DOCUMENT_CANONICAL,
+        )
+
+        validator = load_validator()
+        self.assertEqual(
+            validator.MIGRATION_DOCUMENT_REQUIRED_STATEMENTS,
+            MIGRATION_DOCUMENT_REQUIRED_STATEMENTS,
+        )
+        validator.validate_readme_document(README_CANONICAL)
+        validator.validate_migration_document(MIGRATION_DOCUMENT_CANONICAL)
+
+    def test_readme_requires_full_sha_and_unweakened_freeze_statement(self):
+        diagnostic = "README is missing the standalone migration freeze statement"
+        mutations = (
+            README_CANONICAL.replace(SOURCE_COMMIT, SOURCE_COMMIT[:7]),
+            README_CANONICAL.replace("is frozen", "is planned to be frozen"),
+            README_CANONICAL.replace("are not accepted", "may be accepted"),
+        )
+        for text in mutations:
+            with self.subTest(text=text):
+                self.assertReadmeInvalid(text, diagnostic)
+
+    def test_readme_rejects_comment_and_negation_wrappers(self):
+        diagnostic = "README is missing the standalone migration freeze statement"
+        commented = README_CANONICAL.replace(
+            README_FREEZE_STATEMENT,
+            f"<!-- {README_FREEZE_STATEMENT} -->",
+        )
+        negated = README_CANONICAL.replace(
+            README_FREEZE_STATEMENT,
+            f"It is not true that {README_FREEZE_STATEMENT}",
+        )
+        fenced = README_CANONICAL.replace(
+            README_FREEZE_STATEMENT,
+            f"```text\n\n{README_FREEZE_STATEMENT}\n\n```",
+        )
+        for text in (commented, negated, fenced):
+            with self.subTest(text=text):
+                self.assertReadmeInvalid(text, diagnostic)
+
+    def test_readme_requires_visible_migration_document_link(self):
+        diagnostic = "README is missing the standalone migration document link"
+        missing = README_CANONICAL.replace(
+            "See [Migration baseline and evidence boundary](docs/migration-baseline.md).",
+            "See the migration baseline documentation.",
+        )
+        commented = README_CANONICAL.replace(
+            "See [Migration baseline and evidence boundary](docs/migration-baseline.md).",
+            "<!-- See [Migration baseline and evidence boundary](docs/migration-baseline.md). -->",
+        )
+        for text in (missing, commented):
+            with self.subTest(text=text):
+                self.assertReadmeInvalid(text, diagnostic)
+
+    def test_document_requires_full_sha_both_architectures_and_known_failures(self):
+        diagnostic = (
+            "migration document is missing a required standalone evidence statement"
+        )
+        mutations = (
+            MIGRATION_DOCUMENT_CANONICAL.replace(SOURCE_COMMIT, SOURCE_COMMIT[:7]),
+            MIGRATION_DOCUMENT_CANONICAL.replace(
+                "Required runner and architecture: `macos-15-intel` / `x86_64`.\n\n",
+                "",
+            ),
+            MIGRATION_DOCUMENT_CANONICAL.replace("`arm64`", "`aarch64`"),
+            MIGRATION_DOCUMENT_CANONICAL.replace(
+                "Known failures must be recorded in MW-MIG-001 with the affected runner, observed architecture, command, exit status, and CI run URL; they must not be converted into passing expectations.\n\n",
+                "",
+            ),
+        )
+        for text in mutations:
+            with self.subTest(text=text):
+                self.assertMigrationDocumentInvalid(text, diagnostic)
+
+    def test_document_rejects_comment_and_negation_wrappers(self):
+        diagnostic = (
+            "migration document is missing a required standalone evidence statement"
+        )
+        for statement in MIGRATION_DOCUMENT_REQUIRED_STATEMENTS:
+            with self.subTest(statement=statement):
+                commented = MIGRATION_DOCUMENT_CANONICAL.replace(
+                    statement, f"<!-- {statement} -->"
+                )
+                negated = MIGRATION_DOCUMENT_CANONICAL.replace(
+                    statement, f"It is not true that {statement}"
+                )
+                fenced = MIGRATION_DOCUMENT_CANONICAL.replace(
+                    statement, f"```text\n\n{statement}\n\n```"
+                )
+                self.assertMigrationDocumentInvalid(commented, diagnostic)
+                self.assertMigrationDocumentInvalid(negated, diagnostic)
+                self.assertMigrationDocumentInvalid(fenced, diagnostic)
+
+    def test_document_requires_all_five_commands_and_evidence_boundaries(self):
+        diagnostic = (
+            "migration document is missing a required standalone evidence statement"
+        )
+        for statement in MIGRATION_DOCUMENT_REQUIRED_STATEMENTS:
+            with self.subTest(statement=statement):
+                mutated = MIGRATION_DOCUMENT_CANONICAL.replace(
+                    f"{statement}\n\n", ""
+                )
+                if mutated == MIGRATION_DOCUMENT_CANONICAL:
+                    mutated = MIGRATION_DOCUMENT_CANONICAL.replace(
+                        f"{statement}\n", ""
+                    )
+                self.assertMigrationDocumentInvalid(mutated, diagnostic)
+
+    def test_document_statement_matching_normalizes_only_ascii_whitespace(self):
+        validator = load_validator()
+        wrapped = MIGRATION_DOCUMENT_CANONICAL.replace(
+            "The authoritative macOS evidence is the GitHub Actions run URL plus the logs and job summary for both required runner and architecture jobs.",
+            "The authoritative macOS evidence is the GitHub Actions run URL plus\n"
+            "the logs and job summary for both required runner and architecture jobs.",
+        )
+        validator.validate_migration_document(wrapped)
+
+        non_ascii_space = MIGRATION_DOCUMENT_CANONICAL.replace(
+            "Windows output is not macOS evidence.",
+            "Windows\u00a0output is not macOS evidence.",
+        )
+        self.assertMigrationDocumentInvalid(
+            non_ascii_space,
+            "migration document is missing a required standalone evidence statement",
+        )
+
+
 class MigrationBaselineGitSourceTests(unittest.TestCase):
     GIT_IDENTITY = (
         "-c",
@@ -622,7 +834,7 @@ class MigrationBaselineGitSourceTests(unittest.TestCase):
                 for variable, value in self.GIT_SAFETY_VARIABLES.items():
                     self.assertEqual(child_environment.get(variable), value)
 
-    def test_main_binds_manifest_before_parsing_the_same_verified_text(self):
+    def test_main_binds_reviewed_bytes_before_semantic_validation(self):
         validator = load_validator()
         events = []
         parsed_manifest = object()
@@ -636,6 +848,12 @@ class MigrationBaselineGitSourceTests(unittest.TestCase):
 
         def validate_source_commit(repository, source_commit):
             events.append(("source", repository, source_commit))
+
+        def validate_readme_document(text):
+            events.append(("readme-semantic", text))
+
+        def validate_migration_document(text):
+            events.append(("migration-semantic", text))
 
         def read_reviewed_text(
             repository, relative_path, expected_text, maximum_bytes
@@ -676,8 +894,18 @@ class MigrationBaselineGitSourceTests(unittest.TestCase):
                             "validate_source_commit",
                             side_effect=validate_source_commit,
                         ):
-                            with mock.patch("builtins.print"):
-                                self.assertEqual(validator.main(), 0)
+                            with mock.patch.object(
+                                validator,
+                                "validate_readme_document",
+                                side_effect=validate_readme_document,
+                            ):
+                                with mock.patch.object(
+                                    validator,
+                                    "validate_migration_document",
+                                    side_effect=validate_migration_document,
+                                ):
+                                    with mock.patch("builtins.print"):
+                                        self.assertEqual(validator.main(), 0)
 
         self.assertEqual(
             events,
@@ -692,6 +920,25 @@ class MigrationBaselineGitSourceTests(unittest.TestCase):
                 ("parse", validator.APPROVED_MANIFEST_TEXT.encode("utf-8")),
                 ("validate", parsed_manifest),
                 ("source", validator.ROOT, validator.SOURCE_COMMIT),
+                (
+                    "reviewed",
+                    validator.ROOT,
+                    validator.README_RELATIVE_PATH,
+                    validator.APPROVED_README_TEXT,
+                    validator.MAX_README_BYTES,
+                ),
+                ("readme-semantic", validator.APPROVED_README_TEXT),
+                (
+                    "reviewed",
+                    validator.ROOT,
+                    validator.MIGRATION_DOCUMENT_RELATIVE_PATH,
+                    validator.APPROVED_MIGRATION_DOCUMENT_TEXT,
+                    validator.MAX_MIGRATION_DOCUMENT_BYTES,
+                ),
+                (
+                    "migration-semantic",
+                    validator.APPROVED_MIGRATION_DOCUMENT_TEXT,
+                ),
             ],
         )
 

@@ -11,10 +11,14 @@ import sys
 
 
 MAX_MANIFEST_BYTES = 65_536
+MAX_README_BYTES = 4_096
+MAX_MIGRATION_DOCUMENT_BYTES = 32_768
 MAX_JSON_INTEGER_DIGITS = 128
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = ROOT / "migration" / "baseline.json"
 MANIFEST_RELATIVE_PATH = "migration/baseline.json"
+README_RELATIVE_PATH = "README.md"
+MIGRATION_DOCUMENT_RELATIVE_PATH = "docs/migration-baseline.md"
 
 SCHEMA_VERSION = 1
 REPOSITORY = "a1112/Mac-Win"
@@ -38,6 +42,91 @@ APPROVED_MANIFEST_TEXT = json.dumps(
     },
     indent=2,
 ) + "\n"
+README_FREEZE_STATEMENT = (
+    f"Mac-Win is frozen at {SOURCE_COMMIT} for migration evidence. "
+    "New SwiftUI, Bridge, and legacy launcher product features are not accepted."
+)
+README_DOCUMENT_LINK_STATEMENT = (
+    "See [Migration baseline and evidence boundary](docs/migration-baseline.md)."
+)
+APPROVED_README_TEXT = f"""# Mac-Win
+
+{README_FREEZE_STATEMENT}
+
+{README_DOCUMENT_LINK_STATEMENT}
+"""
+MIGRATION_DOCUMENT_REQUIRED_STATEMENTS = (
+    f"Mac-Win is frozen at `{SOURCE_COMMIT}` for migration evidence.",
+    "New SwiftUI, Bridge, and legacy launcher product features are not accepted.",
+    f"The immutable annotated baseline tag is `{TAG}`.",
+    "Required runner and architecture: `macos-15` / `arm64`.",
+    "Required runner and architecture: `macos-15-intel` / `x86_64`.",
+    "Required host/test command: `swift --version`.",
+    "Required host/test command: `sw_vers`.",
+    "Required host/test command: `uname -m`.",
+    "Required host/test command: `sysctl -n machdep.cpu.brand_string`.",
+    "Required host/test command: `swift test --package-path MacWinManager`.",
+    "Windows output is not macOS evidence.",
+    "The authoritative macOS evidence is the GitHub Actions run URL plus the "
+    "logs and job summary for both required runner and architecture jobs.",
+    "Known failures must be recorded in MW-MIG-001 with the affected runner, "
+    "observed architecture, command, exit status, and CI run URL; they must not "
+    "be converted into passing expectations.",
+    "Tag evidence must record both the annotated tag object ID and its peeled "
+    "commit ID before MW-MIG-001 closes.",
+    "Before tag publication, rollback is a normal revert of the migration-baseline "
+    "change; a failed or unavailable target keeps MW-MIG-001 open and prevents "
+    "tag publication.",
+    f"After publication, `{TAG}` must not be moved or deleted; corrections use "
+    "a new superseding annotated tag and an explicit issue record.",
+    "MW-MIG-002 is the next owner after MW-MIG-001 completes.",
+    "Asset migration and CompatForge publication are explicitly excluded from "
+    "MW-MIG-001.",
+)
+APPROVED_MIGRATION_DOCUMENT_TEXT = f"""# Mac-Win migration baseline
+
+## Baseline identity and freeze
+
+{MIGRATION_DOCUMENT_REQUIRED_STATEMENTS[0]}
+
+{MIGRATION_DOCUMENT_REQUIRED_STATEMENTS[1]}
+
+{MIGRATION_DOCUMENT_REQUIRED_STATEMENTS[2]}
+
+## Authoritative macOS evidence
+
+{MIGRATION_DOCUMENT_REQUIRED_STATEMENTS[3]}
+
+{MIGRATION_DOCUMENT_REQUIRED_STATEMENTS[4]}
+
+{MIGRATION_DOCUMENT_REQUIRED_STATEMENTS[5]}
+
+{MIGRATION_DOCUMENT_REQUIRED_STATEMENTS[6]}
+
+{MIGRATION_DOCUMENT_REQUIRED_STATEMENTS[7]}
+
+{MIGRATION_DOCUMENT_REQUIRED_STATEMENTS[8]}
+
+{MIGRATION_DOCUMENT_REQUIRED_STATEMENTS[9]}
+
+{MIGRATION_DOCUMENT_REQUIRED_STATEMENTS[10]}
+
+{MIGRATION_DOCUMENT_REQUIRED_STATEMENTS[11]}
+
+{MIGRATION_DOCUMENT_REQUIRED_STATEMENTS[12]}
+
+{MIGRATION_DOCUMENT_REQUIRED_STATEMENTS[13]}
+
+## Rollback and ownership
+
+{MIGRATION_DOCUMENT_REQUIRED_STATEMENTS[14]}
+
+{MIGRATION_DOCUMENT_REQUIRED_STATEMENTS[15]}
+
+{MIGRATION_DOCUMENT_REQUIRED_STATEMENTS[16]}
+
+{MIGRATION_DOCUMENT_REQUIRED_STATEMENTS[17]}
+"""
 TOP_LEVEL_FIELDS = (
     "schemaVersion",
     "repository",
@@ -212,6 +301,85 @@ def validate_source_commit(repository_root, source_commit):
 def _normalize_lf(text):
     """Normalize reviewed CRLF input while preserving every other character."""
     return text.replace("\r\n", "\n")
+
+
+def _strip_hidden_markdown(text):
+    """Remove HTML comments and fenced code before visible-statement checks."""
+    without_comments = re.sub(r"<!--.*?(?:-->|$)", "", text, flags=re.DOTALL)
+    visible_lines = []
+    fence_character = None
+    fence_length = 0
+
+    for line in without_comments.split("\n"):
+        candidate = line.lstrip(" ")
+        indentation = len(line) - len(candidate)
+        leading = len(candidate) - len(candidate.lstrip("`~"))
+        marker = candidate[:leading]
+
+        if fence_character is None:
+            if (
+                indentation <= 3
+                and len(marker) >= 3
+                and len(set(marker)) == 1
+            ):
+                fence_character = marker[0]
+                fence_length = len(marker)
+                continue
+            visible_lines.append(line)
+            continue
+
+        closing = candidate.rstrip(" \t")
+        if (
+            indentation <= 3
+            and closing
+            and set(closing) == {fence_character}
+            and len(closing) >= fence_length
+        ):
+            fence_character = None
+            fence_length = 0
+
+    return "\n".join(visible_lines)
+
+
+def _normalize_ascii_whitespace(text):
+    """Collapse only ASCII whitespace for wrapped standalone statements."""
+    return re.sub(r"[ \t\r\n\f\v]+", " ", text).strip(" ")
+
+
+def _visible_standalone_statements(text):
+    """Return complete visible Markdown blocks, never substring matches."""
+    visible = _strip_hidden_markdown(_normalize_lf(text))
+    blocks = re.split(r"\n[ \t\f\v]*\n", visible)
+    return {
+        normalized
+        for block in blocks
+        if (normalized := _normalize_ascii_whitespace(block))
+    }
+
+
+def validate_readme_document(text):
+    """Require a visible, standalone freeze notice and migration-doc link."""
+    statements = _visible_standalone_statements(text)
+    if README_FREEZE_STATEMENT not in statements:
+        raise BaselineValidationError(
+            "README is missing the standalone migration freeze statement"
+        )
+    if README_DOCUMENT_LINK_STATEMENT not in statements:
+        raise BaselineValidationError(
+            "README is missing the standalone migration document link"
+        )
+
+
+def validate_migration_document(text):
+    """Require every approved evidence boundary as a standalone statement."""
+    statements = _visible_standalone_statements(text)
+    if any(
+        statement not in statements
+        for statement in MIGRATION_DOCUMENT_REQUIRED_STATEMENTS
+    ):
+        raise BaselineValidationError(
+            "migration document is missing a required standalone evidence statement"
+        )
 
 
 def _reviewed_relative_path(relative_path):
@@ -518,6 +686,20 @@ def main():
         manifest = parse_manifest_bytes(reviewed_manifest.encode("utf-8"))
         validate_manifest(manifest)
         validate_source_commit(ROOT, SOURCE_COMMIT)
+        reviewed_readme = read_reviewed_text(
+            ROOT,
+            README_RELATIVE_PATH,
+            APPROVED_README_TEXT,
+            MAX_README_BYTES,
+        )
+        validate_readme_document(reviewed_readme)
+        reviewed_migration_document = read_reviewed_text(
+            ROOT,
+            MIGRATION_DOCUMENT_RELATIVE_PATH,
+            APPROVED_MIGRATION_DOCUMENT_TEXT,
+            MAX_MIGRATION_DOCUMENT_BYTES,
+        )
+        validate_migration_document(reviewed_migration_document)
     except (BaselineValidationError, OSError) as error:
         print(f"migration baseline validation failed: {error}", file=sys.stderr)
         return 1
