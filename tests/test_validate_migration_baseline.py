@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -372,6 +373,271 @@ class MigrationBaselineManifestTests(unittest.TestCase):
 
     def test_rejects_invalid_json(self):
         self.assertRawInvalid(b"{", "manifest is not valid JSON")
+
+
+class MigrationBaselineGitSourceTests(unittest.TestCase):
+    GIT_IDENTITY = (
+        "-c",
+        "user.name=Mac-Win Baseline Tests",
+        "-c",
+        "user.email=baseline-tests@example.invalid",
+    )
+    GIT_OVERRIDE_VARIABLES = (
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_NAMESPACE",
+    )
+    GIT_SAFETY_VARIABLES = {
+        "GIT_NO_LAZY_FETCH": "1",
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_NO_REPLACE_OBJECTS": "1",
+    }
+
+    def setUp(self):
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+        self.test_root = Path(self.temporary_directory.name)
+
+    def runGit(self, repository, *arguments, environment=None, check=True):
+        repository = Path(repository)
+        repository.mkdir(parents=True, exist_ok=True)
+        command = ["git", *self.GIT_IDENTITY, *arguments]
+        result = subprocess.run(
+            command,
+            cwd=repository,
+            env=environment,
+            capture_output=True,
+            text=True,
+            shell=False,
+            check=False,
+        )
+        if check and result.returncode != 0:
+            self.fail(
+                f"Git fixture command failed ({result.returncode}): "
+                f"{command!r}\nstdout: {result.stdout}\nstderr: {result.stderr}"
+            )
+        return result
+
+    def createRepository(
+        self,
+        name,
+        source_text="source\n",
+        descendant_text="descendant\n",
+    ):
+        repository = self.test_root / name
+        self.runGit(repository, "init", "-b", "main")
+
+        tracked = repository / "tracked.txt"
+        tracked.write_text(source_text, encoding="utf-8")
+        self.runGit(repository, "add", "tracked.txt")
+        self.runGit(repository, "commit", "-m", "source")
+        source_commit = self.runGit(
+            repository, "rev-parse", "HEAD"
+        ).stdout.strip()
+
+        tracked.write_text(descendant_text, encoding="utf-8")
+        self.runGit(repository, "add", "tracked.txt")
+        self.runGit(repository, "commit", "-m", "descendant")
+        descendant_commit = self.runGit(
+            repository, "rev-parse", "HEAD"
+        ).stdout.strip()
+        return repository, source_commit, descendant_commit
+
+    def assertSourceInvalid(self, repository, source_commit, diagnostic):
+        validator = load_validator()
+        with self.assertRaises(validator.BaselineValidationError) as caught:
+            validator.validate_source_commit(repository, source_commit)
+        self.assertEqual(str(caught.exception), diagnostic)
+
+    def test_accepts_local_commit_that_is_an_ancestor_of_head(self):
+        repository, source_commit, _ = self.createRepository("target")
+        validator = load_validator()
+
+        validator.validate_source_commit(repository, source_commit)
+
+    def test_rejects_missing_source_object_with_stable_diagnostic(self):
+        repository, _, _ = self.createRepository("target")
+
+        self.assertSourceInvalid(
+            repository,
+            "0" * 40,
+            "source commit is not a local commit object",
+        )
+
+    def test_rejects_blob_tree_and_tag_objects_as_source_commits(self):
+        repository, source_commit, _ = self.createRepository("target")
+        blob = self.runGit(
+            repository, "rev-parse", f"{source_commit}:tracked.txt"
+        ).stdout.strip()
+        tree = self.runGit(
+            repository, "rev-parse", f"{source_commit}^{{tree}}"
+        ).stdout.strip()
+        self.runGit(
+            repository,
+            "tag",
+            "-a",
+            "source-tag",
+            source_commit,
+            "-m",
+            "tag",
+        )
+        tag = self.runGit(
+            repository, "rev-parse", "refs/tags/source-tag"
+        ).stdout.strip()
+
+        objects = (("blob", blob), ("tree", tree), ("tag", tag))
+        for object_name, object_id in objects:
+            with self.subTest(object_type=object_name):
+                self.assertSourceInvalid(
+                    repository,
+                    object_id,
+                    "source commit is not a local commit object",
+                )
+
+    def test_rejects_local_commit_that_is_not_an_ancestor_of_head(self):
+        repository, source_commit, _ = self.createRepository("target")
+        tree = self.runGit(
+            repository, "rev-parse", f"{source_commit}^{{tree}}"
+        ).stdout.strip()
+        unrelated_commit = self.runGit(
+            repository, "commit-tree", tree, "-m", "unrelated root"
+        ).stdout.strip()
+
+        self.assertSourceInvalid(
+            repository,
+            unrelated_commit,
+            "source commit is not an ancestor of HEAD",
+        )
+
+    def test_replace_ref_cannot_supply_a_missing_source_commit(self):
+        repository, source_commit, _ = self.createRepository("target")
+        replaced_object = "1" * 40
+        self.runGit(
+            repository,
+            "update-ref",
+            f"refs/replace/{replaced_object}",
+            source_commit,
+        )
+        unprotected_environment = os.environ.copy()
+        unprotected_environment.pop("GIT_NO_REPLACE_OBJECTS", None)
+        self.assertEqual(
+            self.runGit(
+                repository,
+                "cat-file",
+                "-t",
+                replaced_object,
+                environment=unprotected_environment,
+            ).stdout.strip(),
+            "commit",
+        )
+
+        self.assertSourceInvalid(
+            repository,
+            replaced_object,
+            "source commit is not a local commit object",
+        )
+
+    def test_git_subprocesses_use_target_and_sanitized_environment(self):
+        repository, source_commit, _ = self.createRepository("target")
+        alternate, _, _ = self.createRepository(
+            "alternate",
+            source_text="alternate source\n",
+            descendant_text="alternate descendant\n",
+        )
+        alternate_git = alternate / ".git"
+        self.assertNotEqual(
+            self.runGit(
+                alternate,
+                "cat-file",
+                "-t",
+                source_commit,
+                check=False,
+            ).returncode,
+            0,
+            "fixture must prove the target source object is absent from the alternate",
+        )
+        pollution = {
+            "GIT_DIR": str(alternate_git),
+            "GIT_WORK_TREE": str(alternate),
+            "GIT_COMMON_DIR": str(alternate_git),
+            "GIT_INDEX_FILE": str(alternate_git / "index"),
+            "GIT_OBJECT_DIRECTORY": str(alternate_git / "objects"),
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(alternate_git / "objects"),
+            "GIT_NAMESPACE": "redirected",
+        }
+        validator = load_validator()
+        real_run = subprocess.run
+        recorded_calls = []
+
+        def recording_run(*args, **kwargs):
+            recorded_calls.append((args, kwargs))
+            return real_run(*args, **kwargs)
+
+        with mock.patch.dict(os.environ, pollution, clear=False):
+            with mock.patch.object(
+                validator.subprocess, "run", side_effect=recording_run
+            ):
+                validator.validate_source_commit(repository, source_commit)
+
+        self.assertEqual(len(recorded_calls), 2)
+        self.assertEqual(
+            [call[0][0] for call in recorded_calls],
+            [
+                ["git", "cat-file", "-t", source_commit],
+                [
+                    "git",
+                    "merge-base",
+                    "--is-ancestor",
+                    source_commit,
+                    "HEAD",
+                ],
+            ],
+        )
+        for positional, keywords in recorded_calls:
+            with self.subTest(argv=positional[0]):
+                self.assertIsInstance(positional[0], list)
+                self.assertEqual(keywords["cwd"], repository.resolve())
+                self.assertIs(keywords["shell"], False)
+                self.assertIs(keywords["capture_output"], True)
+                self.assertIs(keywords["text"], False)
+                self.assertIs(keywords["check"], False)
+                child_environment = keywords["env"]
+                for variable in self.GIT_OVERRIDE_VARIABLES:
+                    self.assertNotIn(variable, child_environment)
+                for variable, value in self.GIT_SAFETY_VARIABLES.items():
+                    self.assertEqual(child_environment.get(variable), value)
+
+    def test_main_validates_source_after_loading_manifest(self):
+        validator = load_validator()
+        events = []
+
+        def load_manifest():
+            events.append("manifest")
+            return copy.deepcopy(CANONICAL)
+
+        def validate_source_commit(repository, source_commit):
+            events.append(("source", repository, source_commit))
+
+        with mock.patch.object(validator, "load_manifest", side_effect=load_manifest):
+            with mock.patch.object(
+                validator,
+                "validate_source_commit",
+                side_effect=validate_source_commit,
+            ):
+                with mock.patch("builtins.print"):
+                    self.assertEqual(validator.main(), 0)
+
+        self.assertEqual(
+            events,
+            [
+                "manifest",
+                ("source", validator.ROOT, validator.SOURCE_COMMIT),
+            ],
+        )
 
 
 if __name__ == "__main__":

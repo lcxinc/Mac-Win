@@ -2,8 +2,10 @@
 """Validate the closed Mac-Win migration baseline manifest contract."""
 
 import json
+import os
 from pathlib import Path
 import re
+import subprocess
 import sys
 
 
@@ -31,6 +33,20 @@ TOP_LEVEL_FIELDS = (
     "evidenceTargets",
     "frozenFeatureAreas",
 )
+GIT_ENVIRONMENT_OVERRIDES = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_NAMESPACE",
+)
+GIT_SAFETY_ENVIRONMENT = {
+    "GIT_NO_LAZY_FETCH": "1",
+    "GIT_TERMINAL_PROMPT": "0",
+    "GIT_NO_REPLACE_OBJECTS": "1",
+}
 
 
 class BaselineValidationError(ValueError):
@@ -133,9 +149,56 @@ def load_manifest(path=MANIFEST_PATH):
     return manifest
 
 
+def _git_environment():
+    """Return a local-only Git environment independent of caller overrides."""
+    environment = os.environ.copy()
+    for variable in GIT_ENVIRONMENT_OVERRIDES:
+        environment.pop(variable, None)
+    environment.update(GIT_SAFETY_ENVIRONMENT)
+    return environment
+
+
+def _run_git(repository_root, arguments, check=False):
+    """Run Git without a shell at one resolved repository root."""
+    try:
+        result = subprocess.run(
+            ["git", *arguments],
+            cwd=Path(repository_root).resolve(),
+            env=_git_environment(),
+            shell=False,
+            capture_output=True,
+            text=False,
+            check=False,
+        )
+    except OSError as error:
+        raise BaselineValidationError("Git command could not be started") from error
+
+    if check and result.returncode != 0:
+        raise BaselineValidationError("Git command failed")
+    return result
+
+
+def validate_source_commit(repository_root, source_commit):
+    """Require a local commit object that is an ancestor of the current HEAD."""
+    object_type = _run_git(
+        repository_root,
+        ["cat-file", "-t", source_commit],
+    )
+    if object_type.returncode != 0 or object_type.stdout.strip() != b"commit":
+        raise BaselineValidationError("source commit is not a local commit object")
+
+    ancestor = _run_git(
+        repository_root,
+        ["merge-base", "--is-ancestor", source_commit, "HEAD"],
+    )
+    if ancestor.returncode != 0:
+        raise BaselineValidationError("source commit is not an ancestor of HEAD")
+
+
 def main():
     try:
         load_manifest()
+        validate_source_commit(ROOT, SOURCE_COMMIT)
     except (BaselineValidationError, OSError) as error:
         print(f"migration baseline validation failed: {error}", file=sys.stderr)
         return 1
