@@ -881,9 +881,18 @@ class AssetDependencyTests(unittest.TestCase):
             },
             {
                 "absolute-path": 23,
-                "environment-path": 49,
+                "environment-path": 50,
                 "repository-path": 35,
             },
+        )
+        self.assertIn(
+            {
+                "sourcePath": "scripts/run-software-smoke.sh",
+                "locator": "MACWIN_WINE_MONO_MSI",
+                "kind": "environment-path",
+                "status": "unexpanded",
+            },
+            development,
         )
         absolute = [
             entry for entry in development if entry["kind"] == "absolute-path"

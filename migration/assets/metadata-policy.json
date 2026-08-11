@@ -791,7 +791,8 @@
           "MACWIN_ROOT",
           "MACWIN_ROSETTA_X87_PATH",
           "MACWIN_SMOKE_PREFIX",
-          "MACWIN_VISUAL_PROBE"
+          "MACWIN_VISUAL_PROBE",
+          "MACWIN_WINE_MONO_MSI"
         ]
       },
       {
