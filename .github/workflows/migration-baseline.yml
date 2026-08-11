@@ -1,0 +1,94 @@
+name: Migration baseline
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  repository-contract:
+    name: Repository contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Validate repository contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -B -m unittest discover -s tests -p "test_*.py" -v
+          python tools/validate_migration_baseline.py
+
+  swift-evidence:
+    name: Swift evidence (${{ matrix.runner }} / ${{ matrix.architecture }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            architecture: arm64
+          - runner: macos-15-intel
+            architecture: x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Record and verify host facts
+        shell: bash
+        env:
+          EVIDENCE_RUNNER: ${{ matrix.runner }}
+          EXPECTED_ARCHITECTURE: ${{ matrix.architecture }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Swift evidence: ${EVIDENCE_RUNNER} / ${EXPECTED_ARCHITECTURE}"
+            echo
+            echo "### swift --version"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          swift --version | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "### sw_vers" | tee -a "$GITHUB_STEP_SUMMARY"
+          sw_vers | tee -a "$GITHUB_STEP_SUMMARY"
+          observed_architecture="$(uname -m)"
+          {
+            echo "### uname -m"
+            echo "$observed_architecture"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          cpu_brand="$(sysctl -n machdep.cpu.brand_string)"
+          {
+            echo "### sysctl -n machdep.cpu.brand_string"
+            echo "$cpu_brand"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          if [[ "$observed_architecture" != "$EXPECTED_ARCHITECTURE" ]]; then
+            echo "Architecture mismatch: expected ${EXPECTED_ARCHITECTURE}, observed ${observed_architecture}." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+      - name: Test Swift package
+        shell: bash
+        run: |
+          set -uo pipefail
+          {
+            echo "### swift test --package-path MacWinManager"
+            echo '```text'
+          } >> "$GITHUB_STEP_SUMMARY"
+          set +e
+          swift test --package-path MacWinManager 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
+          swift_status=${PIPESTATUS[0]}
+          set -e
+          {
+            echo '```'
+            echo
+            echo "Swift test exit status: ${swift_status}"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          exit "$swift_status"

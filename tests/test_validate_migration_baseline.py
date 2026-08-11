@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import importlib.util
 import json
 import os
@@ -18,6 +19,7 @@ VALIDATOR_PATH = ROOT / "tools" / "validate_migration_baseline.py"
 MANIFEST_PATH = ROOT / "migration" / "baseline.json"
 README_PATH = ROOT / "README.md"
 MIGRATION_DOCUMENT_PATH = ROOT / "docs" / "migration-baseline.md"
+WORKFLOW_PATH = ROOT / ".github" / "workflows" / "migration-baseline.yml"
 
 SOURCE_COMMIT = "4e421fbea6f59e73e4f813c1f0a14e8db9e36de7"
 BASELINE_TAG = "mw-migration-baseline-4e421fb"
@@ -80,6 +82,103 @@ MIGRATION_DOCUMENT_REQUIRED_STATEMENTS = tuple(
     for block in MIGRATION_DOCUMENT_CANONICAL.split("\n\n")
     if block and not block.startswith("#")
 )
+CHECKOUT_ACTION = "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683"
+WORKFLOW_CANONICAL = """name: Migration baseline
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  repository-contract:
+    name: Repository contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Validate repository contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -B -m unittest discover -s tests -p "test_*.py" -v
+          python tools/validate_migration_baseline.py
+
+  swift-evidence:
+    name: Swift evidence (${{ matrix.runner }} / ${{ matrix.architecture }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            architecture: arm64
+          - runner: macos-15-intel
+            architecture: x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Record and verify host facts
+        shell: bash
+        env:
+          EVIDENCE_RUNNER: ${{ matrix.runner }}
+          EXPECTED_ARCHITECTURE: ${{ matrix.architecture }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Swift evidence: ${EVIDENCE_RUNNER} / ${EXPECTED_ARCHITECTURE}"
+            echo
+            echo "### swift --version"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          swift --version | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "### sw_vers" | tee -a "$GITHUB_STEP_SUMMARY"
+          sw_vers | tee -a "$GITHUB_STEP_SUMMARY"
+          observed_architecture="$(uname -m)"
+          {
+            echo "### uname -m"
+            echo "$observed_architecture"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          cpu_brand="$(sysctl -n machdep.cpu.brand_string)"
+          {
+            echo "### sysctl -n machdep.cpu.brand_string"
+            echo "$cpu_brand"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          if [[ "$observed_architecture" != "$EXPECTED_ARCHITECTURE" ]]; then
+            echo "Architecture mismatch: expected ${EXPECTED_ARCHITECTURE}, observed ${observed_architecture}." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+      - name: Test Swift package
+        shell: bash
+        run: |
+          set -uo pipefail
+          {
+            echo "### swift test --package-path MacWinManager"
+            echo '```text'
+          } >> "$GITHUB_STEP_SUMMARY"
+          set +e
+          swift test --package-path MacWinManager 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
+          swift_status=${PIPESTATUS[0]}
+          set -e
+          {
+            echo '```'
+            echo
+            echo "Swift test exit status: ${swift_status}"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          exit "$swift_status"
+"""
+WORKFLOW_SHA256 = hashlib.sha256(WORKFLOW_CANONICAL.encode("utf-8")).hexdigest()
 
 CANONICAL = {
     "schemaVersion": 1,
@@ -598,6 +697,181 @@ class MigrationBaselineDocumentTests(unittest.TestCase):
         )
 
 
+class MigrationBaselineWorkflowTests(unittest.TestCase):
+    DIGEST_DIAGNOSTIC = "migration workflow does not match the approved SHA-256 seal"
+    SEMANTIC_DIAGNOSTIC = "migration workflow structure is not approved"
+
+    def assertWorkflowInvalid(self, text, diagnostic=None):
+        validator = load_validator()
+        with self.assertRaises(validator.BaselineValidationError) as caught:
+            validator.validate_workflow_document(text)
+        self.assertEqual(
+            str(caught.exception),
+            diagnostic or self.DIGEST_DIAGNOSTIC,
+        )
+
+    def test_reviewed_workflow_is_exact_sealed_and_semantically_valid(self):
+        self.assertTrue(WORKFLOW_PATH.is_file(), "migration workflow is missing")
+        self.assertEqual(WORKFLOW_PATH.read_text(encoding="utf-8"), WORKFLOW_CANONICAL)
+
+        validator = load_validator()
+        self.assertEqual(validator.APPROVED_WORKFLOW_TEXT, WORKFLOW_CANONICAL)
+        self.assertEqual(validator.WORKFLOW_SHA256, WORKFLOW_SHA256)
+        self.assertEqual(
+            hashlib.sha256(
+                WORKFLOW_PATH.read_text(encoding="utf-8").encode("utf-8")
+            ).hexdigest(),
+            WORKFLOW_SHA256,
+        )
+        validator.validate_workflow_document(WORKFLOW_CANONICAL)
+
+    def test_accepts_crlf_equivalent_workflow(self):
+        validator = load_validator()
+        validator.validate_workflow_document(
+            WORKFLOW_CANONICAL.replace("\n", "\r\n")
+        )
+
+    def test_digest_is_checked_before_semantic_validation(self):
+        validator = load_validator()
+        drifted = WORKFLOW_CANONICAL.replace("ubuntu-24.04", "ubuntu-latest", 1)
+        with mock.patch.object(
+            validator,
+            "_validate_workflow_semantics",
+            side_effect=AssertionError("semantic helper must not inspect unsealed text"),
+        ) as semantic:
+            with self.assertRaises(validator.BaselineValidationError) as caught:
+                validator.validate_workflow_document(drifted)
+        self.assertEqual(str(caught.exception), self.DIGEST_DIAGNOSTIC)
+        semantic.assert_not_called()
+
+    def test_sealed_workflow_reaches_semantic_validation_once(self):
+        validator = load_validator()
+        with mock.patch.object(
+            validator, "_validate_workflow_semantics"
+        ) as semantic:
+            validator.validate_workflow_document(WORKFLOW_CANONICAL)
+        semantic.assert_called_once_with(WORKFLOW_CANONICAL)
+
+    def test_rejects_required_structure_mutations_and_comment_decoys(self):
+        pinned = CHECKOUT_ACTION
+        mutations = {
+            "missing Intel row": WORKFLOW_CANONICAL.replace(
+                "          - runner: macos-15-intel\n"
+                "            architecture: x86_64\n",
+                "",
+            ),
+            "swapped Intel architecture": WORKFLOW_CANONICAL.replace(
+                "          - runner: macos-15-intel\n"
+                "            architecture: x86_64\n",
+                "          - runner: macos-15-intel\n"
+                "            architecture: arm64\n",
+            ),
+            "mutable checkout": WORKFLOW_CANONICAL.replace(pinned, "actions/checkout@v4"),
+            "write permission": WORKFLOW_CANONICAL.replace(
+                "  contents: read\n", "  contents: write\n"
+            ),
+            "changed Swift command": WORKFLOW_CANONICAL.replace(
+                "swift test --package-path MacWinManager 2>&1",
+                "swift test --package-path Other 2>&1",
+            ),
+            "hidden test fallback": WORKFLOW_CANONICAL.replace(
+                "swift test --package-path MacWinManager 2>&1 | tee",
+                "swift test --package-path MacWinManager 2>&1 || true | tee",
+            ),
+            "missing fetch depth": WORKFLOW_CANONICAL.replace(
+                "          fetch-depth: 0\n", "", 1
+            ),
+            "shallow checkout": WORKFLOW_CANONICAL.replace(
+                "          fetch-depth: 0\n", "          fetch-depth: 1\n", 1
+            ),
+            "comment-only Intel decoy": WORKFLOW_CANONICAL.replace(
+                "          - runner: macos-15-intel\n"
+                "            architecture: x86_64\n",
+                "          # - runner: macos-15-intel\n"
+                "          #   architecture: x86_64\n",
+            ),
+            "comment-only fetch-depth decoy": WORKFLOW_CANONICAL.replace(
+                "          fetch-depth: 0\n",
+                "          # fetch-depth: 0\n",
+                1,
+            ),
+        }
+        for name, text in mutations.items():
+            with self.subTest(name=name):
+                self.assertNotEqual(text, WORKFLOW_CANONICAL)
+                self.assertWorkflowInvalid(text)
+
+    def test_rejects_forbidden_capability_and_failure_masking_mutations(self):
+        insert_at_job = "  repository-contract:\n"
+        mutations = {
+            "continue on error": WORKFLOW_CANONICAL.replace(
+                "      - name: Test Swift package\n",
+                "      - name: Test Swift package\n        continue-on-error: true\n",
+            ),
+            "artifact upload": WORKFLOW_CANONICAL.replace(
+                insert_at_job,
+                "  publish-artifact:\n"
+                "    runs-on: ubuntu-24.04\n"
+                "    steps:\n"
+                "      - uses: actions/upload-artifact@v4\n\n"
+                + insert_at_job,
+            ),
+            "release write": WORKFLOW_CANONICAL.replace(
+                "  contents: read\n", "  contents: write\n  packages: write\n"
+            ),
+            "download": WORKFLOW_CANONICAL.replace(
+                "          set -euo pipefail\n",
+                "          set -euo pipefail\n          curl https://example.invalid/tool\n",
+                1,
+            ),
+            "Bottle mutation": WORKFLOW_CANONICAL.replace(
+                "          set -euo pipefail\n",
+                "          set -euo pipefail\n          rm -rf Bottle\n",
+                1,
+            ),
+            "product launch": WORKFLOW_CANONICAL.replace(
+                "          set -euo pipefail\n",
+                "          set -euo pipefail\n          open MacWinManager.app\n",
+                1,
+            ),
+        }
+        for name, text in mutations.items():
+            with self.subTest(name=name):
+                self.assertWorkflowInvalid(text)
+
+    def test_semantic_structure_does_not_treat_yaml_comments_as_configuration(self):
+        validator = load_validator()
+        decoys = (
+            WORKFLOW_CANONICAL.replace(
+                "          - runner: macos-15-intel\n"
+                "            architecture: x86_64\n",
+                "          # - runner: macos-15-intel\n"
+                "          #   architecture: x86_64\n",
+            ),
+            WORKFLOW_CANONICAL.replace(
+                "  contents: read\n", "  # contents: read\n"
+            ),
+        )
+        for text in decoys:
+            with self.subTest(text=text):
+                with self.assertRaises(validator.BaselineValidationError) as caught:
+                    validator._validate_workflow_semantics(text)
+                self.assertEqual(str(caught.exception), self.SEMANTIC_DIAGNOSTIC)
+
+    def test_rejects_every_single_byte_drift_from_the_sealed_workflow(self):
+        validator = load_validator()
+        raw = WORKFLOW_CANONICAL.encode("utf-8")
+        for index in range(len(raw)):
+            mutated = bytearray(raw)
+            mutated[index] ^= 1
+            with self.subTest(index=index):
+                with self.assertRaises(validator.BaselineValidationError) as caught:
+                    validator.validate_workflow_document(
+                        bytes(mutated).decode("utf-8", errors="strict")
+                    )
+                self.assertEqual(str(caught.exception), self.DIGEST_DIAGNOSTIC)
+
+
 class MigrationBaselineGitSourceTests(unittest.TestCase):
     GIT_IDENTITY = (
         "-c",
@@ -938,6 +1212,13 @@ class MigrationBaselineGitSourceTests(unittest.TestCase):
                 (
                     "migration-semantic",
                     validator.APPROVED_MIGRATION_DOCUMENT_TEXT,
+                ),
+                (
+                    "reviewed",
+                    validator.ROOT,
+                    validator.WORKFLOW_RELATIVE_PATH,
+                    validator.APPROVED_WORKFLOW_TEXT,
+                    validator.MAX_WORKFLOW_BYTES,
                 ),
             ],
         )

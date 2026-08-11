@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Validate the closed Mac-Win migration baseline manifest contract."""
 
+import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -13,12 +14,14 @@ import sys
 MAX_MANIFEST_BYTES = 65_536
 MAX_README_BYTES = 4_096
 MAX_MIGRATION_DOCUMENT_BYTES = 32_768
+MAX_WORKFLOW_BYTES = 16_384
 MAX_JSON_INTEGER_DIGITS = 128
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = ROOT / "migration" / "baseline.json"
 MANIFEST_RELATIVE_PATH = "migration/baseline.json"
 README_RELATIVE_PATH = "README.md"
 MIGRATION_DOCUMENT_RELATIVE_PATH = "docs/migration-baseline.md"
+WORKFLOW_RELATIVE_PATH = ".github/workflows/migration-baseline.yml"
 
 SCHEMA_VERSION = 1
 REPOSITORY = "a1112/Mac-Win"
@@ -127,6 +130,102 @@ APPROVED_MIGRATION_DOCUMENT_TEXT = f"""# Mac-Win migration baseline
 
 {MIGRATION_DOCUMENT_REQUIRED_STATEMENTS[17]}
 """
+APPROVED_WORKFLOW_TEXT = """name: Migration baseline
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  repository-contract:
+    name: Repository contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Validate repository contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -B -m unittest discover -s tests -p "test_*.py" -v
+          python tools/validate_migration_baseline.py
+
+  swift-evidence:
+    name: Swift evidence (${{ matrix.runner }} / ${{ matrix.architecture }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            architecture: arm64
+          - runner: macos-15-intel
+            architecture: x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Record and verify host facts
+        shell: bash
+        env:
+          EVIDENCE_RUNNER: ${{ matrix.runner }}
+          EXPECTED_ARCHITECTURE: ${{ matrix.architecture }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Swift evidence: ${EVIDENCE_RUNNER} / ${EXPECTED_ARCHITECTURE}"
+            echo
+            echo "### swift --version"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          swift --version | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "### sw_vers" | tee -a "$GITHUB_STEP_SUMMARY"
+          sw_vers | tee -a "$GITHUB_STEP_SUMMARY"
+          observed_architecture="$(uname -m)"
+          {
+            echo "### uname -m"
+            echo "$observed_architecture"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          cpu_brand="$(sysctl -n machdep.cpu.brand_string)"
+          {
+            echo "### sysctl -n machdep.cpu.brand_string"
+            echo "$cpu_brand"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          if [[ "$observed_architecture" != "$EXPECTED_ARCHITECTURE" ]]; then
+            echo "Architecture mismatch: expected ${EXPECTED_ARCHITECTURE}, observed ${observed_architecture}." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+      - name: Test Swift package
+        shell: bash
+        run: |
+          set -uo pipefail
+          {
+            echo "### swift test --package-path MacWinManager"
+            echo '```text'
+          } >> "$GITHUB_STEP_SUMMARY"
+          set +e
+          swift test --package-path MacWinManager 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
+          swift_status=${PIPESTATUS[0]}
+          set -e
+          {
+            echo '```'
+            echo
+            echo "Swift test exit status: ${swift_status}"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          exit "$swift_status"
+"""
+WORKFLOW_SHA256 = "82c8ff0e1023ee51ed3916c114ab6a4cdceb75ee1865e173e1303d438bc172a6"
 TOP_LEVEL_FIELDS = (
     "schemaVersion",
     "repository",
@@ -380,6 +479,49 @@ def validate_migration_document(text):
         raise BaselineValidationError(
             "migration document is missing a required standalone evidence statement"
         )
+
+
+def _workflow_semantic_lines(text):
+    """Return active, non-comment YAML lines without interpreting comment decoys."""
+    normalized = _normalize_lf(text)
+    active_lines = []
+    for line in normalized.split("\n"):
+        if not line.strip():
+            continue
+        if line.lstrip(" ").startswith("#"):
+            continue
+        active_lines.append(line)
+    return tuple(active_lines)
+
+
+def _validate_workflow_semantics(text):
+    """Require the complete approved active YAML structure."""
+    if type(text) is not str or _workflow_semantic_lines(
+        text
+    ) != _workflow_semantic_lines(APPROVED_WORKFLOW_TEXT):
+        raise BaselineValidationError(
+            "migration workflow structure is not approved"
+        )
+
+
+def validate_workflow_document(text):
+    """Check the LF-normalized whole-file seal before YAML semantic checks."""
+    if type(text) is not str:
+        raise BaselineValidationError(
+            "migration workflow does not match the approved SHA-256 seal"
+        )
+    normalized = _normalize_lf(text)
+    try:
+        digest = hashlib.sha256(normalized.encode("utf-8", errors="strict")).hexdigest()
+    except UnicodeEncodeError as error:
+        raise BaselineValidationError(
+            "migration workflow does not match the approved SHA-256 seal"
+        ) from error
+    if digest != WORKFLOW_SHA256:
+        raise BaselineValidationError(
+            "migration workflow does not match the approved SHA-256 seal"
+        )
+    _validate_workflow_semantics(normalized)
 
 
 def _reviewed_relative_path(relative_path):
@@ -700,6 +842,13 @@ def main():
             MAX_MIGRATION_DOCUMENT_BYTES,
         )
         validate_migration_document(reviewed_migration_document)
+        reviewed_workflow = read_reviewed_text(
+            ROOT,
+            WORKFLOW_RELATIVE_PATH,
+            APPROVED_WORKFLOW_TEXT,
+            MAX_WORKFLOW_BYTES,
+        )
+        validate_workflow_document(reviewed_workflow)
     except (BaselineValidationError, OSError) as error:
         print(f"migration baseline validation failed: {error}", file=sys.stderr)
         return 1
