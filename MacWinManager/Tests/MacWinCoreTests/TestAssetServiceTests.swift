@@ -30,19 +30,28 @@ struct TestAssetServiceTests {
         #expect(report.statuses.contains { $0.id == "jasp-createprocess" && $0.required == false })
         #expect(report.statuses.contains { $0.id == "jasp-createprocess-source" && $0.kind == .source && $0.required == false })
         #expect(report.requiredCount == TestAssetService.defaultDefinitions.filter(\.required).count)
-        #expect(report.runbook?.suiteCommand?.last?.hasSuffix("run-suite.sh") == true)
         #expect(report.runbook?.groups.contains { $0.category == .graphics && $0.assetIds.contains("vulkan") } == true)
-        #expect(report.runbook?.groups.flatMap(\.commands).first { $0.assetId == "console" }?.command?.last == "00_console_probe")
-        #expect(report.runbook?.groups.flatMap(\.commands).first { $0.assetId == "iphlpapi-adapters" }?.command?.last == "15_iphlpapi_probe")
-        #expect(report.runbook?.groups.flatMap(\.commands).first { $0.assetId == "tls-winhttp-win32" }?.command?.last == "10_tls_winhttp_probe_win32")
-        #expect(report.runbook?.groups.flatMap(\.commands).first { $0.assetId == "tls-winhttp-win32" }?.note?.contains("WoW64") == true)
-        #expect(TestAssetService().runCommand(forAssetId: "window-input")?.command?.last == "80_window_input_probe")
-        #expect(TestAssetService().runCommand(forAssetId: "ipc-file-mapping")?.command?.last == "90_ipc_file_mapping_probe")
-        #expect(TestAssetService().runCommand(forAssetId: "network-list-manager")?.command?.last == "92_network_list_probe")
-        #expect(TestAssetService().runCommand(forAssetId: "network-list-manager-win32")?.command?.last == "92_network_list_probe_win32")
-        #expect(TestAssetService().runCommand(forAssetId: "jasp-boost-ipc")?.command?.last == "95_jasp_boost_ipc_probe")
-        #expect(TestAssetService().runCommand(forAssetId: "jasp-special-float-eh")?.command?.last == "96_jasp_special_float_eh_probe")
-        #expect(TestAssetService().runCommand(forAssetId: "jasp-createprocess")?.command?.last == "97_jasp_createprocess_probe")
+        let hasLocalProbeSuite = FileManager.default.fileExists(
+            atPath: URL(fileURLWithPath: TestAssetService.defaultRootPath)
+                .appendingPathComponent("run-suite.sh").path
+        )
+        if hasLocalProbeSuite {
+            #expect(report.runbook?.suiteCommand?.last?.hasSuffix("run-suite.sh") == true)
+            #expect(report.runbook?.groups.flatMap(\.commands).first { $0.assetId == "console" }?.command?.last == "00_console_probe")
+            #expect(report.runbook?.groups.flatMap(\.commands).first { $0.assetId == "iphlpapi-adapters" }?.command?.last == "15_iphlpapi_probe")
+            #expect(report.runbook?.groups.flatMap(\.commands).first { $0.assetId == "tls-winhttp-win32" }?.command?.last == "10_tls_winhttp_probe_win32")
+            #expect(report.runbook?.groups.flatMap(\.commands).first { $0.assetId == "tls-winhttp-win32" }?.note?.contains("WoW64") == true)
+            #expect(TestAssetService().runCommand(forAssetId: "window-input")?.command?.last == "80_window_input_probe")
+            #expect(TestAssetService().runCommand(forAssetId: "ipc-file-mapping")?.command?.last == "90_ipc_file_mapping_probe")
+            #expect(TestAssetService().runCommand(forAssetId: "network-list-manager")?.command?.last == "92_network_list_probe")
+            #expect(TestAssetService().runCommand(forAssetId: "network-list-manager-win32")?.command?.last == "92_network_list_probe_win32")
+            #expect(TestAssetService().runCommand(forAssetId: "jasp-boost-ipc")?.command?.last == "95_jasp_boost_ipc_probe")
+            #expect(TestAssetService().runCommand(forAssetId: "jasp-special-float-eh")?.command?.last == "96_jasp_special_float_eh_probe")
+            #expect(TestAssetService().runCommand(forAssetId: "jasp-createprocess")?.command?.last == "97_jasp_createprocess_probe")
+        } else {
+            #expect(report.runbook?.suiteCommand == nil)
+            #expect(report.missingRequiredCount > 0)
+        }
     }
 
     @Test("Missing required assets are counted")

@@ -131,8 +131,12 @@ struct CatalogServiceTests {
         #expect(portableApps.installer.sha256 == "f7ad3bb79472222a807b054cb7092c1cefcd3bdcd86d35a51244723c8df54562")
         #expect(portableApps.engineRequirements.requiresWin32)
         #expect(portableApps.launchers.first?.exePath == "C:\\PortableApps\\PortableApps.com\\PortableAppsPlatform.exe")
+        let localProbeRootExists = FileManager.default.fileExists(atPath: TestAssetService.defaultRootPath)
         for launcher in coreTests.launchers {
-            #expect(FileManager.default.fileExists(atPath: launcher.exePath))
+            #expect(launcher.exePath.hasPrefix(TestAssetService.defaultRootPath + "/"))
+            if localProbeRootExists {
+                #expect(FileManager.default.fileExists(atPath: launcher.exePath))
+            }
         }
     }
 
