@@ -2045,5 +2045,87 @@ class AssetCanonicalOutputTests(unittest.TestCase):
         self.assertIn(relative_path, documents)
 
 
+class InventoryGenerationFailureTests(unittest.TestCase):
+    def test_validator_normalizes_all_generator_contract_failures_without_reflection(self):
+        validator = load_inventory_validator()
+        policy = generator.load_policy()
+        failures = (
+            "inventory governed Git object is invalid",
+            "inventory governed Git object identity is invalid",
+            "inventory dependency evidence does not match policy",
+            "hostile path\n\x1b[31mspoofed diagnostic",
+        )
+        for diagnostic in failures:
+            with self.subTest(diagnostic=diagnostic):
+                with mock.patch.object(
+                    validator, "_read_reviewed_policy", return_value=policy
+                ), mock.patch.object(
+                    validator,
+                    "generate_inventory_documents",
+                    side_effect=validator.generator.InventoryError(diagnostic),
+                ):
+                    with self.assertRaisesRegex(
+                        validator.InventoryValidationError,
+                        "^migration asset inventory generation failed$",
+                    ) as caught:
+                        validator.validate_inventory(ROOT)
+                self.assertNotIn("hostile", str(caught.exception))
+                self.assertNotIn("spoofed", str(caught.exception))
+
+    def test_validator_does_not_swallow_os_or_programming_errors(self):
+        validator = load_inventory_validator()
+        policy = generator.load_policy()
+        for failure in (OSError("filesystem failure"), RuntimeError("programming bug")):
+            with self.subTest(error_type=type(failure).__name__):
+                with mock.patch.object(
+                    validator, "_read_reviewed_policy", return_value=policy
+                ), mock.patch.object(
+                    validator,
+                    "generate_inventory_documents",
+                    side_effect=failure,
+                ):
+                    with self.assertRaises(type(failure)) as caught:
+                        validator.validate_inventory(ROOT)
+                self.assertIs(caught.exception, failure)
+
+    def test_isolated_entrypoint_returns_fixed_single_line_failure_without_cache(self):
+        source = """
+import tools.validate_migration_asset_inventory as validator
+validator._read_reviewed_policy = lambda _root: {}
+def fail(*_args, **_kwargs):
+    raise validator.generator.InventoryError(
+        "hostile missing object\\n\\x1b[31mspoofed diagnostic"
+    )
+validator.generate_inventory_documents = fail
+raise SystemExit(validator.main([]))
+"""
+        with tempfile.TemporaryDirectory(
+            prefix="inventory failure cache "
+        ) as directory:
+            cache = Path(directory) / "cache"
+            environment = os.environ.copy()
+            environment["PYTHONDONTWRITEBYTECODE"] = "1"
+            environment["PYTHONPYCACHEPREFIX"] = str(cache)
+            result = subprocess.run(
+                [sys.executable, "-B", "-c", source],
+                cwd=ROOT,
+                env=environment,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertEqual(result.stdout, b"")
+            self.assertEqual(
+                result.stderr,
+                b"migration asset inventory failed: "
+                b"migration asset inventory generation failed"
+                + NATIVE_LINE_ENDING,
+            )
+            self.assertNotIn(b"Traceback", result.stderr)
+            self.assertNotIn(b"hostile", result.stderr)
+            self.assertNotIn(b"spoofed", result.stderr)
+            self.assertEqual(list(cache.rglob("*.pyc")), [])
+
+
 if __name__ == "__main__":
     unittest.main()

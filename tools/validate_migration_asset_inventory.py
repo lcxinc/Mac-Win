@@ -428,7 +428,12 @@ def _read_reviewed_policy(repository_root):
 def validate_inventory(repository_root=ROOT):
     """Regenerate in memory and verify exact reviewed worktree/index bytes."""
     policy = _read_reviewed_policy(repository_root)
-    expected = generate_inventory_documents(repository_root, policy=policy)
+    try:
+        expected = generate_inventory_documents(repository_root, policy=policy)
+    except generator.InventoryError as error:
+        raise InventoryValidationError(
+            "migration asset inventory generation failed"
+        ) from error
     actual = {
         path: _read_reviewed_document(repository_root, path, raw)
         for path, raw in expected.items()
