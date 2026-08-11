@@ -23,6 +23,7 @@ MAX_DOCUMENT_BYTES = 64 * 1024
 MAX_JSON_DEPTH = 128
 MAX_JSON_INTEGER_DIGITS = 128
 MAX_ASSET_BYTES = 1024 * 1024
+MAX_GIT_CONFIG_LIST_BYTES = 64 * 1024
 
 GOVERNED_TREE_PATHS = (
     "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog",
@@ -431,23 +432,55 @@ def _validate_primary_object_database(repository_root):
                 )
         pack_directory = object_directory / "pack"
         if pack_directory.exists() and any(
-            path.is_file() and path.suffix == ".promisor"
+            path.is_file() and path.suffix.casefold() == ".promisor"
             for path in pack_directory.iterdir()
         ):
             raise InventoryError("inventory Git object database is not self-contained")
     except OSError as error:
         raise InventoryError("inventory Git object database is invalid") from error
 
-    promisor = _run_git(
-        root,
+    for scope in ("local", "worktree"):
+        for key in _git_config_scope_keys(root, scope):
+            folded = key.casefold()
+            if folded == "extensions.partialclone" or (
+                folded.startswith("remote.") and folded.endswith(".promisor")
+            ):
+                raise InventoryError(
+                    "inventory Git object database is not self-contained"
+                )
+
+
+_WORKTREE_CONFIG_UNAVAILABLE = (
+    b"fatal: --worktree cannot be used with multiple working trees unless the config\n"
+    b"extension worktreeConfig is enabled. Please read \"CONFIGURATION FILE\"\n"
+    b"section in \"git help worktree\" for details\n"
+)
+
+
+def _git_config_scope_keys(repository_root, scope):
+    result = _run_git(
+        repository_root,
         "config",
-        "--local",
-        "--get-regexp",
-        r"^(extensions\.partialClone|remote\..*\.promisor)$",
-        allowed_returncodes=(0, 1),
+        f"--{scope}",
+        "--name-only",
+        "--list",
+        allowed_returncodes=None,
     )
-    if promisor.returncode == 0 or promisor.stdout:
-        raise InventoryError("inventory Git object database is not self-contained")
+    if scope == "worktree" and result.returncode == 128:
+        if result.stdout == b"" and result.stderr == _WORKTREE_CONFIG_UNAVAILABLE:
+            return ()
+        raise InventoryError("inventory Git worktree config scope is invalid")
+    if result.returncode != 0 or result.stderr:
+        raise InventoryError("inventory Git config scope is invalid")
+    if len(result.stdout) > MAX_GIT_CONFIG_LIST_BYTES or b"\0" in result.stdout:
+        raise InventoryError("inventory Git config scope is invalid")
+    try:
+        keys = result.stdout.decode("utf-8", errors="strict").splitlines()
+    except UnicodeDecodeError as error:
+        raise InventoryError("inventory Git config scope is invalid") from error
+    if any(not key or any(unicodedata.category(char) == "Cc" for char in key) for key in keys):
+        raise InventoryError("inventory Git config scope is invalid")
+    return tuple(keys)
 
 
 def _tag_git_runner(repository_root, arguments):

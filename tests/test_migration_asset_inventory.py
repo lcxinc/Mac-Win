@@ -977,12 +977,79 @@ class AssetGitBindingTests(unittest.TestCase):
 
     def test_rejects_promisor_pack_and_partial_clone_configuration(self):
         pack_directory = self.repository / ".git" / "objects" / "pack"
-        promisor = pack_directory / "hostile.promisor"
-        promisor.write_bytes(b"")
+        for filename in ("hostile.promisor", "hostile.PROMISOR"):
+            with self.subTest(filename=filename):
+                promisor = pack_directory / filename
+                promisor.write_bytes(b"")
+                self.assert_binding_error(
+                    "inventory Git object database is not self-contained"
+                )
+                promisor.unlink()
+
+        self._fixture_git("config", "extensions.partialClone", "origin")
         self.assert_binding_error("inventory Git object database is not self-contained")
-        promisor.unlink()
+        self._fixture_git("config", "--unset", "extensions.partialClone")
         self._fixture_git("config", "remote.origin.promisor", "true")
         self.assert_binding_error("inventory Git object database is not self-contained")
+
+    def test_rejects_promisor_configuration_from_linked_worktree_scope(self):
+        self._fixture_git("config", "extensions.worktreeConfig", "true")
+        with tempfile.TemporaryDirectory(prefix="inventory linked parent ") as parent:
+            linked = Path(parent) / "linked worktree"
+            self._fixture_git(
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "inventory-linked",
+                str(linked),
+                self.source_commit,
+            )
+            try:
+                self._fixture_git(
+                    "-C",
+                    str(linked),
+                    "config",
+                    "--worktree",
+                    "remote.origin.promisor",
+                    "true",
+                )
+                with self.assertRaisesRegex(
+                    InventoryError,
+                    "^inventory Git object database is not self-contained$",
+                ):
+                    _bind_governed_assets(
+                        linked,
+                        self.policy,
+                        self.source_commit,
+                        "frozen-source",
+                    )
+            finally:
+                self._fixture_git(
+                    "worktree", "remove", "--force", str(linked), check=False
+                )
+
+    def test_worktree_config_unavailable_accepts_only_the_exact_git_response(self):
+        expected = generator._WORKTREE_CONFIG_UNAVAILABLE
+        accepted = subprocess.CompletedProcess([], 128, b"", expected)
+        with mock.patch.object(generator, "_run_git", return_value=accepted):
+            self.assertEqual(
+                generator._git_config_scope_keys(self.repository, "worktree"), ()
+            )
+
+        rejected = (
+            subprocess.CompletedProcess([], 1, b"", b""),
+            subprocess.CompletedProcess([], 128, b"", expected + b"hostile\n"),
+            subprocess.CompletedProcess([], 128, b"hostile\n", expected),
+        )
+        for result in rejected:
+            with self.subTest(returncode=result.returncode, stdout=result.stdout):
+                with mock.patch.object(generator, "_run_git", return_value=result):
+                    with self.assertRaisesRegex(
+                        InventoryError,
+                        "^inventory Git (?:worktree )?config scope is invalid$",
+                    ):
+                        generator._git_config_scope_keys(self.repository, "worktree")
 
     def test_reads_the_same_binding_from_packed_objects(self):
         expected = self.bind()
