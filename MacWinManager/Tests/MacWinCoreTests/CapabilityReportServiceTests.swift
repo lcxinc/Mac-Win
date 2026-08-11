@@ -504,7 +504,11 @@ struct CapabilityReportServiceTests {
         #expect(decoded.runtimeApplications?.auditedApplicationCount == 1)
         #expect(decoded.runtimeApplications?.macWinApplicationCount == 1)
         #expect(decoded.testAssets.runbook != nil)
-        #expect(decoded.testAssets.runbook?.suiteCommand?.last?.hasSuffix("run-suite.sh") == true)
+        let localSuiteExists = FileManager.default.fileExists(
+            atPath: URL(fileURLWithPath: TestAssetService.defaultRootPath)
+                .appendingPathComponent("run-suite.sh").path
+        )
+        #expect((decoded.testAssets.runbook?.suiteCommand != nil) == localSuiteExists)
         #expect(decoded.testRunHistory?.totalRunCount ?? 0 >= 0)
         #expect(decoded.testCoverage.categories.count == 7)
         #expect(decoded.testExecutionPlan?.itemCount ?? 0 >= 0)

@@ -217,7 +217,7 @@ public struct LogIssueReport: Codable, Equatable, Sendable {
     }
 
     public static func csv(report: LogIssueReport) -> String {
-        let header = [
+        let header: [String] = [
             "record_type",
             "id",
             "name",
@@ -242,8 +242,12 @@ public struct LogIssueReport: Codable, Equatable, Sendable {
             "exe",
             "exit_code"
         ]
-        let trendRows = report.topIssues.map { issue in
-            [
+        let trendRows: [[String]] = report.topIssues.map { issue -> [String] in
+            let relatedHints = joinedList(issue.relatedHints)
+            let affectedLogNames = joinedList(issue.affectedLogNames)
+            let recommendedActions = joinedList(issue.recommendedActions)
+            let probeAssetIds = joinedList(issue.probeAssetIds)
+            return [
                 "trend",
                 issue.id,
                 issue.title,
@@ -256,11 +260,11 @@ public struct LogIssueReport: Codable, Equatable, Sendable {
                 "",
                 "",
                 "",
-                joinedList(issue.relatedHints),
+                relatedHints,
                 "",
-                joinedList(issue.affectedLogNames),
-                joinedList(issue.recommendedActions),
-                joinedList(issue.probeAssetIds),
+                affectedLogNames,
+                recommendedActions,
+                probeAssetIds,
                 issue.detail,
                 "",
                 "",
@@ -269,34 +273,47 @@ public struct LogIssueReport: Codable, Equatable, Sendable {
                 ""
             ]
         }
-        let sampleRows = report.recentFailures.map { sample in
-            [
+        let dateFormatter = ISO8601DateFormatter()
+        let sampleRows: [[String]] = report.recentFailures.map { sample -> [String] in
+            let modifiedAt = dateFormatter.string(from: sample.modifiedAt)
+            let hints = joinedList(sample.hints)
+            let probableIssueIds = joinedList(sample.probableIssueIds)
+            let recommendedActions = joinedList(sample.recommendedActions)
+            let probeAssetIds = joinedList(sample.probeAssetIds)
+            let evidenceSnippets = joinedList(sample.evidenceSnippets)
+            let bottleId = sample.launchContext?.bottleId ?? ""
+            let bottleName = sample.launchContext?.bottleName ?? ""
+            let engineId = sample.launchContext?.engineId ?? ""
+            let executable = sample.launchContext?.exe ?? ""
+            let exitCode = sample.launchContext?.exitCode.map(String.init) ?? ""
+            return [
                 "sample",
                 sample.path,
                 sample.name,
                 sample.health,
                 "",
                 sample.path,
-                ISO8601DateFormatter().string(from: sample.modifiedAt),
+                modifiedAt,
                 "\(sample.errorCount)",
                 "\(sample.warningCount)",
                 "\(sample.fixmeCount)",
                 "\(sample.passCount)",
                 "\(sample.failCount)",
-                joinedList(sample.hints),
-                joinedList(sample.probableIssueIds),
+                hints,
+                probableIssueIds,
                 "",
-                joinedList(sample.recommendedActions),
-                joinedList(sample.probeAssetIds),
-                joinedList(sample.evidenceSnippets),
-                sample.launchContext?.bottleId ?? "",
-                sample.launchContext?.bottleName ?? "",
-                sample.launchContext?.engineId ?? "",
-                sample.launchContext?.exe ?? "",
-                sample.launchContext?.exitCode.map(String.init) ?? ""
+                recommendedActions,
+                probeAssetIds,
+                evidenceSnippets,
+                bottleId,
+                bottleName,
+                engineId,
+                executable,
+                exitCode
             ]
         }
-        return ([header] + trendRows + sampleRows)
+        let rows: [[String]] = [header] + trendRows + sampleRows
+        return rows
             .map { $0.map(csvEscaped).joined(separator: ",") }
             .joined(separator: "\n") + "\n"
     }

@@ -276,7 +276,7 @@ final class MacWinStore: ObservableObject {
         }
     }
 
-    private func runWithScreenAwake<T>(reason: String, _ operation: () async throws -> T) async throws -> T {
+    private func runWithScreenAwake<T: Sendable>(reason: String, _ operation: () async throws -> T) async throws -> T {
         let shouldHoldAwake = preventScreenLockWhileRunning
         if shouldHoldAwake {
             screenAwakeController.beginSession(for: reason)
