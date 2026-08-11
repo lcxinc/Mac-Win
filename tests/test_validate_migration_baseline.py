@@ -387,10 +387,40 @@ class MigrationBaselineManifestTests(unittest.TestCase):
     def test_manifest_file_is_exact_canonical_serialization(self):
         self.assertTrue(MANIFEST_PATH.is_file(), "canonical manifest is missing")
         expected = (json.dumps(CANONICAL, indent=2) + "\n").encode("utf-8")
-        self.assertEqual(MANIFEST_PATH.read_bytes(), expected)
+        raw = MANIFEST_PATH.read_bytes()
+        self.assertNotIn(b"\r\r\n", raw)
+        self.assertEqual(raw.replace(b"\r\n", b"\n"), expected)
 
         validator = load_validator()
         self.assertEqual(validator.load_manifest(MANIFEST_PATH), CANONICAL)
+
+    def test_manifest_file_is_checked_out_with_lf_line_endings(self):
+        result = subprocess.run(
+            ["git", "check-attr", "eol", "--", "migration/baseline.json"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout.strip(),
+            "migration/baseline.json: eol: lf",
+        )
+
+    def test_nested_migration_json_is_checked_out_with_lf_line_endings(self):
+        result = subprocess.run(
+            ["git", "check-attr", "eol", "--", "migration/assets/recipes.json"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout.strip(),
+            "migration/assets/recipes.json: eol: lf",
+        )
 
     def test_rejects_non_object_top_level_value(self):
         self.assertInvalid([], "manifest must be a JSON object")
