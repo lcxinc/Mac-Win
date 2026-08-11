@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import importlib.util
 from unittest import mock
 import zlib
 
@@ -35,7 +36,28 @@ SOURCE_COMMIT = "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527"
 SOURCE_TAG_MESSAGE = "Mac-Win migration source baseline db12d5e"
 INVENTORY_DIRECTORY = ROOT / "migration" / "assets"
 GENERATOR_PATH = ROOT / "tools" / "generate_migration_asset_inventory.py"
+VALIDATOR_PATH = ROOT / "tools" / "validate_migration_asset_inventory.py"
 NATIVE_LINE_ENDING = os.linesep.encode("ascii")
+OUTPUT_RELATIVE_PATHS = (
+    "migration/assets/index.json",
+    "migration/assets/bottle-schema.json",
+    "migration/assets/catalog.json",
+    "migration/assets/fixtures.json",
+    "migration/assets/patches.json",
+    "migration/assets/probes.json",
+    "migration/assets/dependencies.json",
+)
+
+
+def load_inventory_validator():
+    spec = importlib.util.spec_from_file_location(
+        "validate_migration_asset_inventory", VALIDATOR_PATH
+    )
+    if spec is None or spec.loader is None:
+        raise AssertionError("inventory validator could not be loaded")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _fixture_git_environment(source=None):
@@ -67,7 +89,8 @@ class MigrationAssetInventoryEntrypointTests(unittest.TestCase):
 
     def test_cli_rejects_arguments_outside_the_closed_interface(self):
         expected_stderr = (
-            b"usage: generate_migration_asset_inventory.py [--list]"
+            b"usage: generate_migration_asset_inventory.py "
+            b"[--list | --check | --write]"
             + NATIVE_LINE_ENDING
             + b"generate_migration_asset_inventory.py: error: "
             + b"invalid command-line arguments"
@@ -76,8 +99,9 @@ class MigrationAssetInventoryEntrypointTests(unittest.TestCase):
         for arguments in (
             ("extra",),
             ("extra", "second"),
-            ("--write",),
             ("--wri",),
+            ("--check", "--write"),
+            ("--list", "--write"),
             ("--",),
             ("-h",),
             ("hostile\nargument",),
@@ -92,9 +116,8 @@ class MigrationAssetInventoryEntrypointTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 2)
                 self.assertEqual(result.stdout, b"")
                 self.assertEqual(result.stderr, expected_stderr)
-                for argument in arguments:
-                    if argument != "--":
-                        self.assertNotIn(argument.encode("utf-8"), result.stderr)
+                for hostile_value in (b"extra", b"second", b"hostile"):
+                    self.assertNotIn(hostile_value, result.stderr)
 
     def test_list_cli_reports_the_frozen_category_counts(self):
         result = subprocess.run(
@@ -1580,6 +1603,446 @@ class AssetGitBindingTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0)
                 self.assertEqual(result.stderr, b"")
                 self.assertTrue(result.stdout.startswith(b"Mac-Win migration assets: 90 "))
+
+
+class AssetCanonicalOutputTests(unittest.TestCase):
+    _documents = None
+
+    @classmethod
+    def documents(cls):
+        if cls._documents is None:
+            cls._documents = generator.generate_inventory_documents(ROOT)
+        return cls._documents
+
+    @staticmethod
+    def decoded(documents, relative_path):
+        return json.loads(documents[relative_path].decode("ascii"))
+
+    def test_two_in_memory_generations_are_byte_identical_and_allowlisted(self):
+        first = self.documents()
+        hostile = {
+            "TZ": "Pacific/Kiritimati",
+            "LC_ALL": "hostile-locale",
+            "GIT_DIR": str(ROOT / "decoy.git"),
+            "GIT_WORK_TREE": str(ROOT / "decoy-worktree"),
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "core.abbrev",
+            "GIT_CONFIG_VALUE_0": "invalid",
+        }
+        with mock.patch.dict(os.environ, hostile, clear=False):
+            second = generator.generate_inventory_documents(ROOT)
+        self.assertEqual(first, second)
+        self.assertEqual(tuple(first), OUTPUT_RELATIVE_PATHS)
+
+        policy = generator.load_policy()
+        reordered = {key: policy[key] for key in reversed(tuple(policy))}
+        with mock.patch.object(generator, "load_policy", return_value=reordered):
+            self.assertEqual(generator.generate_inventory_documents(ROOT), first)
+
+    def test_canonical_documents_are_bounded_ascii_utf8_lf_json(self):
+        for relative_path, raw in self.documents().items():
+            with self.subTest(relative_path=relative_path):
+                self.assertLessEqual(len(raw), MAX_DOCUMENT_BYTES)
+                self.assertTrue(raw.endswith(b"\n"))
+                self.assertFalse(raw.endswith(b"\n\n"))
+                self.assertNotIn(b"\r", raw)
+                raw.decode("ascii").encode("ascii")
+                value = generator._parse_json_document(raw)
+                self.assertEqual(generator.canonical_json_bytes(value), raw)
+
+    def test_root_binds_exact_counts_order_paths_and_shard_digests(self):
+        documents = self.documents()
+        root = self.decoded(documents, "migration/assets/index.json")
+        self.assertEqual(
+            list(root),
+            [
+                "schemaVersion",
+                "repository",
+                "sourceCommit",
+                "sourceTag",
+                "digestAlgorithm",
+                "order",
+                "assetCount",
+                "dependencyCounts",
+                "shards",
+            ],
+        )
+        self.assertEqual(root["assetCount"], 90)
+        self.assertEqual(
+            root["dependencyCounts"],
+            {
+                "externalRefs": 277,
+                "developmentDependencies": 108,
+                "absolutePath": 23,
+                "environmentPath": 50,
+                "repositoryPath": 35,
+            },
+        )
+        self.assertEqual(root["digestAlgorithm"], "sha256")
+        self.assertEqual(root["order"], "ascii-posix-path")
+        self.assertEqual(
+            [entry["path"] for entry in root["shards"]],
+            list(OUTPUT_RELATIVE_PATHS[1:]),
+        )
+        self.assertEqual(
+            [entry["category"] for entry in root["shards"]],
+            [
+                "bottle-schema",
+                "catalog",
+                "fixtures",
+                "patches",
+                "probes",
+                "dependencies",
+            ],
+        )
+        for entry in root["shards"]:
+            self.assertEqual(
+                entry["sha256"], hashlib.sha256(documents[entry["path"]]).hexdigest()
+            )
+        self.assertEqual(
+            [entry["recordCount"] for entry in root["shards"]],
+            [4, 19, 30, 11, 26, 385],
+        )
+
+    def test_every_asset_entry_is_independent_complete_and_ascii_sorted(self):
+        expected_fields = [
+            "sourcePath",
+            "sourceCommit",
+            "gitBlobOid",
+            "sha256",
+            "byteSize",
+            "gitMode",
+            "kind",
+            "license",
+            "provenance",
+            "intendedOwner",
+            "externalRefs",
+            "developmentDependencies",
+        ]
+        paths = []
+        for relative_path in OUTPUT_RELATIVE_PATHS[1:-1]:
+            shard = self.decoded(self.documents(), relative_path)
+            self.assertEqual(shard["assetCount"], len(shard["assets"]))
+            shard_paths = [asset["sourcePath"] for asset in shard["assets"]]
+            self.assertEqual(
+                shard_paths,
+                sorted(shard_paths, key=lambda value: value.encode("ascii")),
+            )
+            for asset in shard["assets"]:
+                self.assertEqual(list(asset), expected_fields)
+                self.assertEqual(asset["sourceCommit"], SOURCE_COMMIT)
+                self.assertRegex(asset["gitBlobOid"], r"^[0-9a-f]{40}$")
+                self.assertRegex(asset["sha256"], r"^[0-9a-f]{64}$")
+                self.assertIn(asset["gitMode"], ("100644", "100755"))
+                self.assertIs(type(asset["byteSize"]), int)
+                self.assertIs(type(asset["externalRefs"]), list)
+                self.assertIs(type(asset["developmentDependencies"]), list)
+                paths.append(asset["sourcePath"])
+        self.assertEqual(len(paths), 90)
+        self.assertEqual(len(set(paths)), 90)
+
+    def test_grouped_dependency_shard_expands_exactly_without_losing_identity(self):
+        dependency = self.decoded(
+            self.documents(), "migration/assets/dependencies.json"
+        )
+        expanded = generator.expand_dependency_groups(dependency)
+        policy = generator.load_policy()
+        records = generator._bind_governed_assets(
+            ROOT, policy, SOURCE_COMMIT, generator.SOURCE_TAG
+        )
+        frozen = generator._extract_dependency_evidence(ROOT, records)
+        self.assertEqual(expanded, frozen)
+        self.assertEqual(len(expanded["externalRefs"]), 277)
+        self.assertEqual(len(expanded["developmentDependencies"]), 108)
+        self.assertEqual(
+            sum(
+                entry["sourcePath"] == "scripts/download-software-samples.sh"
+                for entry in expanded["externalRefs"]
+            ),
+            234,
+        )
+        self.assertLessEqual(
+            len(self.documents()["migration/assets/dependencies.json"]),
+            MAX_DOCUMENT_BYTES,
+        )
+
+    def test_dependency_group_validation_rejects_loss_duplicates_and_extensions(self):
+        validator = load_inventory_validator()
+        documents = self.documents()
+        original = self.decoded(documents, "migration/assets/dependencies.json")
+        mutations = {}
+
+        empty = copy.deepcopy(original)
+        empty["externalRefs"][0]["locators"] = []
+        mutations["empty"] = empty
+        duplicate = copy.deepcopy(original)
+        duplicate["externalRefs"][0]["locators"] *= 2
+        mutations["duplicate"] = duplicate
+        unsorted = copy.deepcopy(original)
+        multi_locator_group = next(
+            group
+            for group in unsorted["externalRefs"]
+            if len(group["locators"]) > 1
+        )
+        multi_locator_group["locators"].reverse()
+        mutations["unsorted"] = unsorted
+        missing = copy.deepcopy(original)
+        del missing["externalRefs"][0]["status"]
+        mutations["missing"] = missing
+        extra = copy.deepcopy(original)
+        extra["externalRefs"][0]["unknown"] = True
+        mutations["extra"] = extra
+        unknown = copy.deepcopy(original)
+        unknown["externalRefs"][0]["kind"] = "hostile-kind"
+        mutations["unknown"] = unknown
+
+        for name, value in mutations.items():
+            with self.subTest(name=name):
+                candidate = dict(documents)
+                dependency_path = "migration/assets/dependencies.json"
+                candidate[dependency_path] = generator.canonical_json_bytes(value)
+                root = self.decoded(documents, "migration/assets/index.json")
+                root["shards"][-1]["sha256"] = hashlib.sha256(
+                    candidate[dependency_path]
+                ).hexdigest()
+                candidate["migration/assets/index.json"] = generator.canonical_json_bytes(root)
+                with self.assertRaisesRegex(
+                    validator.InventoryValidationError,
+                    "^migration asset inventory document is invalid$",
+                ):
+                    validator.validate_inventory_documents(candidate)
+
+    def test_closed_schema_and_exact_expected_bytes_reject_all_reviewed_drift(self):
+        validator = load_inventory_validator()
+        documents = self.documents()
+        mutations = (
+            ("asset-digest", "migration/assets/catalog.json", "sha256"),
+            ("asset-oid", "migration/assets/catalog.json", "gitBlobOid"),
+            ("asset-size", "migration/assets/catalog.json", "byteSize"),
+            ("asset-mode", "migration/assets/catalog.json", "gitMode"),
+            ("metadata", "migration/assets/catalog.json", "intendedOwner"),
+        )
+        for name, path, field in mutations:
+            with self.subTest(name=name):
+                candidate = dict(documents)
+                value = self.decoded(documents, path)
+                if field in ("sha256", "gitBlobOid"):
+                    value["assets"][0][field] = "0" * len(value["assets"][0][field])
+                elif field == "byteSize":
+                    value["assets"][0][field] += 1
+                elif field == "gitMode":
+                    value["assets"][0][field] = "100755"
+                else:
+                    value["assets"][0][field] = "quarantine/unresolved"
+                candidate[path] = generator.canonical_json_bytes(value)
+                root = self.decoded(documents, "migration/assets/index.json")
+                shard = next(entry for entry in root["shards"] if entry["path"] == path)
+                shard["sha256"] = hashlib.sha256(candidate[path]).hexdigest()
+                candidate["migration/assets/index.json"] = generator.canonical_json_bytes(root)
+                with self.assertRaisesRegex(
+                    validator.InventoryValidationError,
+                    "^migration asset inventory (?:document is invalid|does not match generated bytes)$",
+                ):
+                    validator.validate_inventory_documents(
+                        candidate, expected_documents=documents
+                    )
+
+        candidate = dict(documents)
+        root = self.decoded(documents, "migration/assets/index.json")
+        root["shards"][0]["sha256"] = "0" * 64
+        candidate["migration/assets/index.json"] = generator.canonical_json_bytes(root)
+        with self.assertRaisesRegex(
+            validator.InventoryValidationError,
+            "^migration asset inventory shard digest is invalid$",
+        ):
+            validator.validate_inventory_documents(candidate)
+
+        candidate = dict(documents)
+        catalog_path = "migration/assets/catalog.json"
+        catalog = self.decoded(documents, catalog_path)
+        catalog["assets"][0]["gitBlobOid"] = "0" * 40
+        candidate[catalog_path] = generator.canonical_json_bytes(catalog)
+        root = self.decoded(documents, "migration/assets/index.json")
+        next(entry for entry in root["shards"] if entry["path"] == catalog_path)[
+            "sha256"
+        ] = hashlib.sha256(candidate[catalog_path]).hexdigest()
+        candidate["migration/assets/index.json"] = generator.canonical_json_bytes(root)
+        with self.assertRaisesRegex(
+            validator.InventoryValidationError,
+            "^migration asset inventory document is invalid$",
+        ):
+            validator.validate_inventory_documents(candidate)
+
+    def test_parser_rejects_duplicate_deep_crlf_noncanonical_and_oversized_json(self):
+        validator = load_inventory_validator()
+        invalid = (
+            b'{"schemaVersion":1,"schema\\u0056ersion":1}\n',
+            (b"[" * 129) + b"0" + (b"]" * 129) + b"\n",
+            b'{"schemaVersion":1}\r\n',
+            b'{ "schemaVersion": 1 }\n',
+            b" " * (MAX_DOCUMENT_BYTES + 1),
+            b"\xff",
+        )
+        for raw in invalid:
+            with self.subTest(length=len(raw)):
+                with self.assertRaisesRegex(
+                    validator.InventoryValidationError,
+                    "^migration asset inventory document is invalid$",
+                ):
+                    validator.parse_inventory_document(raw)
+
+    def test_validator_rejects_oversized_index_blob_before_content_read(self):
+        validator = load_inventory_validator()
+
+        def git_result(_root, *arguments, **_kwargs):
+            if arguments[:2] == ("cat-file", "-t"):
+                output = b"blob\n"
+            elif arguments[:2] == ("cat-file", "-s"):
+                output = str(MAX_DOCUMENT_BYTES + 1).encode("ascii") + b"\n"
+            else:
+                self.fail(f"unexpected Git arguments: {arguments!r}")
+            return subprocess.CompletedProcess(arguments, 0, output, b"")
+
+        with mock.patch.object(
+            validator.generator, "_run_git", side_effect=git_result
+        ), mock.patch.object(
+            validator.generator,
+            "_read_blob",
+            side_effect=AssertionError("oversized content was read"),
+        ):
+            with self.assertRaisesRegex(
+                validator.InventoryValidationError,
+                "^migration asset inventory reviewed file is invalid$",
+            ):
+                validator._read_index_document_bytes(ROOT, "1" * 40)
+
+    def test_default_and_check_modes_are_read_only_and_write_is_allowlisted_atomic(self):
+        documents = self.documents()
+        with mock.patch.object(
+            generator, "generate_inventory_documents", return_value=documents
+        ), mock.patch.object(generator, "_check_inventory_documents") as check, mock.patch.object(
+            generator, "_write_inventory_documents"
+        ) as write, mock.patch("builtins.print"):
+            self.assertEqual(generator.main([]), 0)
+            self.assertEqual(generator.main(["--check"]), 0)
+        self.assertEqual(check.call_count, 2)
+        write.assert_not_called()
+
+        with tempfile.TemporaryDirectory(prefix="inventory write ") as directory:
+            destination = Path(directory).resolve()
+            calls = []
+            real_replace = os.replace
+
+            def recording_replace(source, target):
+                calls.append((Path(source), Path(target)))
+                return real_replace(source, target)
+
+            with mock.patch.object(generator.os, "replace", side_effect=recording_replace):
+                generator._write_inventory_documents(destination, documents)
+            self.assertEqual(
+                {path.relative_to(destination).as_posix() for path in destination.rglob("*.json")},
+                set(OUTPUT_RELATIVE_PATHS),
+            )
+            self.assertEqual(
+                {target.relative_to(destination).as_posix() for _, target in calls},
+                set(OUTPUT_RELATIVE_PATHS),
+            )
+            self.assertTrue(all(source.parent == target.parent for source, target in calls))
+            self.assertFalse(any(path.suffix == ".tmp" for path in destination.rglob("*")))
+
+        hostile = dict(documents)
+        hostile["migration/assets/not-allowlisted.json"] = b"{}\n"
+        with self.assertRaisesRegex(
+            InventoryError, "^inventory output path set is invalid$"
+        ):
+            generator._write_inventory_documents(ROOT, hostile)
+
+        with tempfile.TemporaryDirectory(prefix="inventory symlink write ") as directory:
+            destination = Path(directory).resolve()
+            external = destination / "external"
+            external.mkdir()
+            try:
+                (destination / "migration").symlink_to(
+                    external, target_is_directory=True
+                )
+            except OSError as error:
+                self.skipTest(f"directory symlink creation is unavailable: {error}")
+            with self.assertRaisesRegex(
+                InventoryError, "^inventory output path is invalid$"
+            ):
+                generator._write_inventory_documents(destination, documents)
+
+    def test_committed_outputs_check_and_validator_cli_are_stable_under_hostile_git_env(self):
+        for arguments in ((), ("--check",)):
+            result = subprocess.run(
+                [sys.executable, "-B", str(GENERATOR_PATH), *arguments],
+                cwd=ROOT,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(result.stderr, b"")
+            self.assertEqual(
+                result.stdout,
+                b"Mac-Win migration asset inventory is current." + NATIVE_LINE_ENDING,
+            )
+
+        for hostile in (
+            {"GIT_TEST_ASSUME_DIFFERENT_OWNER": "1"},
+            {
+                "GIT_DIR": str(ROOT / "decoy.git"),
+                "GIT_WORK_TREE": str(ROOT / "decoy-worktree"),
+                "GIT_CONFIG_COUNT": "1",
+                "GIT_CONFIG_KEY_0": "core.abbrev",
+                "GIT_CONFIG_VALUE_0": "invalid",
+            },
+        ):
+            environment = os.environ.copy()
+            environment.update(hostile)
+            result = subprocess.run(
+                [sys.executable, "-B", str(VALIDATOR_PATH)],
+                cwd=ROOT,
+                env=environment,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(result.stderr, b"")
+            self.assertEqual(
+                result.stdout,
+                b"Mac-Win migration asset inventory is valid." + NATIVE_LINE_ENDING,
+            )
+
+    def test_validator_rejects_untracked_symlink_index_and_worktree_drift(self):
+        validator = load_inventory_validator()
+        documents = self.documents()
+        policy = generator.load_policy()
+        with mock.patch.object(
+            validator, "_read_reviewed_policy", return_value=policy
+        ) as read_policy, mock.patch.object(
+            validator, "generate_inventory_documents", return_value=documents
+        ) as generate:
+            validator.validate_inventory(ROOT)
+        read_policy.assert_called_once_with(ROOT)
+        generate.assert_called_once_with(ROOT, policy=policy)
+
+        relative_path = "migration/assets/catalog.json"
+        with mock.patch.object(
+            validator, "_read_reviewed_policy", return_value=policy
+        ), mock.patch.object(
+            validator, "generate_inventory_documents", return_value=documents
+        ), mock.patch.object(
+            validator, "_read_reviewed_document",
+            side_effect=validator.InventoryValidationError(
+                "migration asset inventory reviewed file is invalid"
+            ),
+        ):
+            with self.assertRaisesRegex(
+                validator.InventoryValidationError,
+                "^migration asset inventory reviewed file is invalid$",
+            ):
+                validator.validate_inventory(ROOT)
+        self.assertIn(relative_path, documents)
 
 
 if __name__ == "__main__":

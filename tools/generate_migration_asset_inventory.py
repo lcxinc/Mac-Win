@@ -7,8 +7,10 @@ import json
 import os
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
+import stat
 import subprocess
 import sys
+import tempfile
 import unicodedata
 
 
@@ -24,6 +26,37 @@ MAX_JSON_DEPTH = 128
 MAX_JSON_INTEGER_DIGITS = 128
 MAX_ASSET_BYTES = 1024 * 1024
 MAX_GIT_CONFIG_LIST_BYTES = 64 * 1024
+
+OUTPUT_RELATIVE_PATHS = (
+    "migration/assets/index.json",
+    "migration/assets/bottle-schema.json",
+    "migration/assets/catalog.json",
+    "migration/assets/fixtures.json",
+    "migration/assets/patches.json",
+    "migration/assets/probes.json",
+    "migration/assets/dependencies.json",
+)
+CATEGORY_OUTPUT_PATHS = {
+    "bottle-schema": "migration/assets/bottle-schema.json",
+    "catalog": "migration/assets/catalog.json",
+    "fixtures": "migration/assets/fixtures.json",
+    "patches": "migration/assets/patches.json",
+    "probes": "migration/assets/probes.json",
+}
+ASSET_OUTPUT_FIELDS = (
+    "sourcePath",
+    "sourceCommit",
+    "gitBlobOid",
+    "sha256",
+    "byteSize",
+    "gitMode",
+    "kind",
+    "license",
+    "provenance",
+    "intendedOwner",
+    "externalRefs",
+    "developmentDependencies",
+)
 
 GOVERNED_TREE_PATHS = (
     "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog",
@@ -897,6 +930,322 @@ def _bind_governed_assets(repository_root, policy, source_commit, source_tag):
     return records
 
 
+def canonical_json_bytes(value):
+    """Render one canonical, bounded ASCII JSON document."""
+    try:
+        raw = (
+            json.dumps(
+                value,
+                ensure_ascii=True,
+                sort_keys=False,
+                separators=(",", ":"),
+                indent=2,
+                allow_nan=False,
+            ).encode("ascii")
+            + b"\n"
+        )
+    except (TypeError, ValueError, UnicodeError) as error:
+        raise InventoryError("inventory output document is invalid") from error
+    if len(raw) > MAX_DOCUMENT_BYTES:
+        raise InventoryError("inventory output document exceeds the byte limit")
+    return raw
+
+
+def _group_dependency_evidence(entries):
+    """Losslessly group sorted evidence by source, kind, and status."""
+    groups = []
+    current_key = None
+    current = None
+    for record in sorted(entries, key=_evidence_record_sort_key):
+        key = (record["sourcePath"], record["kind"], record["status"])
+        if key != current_key:
+            current = {
+                "sourcePath": key[0],
+                "kind": key[1],
+                "status": key[2],
+                "locators": [],
+            }
+            groups.append(current)
+            current_key = key
+        current["locators"].append(record["locator"])
+    return groups
+
+
+def expand_dependency_groups(document):
+    """Expand one closed dependency shard to individual evidence identities."""
+    if type(document) is not dict or frozenset(document) != frozenset(
+        (
+            "schemaVersion",
+            "repository",
+            "sourceCommit",
+            "sourceTag",
+            "externalRefs",
+            "developmentDependencies",
+        )
+    ):
+        raise InventoryError("inventory dependency document is invalid")
+    if (
+        document["schemaVersion"] != SCHEMA_VERSION
+        or type(document["schemaVersion"]) is not int
+        or document["repository"] != REPOSITORY
+        or document["sourceCommit"] != SOURCE_COMMIT
+        or document["sourceTag"] != SOURCE_TAG
+    ):
+        raise InventoryError("inventory dependency document is invalid")
+
+    result = {"externalRefs": [], "developmentDependencies": []}
+    contracts = {
+        "externalRefs": EXTERNAL_DEPENDENCY_CONTRACT,
+        "developmentDependencies": DEVELOPMENT_DEPENDENCY_CONTRACT,
+    }
+    for field, contract in contracts.items():
+        groups = document[field]
+        if type(groups) is not list:
+            raise InventoryError("inventory dependency document is invalid")
+        previous_group = None
+        identities = set()
+        for raw_group in groups:
+            if type(raw_group) is not dict or tuple(raw_group) != (
+                "sourcePath",
+                "kind",
+                "status",
+                "locators",
+            ):
+                raise InventoryError("inventory dependency document is invalid")
+            source_path = raw_group["sourcePath"]
+            kind = raw_group["kind"]
+            status = raw_group["status"]
+            try:
+                _validate_path(source_path)
+            except InventoryError as error:
+                raise InventoryError("inventory dependency document is invalid") from error
+            if (
+                type(kind) is not str
+                or type(status) is not str
+                or kind not in contract
+                or status != contract[kind]
+            ):
+                raise InventoryError("inventory dependency document is invalid")
+            group_key = (source_path.encode("ascii"), kind.encode("ascii"))
+            if previous_group is not None and group_key <= previous_group:
+                raise InventoryError("inventory dependency document is invalid")
+            previous_group = group_key
+            locators = raw_group["locators"]
+            if type(locators) is not list or not locators:
+                raise InventoryError("inventory dependency document is invalid")
+            previous_locator = None
+            for locator in locators:
+                try:
+                    validated = _validate_dependency_locator(locator, kind)
+                except InventoryError as error:
+                    raise InventoryError("inventory dependency document is invalid") from error
+                locator_key = validated.encode("utf-8")
+                if previous_locator is not None and locator_key <= previous_locator:
+                    raise InventoryError("inventory dependency document is invalid")
+                previous_locator = locator_key
+                identity = (source_path, validated, kind, status)
+                if identity in identities:
+                    raise InventoryError("inventory dependency document is invalid")
+                identities.add(identity)
+                result[field].append(
+                    _evidence_record(source_path, validated, kind, status)
+                )
+        result[field].sort(key=_evidence_record_sort_key)
+    return result
+
+
+def _identity_header():
+    return {
+        "schemaVersion": SCHEMA_VERSION,
+        "repository": REPOSITORY,
+        "sourceCommit": SOURCE_COMMIT,
+        "sourceTag": SOURCE_TAG,
+    }
+
+
+def _dependency_counts(evidence):
+    development = evidence["developmentDependencies"]
+    return {
+        "externalRefs": len(evidence["externalRefs"]),
+        "developmentDependencies": len(development),
+        "absolutePath": sum(entry["kind"] == "absolute-path" for entry in development),
+        "environmentPath": sum(
+            entry["kind"] == "environment-path" for entry in development
+        ),
+        "repositoryPath": sum(
+            entry["kind"] == "repository-path" for entry in development
+        ),
+    }
+
+
+def generate_inventory_documents(repository_root=ROOT, policy=None):
+    """Generate all reviewed output bytes only from policy and frozen Git blobs."""
+    root = Path(repository_root).resolve()
+    if policy is None:
+        policy = load_policy(root / POLICY_PATH.relative_to(ROOT))
+    else:
+        validate_policy(policy)
+    records = _bind_governed_assets(root, policy, SOURCE_COMMIT, SOURCE_TAG)
+    evidence = _extract_dependency_evidence(root, records)
+    _require_dependency_policy_match(policy, evidence)
+
+    documents = {}
+    for category, relative_path in CATEGORY_OUTPUT_PATHS.items():
+        assets = []
+        for record in records:
+            if record["category"] == category:
+                assets.append({field: record[field] for field in ASSET_OUTPUT_FIELDS})
+        shard = _identity_header()
+        shard.update(
+            {
+                "category": category,
+                "assetCount": len(assets),
+                "assets": assets,
+            }
+        )
+        documents[relative_path] = canonical_json_bytes(shard)
+
+    dependency = _identity_header()
+    dependency.update(
+        {
+            "externalRefs": _group_dependency_evidence(evidence["externalRefs"]),
+            "developmentDependencies": _group_dependency_evidence(
+                evidence["developmentDependencies"]
+            ),
+        }
+    )
+    dependency_path = "migration/assets/dependencies.json"
+    documents[dependency_path] = canonical_json_bytes(dependency)
+
+    counts = _dependency_counts(evidence)
+    shards = []
+    for relative_path in OUTPUT_RELATIVE_PATHS[1:]:
+        if relative_path == dependency_path:
+            category = "dependencies"
+            record_count = counts["externalRefs"] + counts["developmentDependencies"]
+        else:
+            category = next(
+                key for key, value in CATEGORY_OUTPUT_PATHS.items() if value == relative_path
+            )
+            record_count = sum(record["category"] == category for record in records)
+        shards.append(
+            {
+                "path": relative_path,
+                "sha256": hashlib.sha256(documents[relative_path]).hexdigest(),
+                "category": category,
+                "recordCount": record_count,
+            }
+        )
+
+    index = _identity_header()
+    index.update(
+        {
+            "digestAlgorithm": "sha256",
+            "order": "ascii-posix-path",
+            "assetCount": len(records),
+            "dependencyCounts": counts,
+            "shards": shards,
+        }
+    )
+    documents["migration/assets/index.json"] = canonical_json_bytes(index)
+    ordered = {path: documents[path] for path in OUTPUT_RELATIVE_PATHS}
+    if tuple(ordered) != OUTPUT_RELATIVE_PATHS:
+        raise InventoryError("inventory output path set is invalid")
+    return ordered
+
+
+def _validate_output_path_set(documents):
+    if type(documents) is not dict or tuple(documents) != OUTPUT_RELATIVE_PATHS:
+        raise InventoryError("inventory output path set is invalid")
+    if any(type(raw) is not bytes or len(raw) > MAX_DOCUMENT_BYTES for raw in documents.values()):
+        raise InventoryError("inventory output document is invalid")
+
+
+def _check_inventory_documents(repository_root, documents):
+    """Compare exact bounded worktree bytes without writing anything."""
+    _validate_output_path_set(documents)
+    root = Path(repository_root).resolve()
+    for relative_path, expected in documents.items():
+        path = root / PurePosixPath(relative_path)
+        try:
+            if path.is_symlink() or not path.is_file():
+                raise InventoryError("inventory output is missing or unsafe")
+            with path.open("rb") as stream:
+                actual = stream.read(MAX_DOCUMENT_BYTES + 1)
+        except InventoryError:
+            raise
+        except OSError as error:
+            raise InventoryError("inventory output could not be read") from error
+        if actual != expected:
+            raise InventoryError("inventory output does not match generated bytes")
+
+
+def _prepare_output_directory(repository_root):
+    """Create and verify the fixed output directory without following links."""
+    root = Path(repository_root)
+    components = (root, root / "migration", root / "migration" / "assets")
+    for position, component in enumerate(components):
+        if position:
+            try:
+                component.mkdir()
+            except FileExistsError:
+                pass
+            except OSError as error:
+                raise InventoryError("inventory output path is invalid") from error
+        try:
+            status = component.lstat()
+        except OSError as error:
+            raise InventoryError("inventory output path is invalid") from error
+        reparse = bool(
+            getattr(status, "st_file_attributes", 0)
+            & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        )
+        if not stat.S_ISDIR(status.st_mode) or stat.S_ISLNK(status.st_mode) or reparse:
+            raise InventoryError("inventory output path is invalid")
+    return components[-1]
+
+
+def _write_inventory_documents(repository_root, documents):
+    """Atomically replace exactly the allowlisted output files."""
+    _validate_output_path_set(documents)
+    root = Path(repository_root).resolve()
+    _prepare_output_directory(root)
+    temporary_paths = []
+    try:
+        for relative_path, raw in documents.items():
+            destination = root / PurePosixPath(relative_path)
+            if destination.parent != root / "migration" / "assets":
+                raise InventoryError("inventory output path is invalid")
+            _prepare_output_directory(root)
+            descriptor, name = tempfile.mkstemp(
+                prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent
+            )
+            temporary = Path(name)
+            temporary_paths.append(temporary)
+            try:
+                with os.fdopen(descriptor, "wb") as stream:
+                    descriptor = None
+                    stream.write(raw)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+            finally:
+                if descriptor is not None:
+                    os.close(descriptor)
+            os.chmod(temporary, 0o644)
+            os.replace(temporary, destination)
+            temporary_paths.remove(temporary)
+    except OSError as error:
+        raise InventoryError("inventory output could not be written") from error
+    finally:
+        for temporary in temporary_paths:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
+
+
 class _StableArgumentParser(argparse.ArgumentParser):
     """Keep CLI failures stable without reflecting untrusted arguments."""
 
@@ -911,7 +1260,10 @@ def _argument_parser():
         add_help=False,
         allow_abbrev=False,
     )
-    parser.add_argument("--list", action="store_true")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--list", action="store_true")
+    modes.add_argument("--check", action="store_true")
+    modes.add_argument("--write", action="store_true")
     return parser
 
 
@@ -943,10 +1295,16 @@ def main(arguments=()):
             for record in records:
                 print(record["sourcePath"])
             return 0
+        documents = generate_inventory_documents(ROOT)
+        if options.write:
+            _write_inventory_documents(ROOT, documents)
+            print("Mac-Win migration asset inventory was written.")
+            return 0
+        _check_inventory_documents(ROOT, documents)
     except InventoryError as error:
         print(f"migration asset inventory failed: {error}", file=sys.stderr)
         return 1
-    print("Mac-Win migration asset metadata policy is valid.")
+    print("Mac-Win migration asset inventory is current.")
     return 0
 
 
