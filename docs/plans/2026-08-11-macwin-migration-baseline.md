@@ -56,7 +56,7 @@ Use in-memory mutations so every negative test identifies one boundary.
 Run:
 
 ```powershell
-python -B -m unittest tests.test_validate_migration_baseline -v
+python -B -m unittest discover -s tests -p "test_validate_migration_baseline.py" -v
 ```
 
 Expected: import or assertion failures because the validator and manifest do
@@ -335,7 +335,7 @@ Set `sys.dont_write_bytecode = True` only under `if __name__ == "__main__"`.
 Run:
 
 ```powershell
-python -B -m unittest tests.test_validate_migration_baseline -v
+python -B -m unittest discover -s tests -p "test_validate_migration_baseline.py" -v
 python -B -m unittest discover -s tests -p "test_*.py" -v
 python tools\validate_migration_baseline.py
 ```
