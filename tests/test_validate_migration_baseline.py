@@ -335,6 +335,7 @@ GIT_CHECK_ATTR_BLOCKED_VARIABLES = frozenset(
         "GIT_OBJECT_DIRECTORY",
         "GIT_ALTERNATE_OBJECT_DIRECTORIES",
         "GIT_NAMESPACE",
+        "GIT_TEMPLATE_DIR",
         "GIT_CONFIG_COUNT",
         "GIT_CONFIG_GLOBAL",
         "GIT_CONFIG_SYSTEM",
@@ -415,6 +416,20 @@ def fixture_git_environment(source=None):
             "GIT_TERMINAL_PROMPT": "0",
         }
     )
+    return environment
+
+
+def clone_git_test_environment(source=None, *, assume_different_owner=False):
+    """Isolate clone fixtures while optionally retaining the ownership probe."""
+    environment = fixture_git_environment(source)
+    environment.update(
+        {
+            "GIT_NO_LAZY_FETCH": "1",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+        }
+    )
+    if assume_different_owner:
+        environment["GIT_TEST_ASSUME_DIFFERENT_OWNER"] = "1"
     return environment
 
 
@@ -2320,13 +2335,31 @@ class MigrationBaselineTagTests(unittest.TestCase):
         ).stdout.strip()
         return repository, source_commit, descendant_commit
 
+    def createHostileCloneTemplate(self, name):
+        template = self.test_root / name
+        hooks = template / "hooks"
+        hooks.mkdir(parents=True)
+        post_checkout = hooks / "post-checkout"
+        post_checkout.write_text(
+            "#!/bin/sh\nexit 93\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        post_checkout.chmod(0o755)
+        return template
+
     def cloneCurrentRepository(self, name):
         repository = self.test_root / name
         safe_root = f"safe.directory={ROOT}"
+        clone_environment = clone_git_test_environment(
+            assume_different_owner=(
+                os.environ.get("GIT_TEST_ASSUME_DIFFERENT_OWNER") == "1"
+            )
+        )
         git_directory_result = subprocess.run(
             ["git", "-c", safe_root, "rev-parse", "--absolute-git-dir"],
             cwd=ROOT,
-            env=sanitized_git_test_environment(),
+            env=clone_environment,
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
@@ -2350,7 +2383,7 @@ class MigrationBaselineTagTests(unittest.TestCase):
                 "HEAD",
             ],
             cwd=ROOT,
-            env=sanitized_git_test_environment(),
+            env=clone_environment,
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
@@ -2367,13 +2400,19 @@ class MigrationBaselineTagTests(unittest.TestCase):
                 safe_root,
                 "-c",
                 safe_git_directory,
+                "-c",
+                f"core.hooksPath={os.devnull}",
+                "-c",
+                "commit.gpgSign=false",
+                "-c",
+                "tag.gpgSign=false",
                 "clone",
                 "--no-hardlinks",
                 str(ROOT),
                 str(repository),
             ],
             cwd=self.test_root,
-            env=sanitized_git_test_environment(),
+            env=clone_environment,
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
@@ -2475,12 +2514,31 @@ class MigrationBaselineTagTests(unittest.TestCase):
         printed.assert_called_once_with("Mac-Win migration baseline is valid.")
 
     def test_cli_fixture_clone_handles_dubious_worktree_ownership_locally(self):
+        admin_result = run_sanitized_git(
+            ROOT,
+            "rev-parse",
+            "--absolute-git-dir",
+        )
+        self.assertEqual(admin_result.returncode, 0, admin_result.stderr)
+        expected_admin = admin_result.stdout.strip()
+        template = self.createHostileCloneTemplate("dubious-owner-template")
+        real_run = subprocess.run
+        recorded_calls = []
+
+        def recording_run(*args, **kwargs):
+            recorded_calls.append((args, kwargs))
+            return real_run(*args, **kwargs)
+
         with mock.patch.object(self, "runGit") as git_commands:
-            with mock.patch.dict(
-                os.environ,
-                {"GIT_TEST_ASSUME_DIFFERENT_OWNER": "1"},
-            ):
-                repository = self.cloneCurrentRepository("dubious-owner")
+            with mock.patch.object(subprocess, "run", side_effect=recording_run):
+                with mock.patch.dict(
+                    os.environ,
+                    {
+                        "GIT_TEMPLATE_DIR": str(template),
+                        "GIT_TEST_ASSUME_DIFFERENT_OWNER": "1",
+                    },
+                ):
+                    repository = self.cloneCurrentRepository("dubious-owner")
 
         self.assertTrue(
             (repository / "tools" / "validate_migration_baseline.py").is_file()
@@ -2497,6 +2555,65 @@ class MigrationBaselineTagTests(unittest.TestCase):
             git_commands.call_args_list[1].args,
             (repository, "add", WORKFLOW_RELATIVE_PATH),
         )
+        clone_calls = [
+            call for call in recorded_calls if "clone" in call[0][0]
+        ]
+        self.assertEqual(len(clone_calls), 1)
+        clone_argv = clone_calls[0][0][0]
+        self.assertEqual(
+            clone_argv[:11],
+            [
+                "git",
+                "-c",
+                f"safe.directory={ROOT}",
+                "-c",
+                f"safe.directory={expected_admin}",
+                "-c",
+                f"core.hooksPath={os.devnull}",
+                "-c",
+                "commit.gpgSign=false",
+                "-c",
+                "tag.gpgSign=false",
+            ],
+        )
+        clone_environment = clone_calls[0][1]["env"]
+        self.assertEqual(clone_environment["GIT_TEST_ASSUME_DIFFERENT_OWNER"], "1")
+        self.assertNotIn("GIT_TEMPLATE_DIR", clone_environment)
+
+    def test_clone_environment_scrubs_every_ambient_git_clone_override(self):
+        hostile = {
+            "PATH": os.environ.get("PATH", ""),
+            "KEEP_ME": "yes",
+            "GIT_TEMPLATE_DIR": "decoy-template",
+            "GIT_CLONE_PROTECTION_ACTIVE": "false",
+            "GIT_PROTOCOL_FROM_USER": "1",
+            "git_dir": "decoy-dir",
+            "Git_Config_Count": "1",
+            "git_config_key_0": "core.hooksPath",
+            "GIT_CONFIG_VALUE_0": "decoy-hooks",
+            "GIT_TEST_ASSUME_DIFFERENT_OWNER": "1",
+        }
+
+        cleaned = clone_git_test_environment(
+            hostile,
+            assume_different_owner=True,
+        )
+
+        self.assertEqual(cleaned["PATH"], hostile["PATH"])
+        self.assertEqual(cleaned["KEEP_ME"], "yes")
+        self.assertEqual(cleaned["GIT_TEST_ASSUME_DIFFERENT_OWNER"], "1")
+        self.assertEqual(
+            {key for key in cleaned if key.upper().startswith("GIT_")},
+            {
+                "GIT_CONFIG_GLOBAL",
+                "GIT_CONFIG_NOSYSTEM",
+                "GIT_NO_LAZY_FETCH",
+                "GIT_NO_REPLACE_OBJECTS",
+                "GIT_TERMINAL_PROMPT",
+                "GIT_TEST_ASSUME_DIFFERENT_OWNER",
+            },
+        )
+        self.assertEqual(hostile["GIT_TEMPLATE_DIR"], "decoy-template")
 
     def test_require_tag_main_adds_tag_verification_after_repository_contract(self):
         validator = load_validator()
@@ -2780,7 +2897,13 @@ class MigrationBaselineTagTests(unittest.TestCase):
                 validator._validate_tag_tagger_line(line.encode("utf-8"))
 
     def test_require_tag_cli_rejects_zero_padded_timestamps(self):
-        repository = self.cloneCurrentRepository("zero-padded-cli")
+        template = self.createHostileCloneTemplate("zero-padded-template")
+        with mock.patch.dict(
+            os.environ,
+            {"GIT_TEMPLATE_DIR": str(template)},
+            clear=False,
+        ):
+            repository = self.cloneCurrentRepository("zero-padded-cli")
         for timestamp in ("00", "0001"):
             with self.subTest(timestamp=timestamp):
                 tag_object = self.createUncheckedTagObject(
