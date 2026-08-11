@@ -10,6 +10,7 @@ import re
 import stat
 import subprocess
 import sys
+import unicodedata
 
 
 MAX_MANIFEST_BYTES = 65_536
@@ -494,6 +495,49 @@ def validate_source_commit(repository_root, source_commit):
         raise BaselineValidationError("source commit is not an ancestor of HEAD")
 
 
+def _validate_tag_tagger_line(raw_line):
+    """Validate one conservative, single-line Git tagger identity."""
+    diagnostic = "baseline tag object has an invalid tagger identity"
+    try:
+        line = raw_line.decode("utf-8", errors="strict")
+    except (AttributeError, UnicodeDecodeError) as error:
+        raise BaselineValidationError(diagnostic) from error
+
+    if any(unicodedata.category(character) == "Cc" for character in line):
+        raise BaselineValidationError(diagnostic)
+    matched = re.fullmatch(
+        r"tagger (?P<name>[^<>]+) <(?P<email>[^<>]+)> "
+        r"(?P<timestamp>[0-9]{1,19}) (?P<timezone>[+-][0-9]{4})",
+        line,
+    )
+    if matched is None:
+        raise BaselineValidationError(diagnostic)
+
+    name = matched.group("name")
+    email = matched.group("email")
+    timestamp_text = matched.group("timestamp")
+    timezone = matched.group("timezone")
+    if (
+        not name.strip()
+        or name != name.strip()
+        or not email
+        or not email.isascii()
+        or any(character.isspace() for character in email)
+        or any(ord(character) < 0x21 or ord(character) > 0x7E for character in email)
+        or int(timestamp_text) > 9_223_372_036_854_775_807
+    ):
+        raise BaselineValidationError(diagnostic)
+
+    timezone_hour = int(timezone[1:3])
+    timezone_minute = int(timezone[3:5])
+    if (
+        timezone_minute >= 60
+        or timezone_hour > 14
+        or (timezone_hour == 14 and timezone_minute != 0)
+    ):
+        raise BaselineValidationError(diagnostic)
+
+
 def validate_baseline_tag(repository_root, tag_name, source_commit):
     """Require one local annotated tag directly bound to the source commit."""
     tag_ref = f"refs/tags/{tag_name}"
@@ -547,7 +591,17 @@ def validate_baseline_tag(repository_root, tag_name, source_commit):
             "baseline tag does not peel to the source commit"
         )
 
-    object_size = _run_git(repository_root, ["cat-file", "-s", tag_ref])
+    resolved_tag = _run_git(repository_root, ["rev-parse", "--verify", tag_ref])
+    encoded_object_id = resolved_tag.stdout.strip()
+    if (
+        resolved_tag.returncode != 0
+        or re.fullmatch(rb"(?:[0-9a-f]{40}|[0-9a-f]{64})", encoded_object_id)
+        is None
+    ):
+        raise BaselineValidationError("baseline tag object id is invalid")
+    object_id = encoded_object_id.decode("ascii")
+
+    object_size = _run_git(repository_root, ["cat-file", "-s", object_id])
     encoded_size = object_size.stdout.strip()
     if (
         object_size.returncode != 0
@@ -561,7 +615,7 @@ def validate_baseline_tag(repository_root, tag_name, source_commit):
             f"baseline tag object exceeds {MAX_TAG_OBJECT_BYTES}-byte limit"
         )
 
-    tag_object = _run_git(repository_root, ["cat-file", "tag", tag_ref])
+    tag_object = _run_git(repository_root, ["cat-file", "tag", object_id])
     if tag_object.returncode != 0:
         raise BaselineValidationError("baseline tag object could not be read")
     if len(tag_object.stdout) != size:
@@ -586,13 +640,12 @@ def validate_baseline_tag(repository_root, tag_name, source_commit):
         )
     if (
         header_lines[2] != f"tag {tag_name}".encode("utf-8")
-        or not header_lines[3].startswith(b"tagger ")
-        or len(header_lines[3]) == len(b"tagger ")
         or raw_message != expected_message
     ):
         raise BaselineValidationError(
             "baseline tag object content does not match the approved source baseline"
         )
+    _validate_tag_tagger_line(header_lines[3])
 
 
 def _normalize_lf(text):

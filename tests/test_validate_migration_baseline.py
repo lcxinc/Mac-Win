@@ -1689,6 +1689,38 @@ class MigrationBaselineTagTests(unittest.TestCase):
         result = self.runGit(repository, "mktag", input_bytes=raw)
         return result.stdout.decode("ascii").strip()
 
+    def createUncheckedTagObject(self, repository, source_commit, tagger_line):
+        raw = (
+            f"object {source_commit}\n"
+            "type commit\n"
+            f"tag {BASELINE_TAG}\n"
+            f"{tagger_line}\n"
+            "\n"
+            f"{TAG_MESSAGE}\n"
+        ).encode("utf-8")
+        strict_result = self.runGit(
+            repository,
+            "mktag",
+            input_bytes=raw,
+            check=False,
+        )
+        self.assertNotEqual(
+            strict_result.returncode,
+            0,
+            "fixture must be rejected by Git's native tag validation",
+        )
+        result = self.runGit(
+            repository,
+            "hash-object",
+            "--literally",
+            "-t",
+            "tag",
+            "-w",
+            "--stdin",
+            input_bytes=raw,
+        )
+        return result.stdout.decode("ascii").strip()
+
     def validateTag(self, repository, source_commit):
         validator = load_validator()
         validator.validate_baseline_tag(repository, BASELINE_TAG, source_commit)
@@ -1893,6 +1925,127 @@ class MigrationBaselineTagTests(unittest.TestCase):
                     "baseline tag object content does not match the approved source baseline",
                 )
 
+    def test_rejects_taggers_that_fail_git_strict_validation(self):
+        invalid_taggers = (
+            "tagger x",
+            "tagger Baseline Tests 0 +0000",
+            "tagger Baseline Tests <baseline-tests@example.invalid> bad +0000",
+            "tagger Baseline Tests <baseline-tests@example.invalid> 0 +0x00",
+        )
+        for index, tagger_line in enumerate(invalid_taggers):
+            with self.subTest(tagger_line=tagger_line):
+                repository, source_commit, _ = self.createRepository(
+                    f"strict-tagger-{index}"
+                )
+                tag_object = self.createUncheckedTagObject(
+                    repository, source_commit, tagger_line
+                )
+                self.runGit(
+                    repository,
+                    "update-ref",
+                    f"refs/tags/{BASELINE_TAG}",
+                    tag_object,
+                )
+                self.assertTagInvalid(
+                    repository,
+                    source_commit,
+                    "baseline tag object has an invalid tagger identity",
+                )
+
+    def test_accepts_ordinary_unsigned_tag_with_unicode_name(self):
+        repository, source_commit, _ = self.createRepository("unicode-tagger")
+        self.runGit(
+            repository,
+            "-c",
+            "user.name=迁移 基线",
+            "-c",
+            "user.email=unicode@example.invalid",
+            "tag",
+            "--no-sign",
+            "-a",
+            BASELINE_TAG,
+            source_commit,
+            "-m",
+            TAG_MESSAGE,
+        )
+
+        self.validateTag(repository, source_commit)
+
+    def test_closed_tagger_parser_rejects_non_utf8_controls_and_bad_fields(self):
+        validator = load_validator()
+        invalid_lines = (
+            b"tagger Name <mail@example.invalid> 0 +0000\xff",
+            b"tagger Na\x00me <mail@example.invalid> 0 +0000",
+            b"tagger Name\tTab <mail@example.invalid> 0 +0000",
+            "tagger Name\u0085Control <mail@example.invalid> 0 +0000".encode(
+                "utf-8"
+            ),
+            b"tagger Name <mail address@example.invalid> 0 +0000",
+            b"tagger Name <mail@example.invalid> 12345678901234567890 +0000",
+            b"tagger Name <mail@example.invalid> 0 +1460",
+            b"tagger Name <mail@example.invalid> 0 +1500",
+        )
+        for line in invalid_lines:
+            with self.subTest(line=line):
+                with self.assertRaises(
+                    validator.BaselineValidationError
+                ) as caught:
+                    validator._validate_tag_tagger_line(line)
+                self.assertEqual(
+                    str(caught.exception),
+                    "baseline tag object has an invalid tagger identity",
+                )
+
+    def test_closed_tagger_parser_accepts_unicode_name_and_timezone_bounds(self):
+        validator = load_validator()
+        valid_lines = (
+            "tagger 迁移 基线 <unicode@example.invalid> 0 +0000",
+            "tagger Example Name <name@example.invalid> 1 -1200",
+            "tagger Example Name <name@example.invalid> 9223372036854775807 +1400",
+        )
+        for line in valid_lines:
+            with self.subTest(line=line):
+                validator._validate_tag_tagger_line(line.encode("utf-8"))
+
+    def test_strict_validation_is_scoped_and_does_not_write_repository_state(self):
+        repository, source_commit, _ = self.createRepository("strict-read-only")
+        self.createUncheckedTagObject(repository, source_commit, "tagger x")
+        approved_tag_object = self.createRawTagObject(repository, source_commit)
+        self.runGit(
+            repository,
+            "update-ref",
+            f"refs/tags/{BASELINE_TAG}",
+            approved_tag_object,
+        )
+
+        git_directory = repository / ".git"
+
+        def repository_snapshot():
+            snapshot = {}
+            for path in git_directory.rglob("*"):
+                if path.is_file():
+                    status = path.stat()
+                    snapshot[path.relative_to(git_directory).as_posix()] = (
+                        status.st_size,
+                        status.st_mtime_ns,
+                        path.read_bytes(),
+                    )
+            return snapshot
+
+        before = repository_snapshot()
+        self.validateTag(repository, source_commit)
+        after = repository_snapshot()
+
+        changed_paths = {
+            path: (
+                before.get(path, (None, None, b""))[:2],
+                after.get(path, (None, None, b""))[:2],
+            )
+            for path in set(before) | set(after)
+            if before.get(path) != after.get(path)
+        }
+        self.assertEqual(changed_paths, {})
+
     def test_rejects_oversized_tag_before_reading_the_object(self):
         repository, source_commit, _ = self.createRepository("oversized")
         tag_object = self.createRawTagObject(
@@ -1926,10 +2079,10 @@ class MigrationBaselineTagTests(unittest.TestCase):
             f"baseline tag object exceeds {MAX_TAG_OBJECT_BYTES}-byte limit",
         )
         self.assertIn(
-            ["cat-file", "-s", f"refs/tags/{BASELINE_TAG}"], calls
+            ["cat-file", "-s", tag_object], calls
         )
         self.assertNotIn(
-            ["cat-file", "tag", f"refs/tags/{BASELINE_TAG}"], calls
+            ["cat-file", "tag", tag_object], calls
         )
 
     def test_replace_ref_cannot_change_the_tag_object_or_peeled_commit(self):
@@ -2010,8 +2163,9 @@ class MigrationBaselineTagTests(unittest.TestCase):
                 ["symbolic-ref", "-q", tag_ref],
                 ["cat-file", "-t", tag_ref],
                 ["rev-parse", f"{tag_ref}^{{}}"],
-                ["cat-file", "-s", tag_ref],
-                ["cat-file", "tag", tag_ref],
+                ["rev-parse", "--verify", tag_ref],
+                ["cat-file", "-s", tag_object],
+                ["cat-file", "tag", tag_object],
             ],
         )
 
@@ -2029,7 +2183,7 @@ class MigrationBaselineTagTests(unittest.TestCase):
         hostile = b"invalid-size\n\x1b[31m"
 
         def invalid_size(repository_root, arguments, check=False):
-            if arguments == ["cat-file", "-s", f"refs/tags/{BASELINE_TAG}"]:
+            if arguments == ["cat-file", "-s", tag_object]:
                 return SimpleNamespace(returncode=0, stdout=hostile, stderr=hostile)
             return real_run_git(repository_root, arguments, check=check)
 
@@ -2045,7 +2199,7 @@ class MigrationBaselineTagTests(unittest.TestCase):
 
         def truncated_content(repository_root, arguments, check=False):
             result = real_run_git(repository_root, arguments, check=check)
-            if arguments == ["cat-file", "tag", f"refs/tags/{BASELINE_TAG}"]:
+            if arguments == ["cat-file", "tag", tag_object]:
                 return SimpleNamespace(
                     returncode=0,
                     stdout=result.stdout[:-1],
