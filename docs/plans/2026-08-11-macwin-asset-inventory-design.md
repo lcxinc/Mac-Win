@@ -150,7 +150,7 @@ sorted `locators` list. The parser expands those groups to individual evidence
 identities `(sourcePath, literal locator, kind, status)` before exact
 comparison. Repeating `sourcePath`, `kind`, and `status` for every download URL
 would exceed the 64 KiB policy limit before the other dependency classes were
-included; the grouped encoding keeps the reviewed policy at 50,227 bytes
+included; the grouped encoding keeps the reviewed policy at 50,261 bytes
 without dropping or summarizing any locator.
 
 ## Deterministic generation
@@ -199,8 +199,11 @@ records:
   234 identities and 234 distinct locators;
 - 25 `/Users/a1-6/...` occurrences become 23 unique evidence identities and 17
   distinct literal locators;
-- development evidence contains 107 identities: 23 `absolute-path`, 49
+- development evidence contains 108 identities: 23 `absolute-path`, 50
   `environment-path`, and 35 `repository-path` records.
+
+The environment evidence includes the unexpanded `MACWIN_WINE_MONO_MSI`
+development input referenced by `scripts/run-software-smoke.sh`.
 
 The URL grammar preserves the complete regex-escaped
 `https://zlib\\.net/fossils/zlib-1\\.2\\.13\\.tar\\.gz` locator as evidence

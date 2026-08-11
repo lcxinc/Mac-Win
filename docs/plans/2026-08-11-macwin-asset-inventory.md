@@ -277,7 +277,7 @@ ignored directories, or infer that a host path exists.
 Encode reviewed policy records as the unpublished v1 source-grouped closed
 shape `{sourcePath, kind, status, locators}`. `locators` is non-empty, sorted,
 unique, and expanded by the parser into canonical per-locator evidence rows.
-This preserves the 64 KiB policy bound; the reviewed policy is 50,227 bytes.
+This preserves the 64 KiB policy bound; the reviewed policy is 50,261 bytes.
 
 Product-download licenses are not asset-license evidence. Keep unresolved
 license/provenance states visible.
@@ -290,8 +290,10 @@ python -B -m unittest discover -s tests -p 'test_migration_asset_inventory.py' -
 ```
 
 Expected: 277 URL evidence rows, including 234 unique rows from the download
-manifest; 107 development rows split into 23 absolute, 49 environment, and 35
-repository paths; no external side effects. The 23 absolute rows represent 25
+manifest; 108 development rows split into 23 absolute, 50 environment, and 35
+repository paths; no external side effects. Environment evidence includes the
+unexpanded `MACWIN_WINE_MONO_MSI` input from `scripts/run-software-smoke.sh`.
+The 23 absolute rows represent 25
 occurrences and 17 distinct literal `/Users/a1-6/...` locator strings within
 the 90 governed assets only.
 
