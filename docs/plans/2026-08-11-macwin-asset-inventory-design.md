@@ -144,6 +144,15 @@ account. The v1 enum is:
 Adding a kind, owner, license state, provenance state, or field requires a
 schema-version change. Unknown values and fields fail closed.
 
+The unpublished v1 dependency policy uses a bounded source-grouped encoding:
+each closed record contains `sourcePath`, `kind`, `status`, and a non-empty,
+sorted `locators` list. The parser expands those groups to individual evidence
+identities `(sourcePath, literal locator, kind, status)` before exact
+comparison. Repeating `sourcePath`, `kind`, and `status` for every download URL
+would exceed the 64 KiB policy limit before the other dependency classes were
+included; the grouped encoding keeps the reviewed policy at 50,227 bytes
+without dropping or summarizing any locator.
+
 ## Deterministic generation
 
 The generator locates its repository from its own file, validates the frozen
@@ -180,6 +189,24 @@ It does not resolve DNS, make HTTP requests, inspect local ignored `refs/`,
 expand `$HOME`, read user application support, or test whether a local path
 exists. This keeps absent dependencies visible without making output depend on
 the development machine.
+
+The frozen 90-asset scan has the following exact evidence counts. Counts are
+evidence identities, so the same locator referenced by two assets remains two
+records:
+
+- 302 URL occurrences become 277 unique evidence identities and 269 distinct
+  literal locators; `scripts/download-software-samples.sh` contributes exactly
+  234 identities and 234 distinct locators;
+- 25 `/Users/a1-6/...` occurrences become 23 unique evidence identities and 17
+  distinct literal locators;
+- development evidence contains 107 identities: 23 `absolute-path`, 49
+  `environment-path`, and 35 `repository-path` records.
+
+The URL grammar preserves the complete regex-escaped
+`https://zlib\\.net/fossils/zlib-1\\.2\\.13\\.tar\\.gz` locator as evidence
+instead of truncating it to `https://zlib`. Development locators are neither
+expanded nor rewritten, and files outside the 90 governed assets do not
+participate in these counts.
 
 ## Validation and threat boundary
 

@@ -262,7 +262,7 @@ Cover:
 **Step 2: Run RED**
 
 ```powershell
-python -B -m unittest tests.test_migration_asset_inventory.AssetDependencyTests -v
+python -B -m unittest discover -s tests -p 'test_migration_asset_inventory.py' -k AssetDependencyTests -v
 ```
 
 Expected: dependency extraction/comparison functions are missing.
@@ -274,16 +274,26 @@ stable source path, literal locator, kind, and status. Match the extracted set
 against the reviewed policy; never fetch URLs, expand variables, inspect
 ignored directories, or infer that a host path exists.
 
+Encode reviewed policy records as the unpublished v1 source-grouped closed
+shape `{sourcePath, kind, status, locators}`. `locators` is non-empty, sorted,
+unique, and expanded by the parser into canonical per-locator evidence rows.
+This preserves the 64 KiB policy bound; the reviewed policy is 50,227 bytes.
+
 Product-download licenses are not asset-license evidence. Keep unresolved
 license/provenance states visible.
 
 **Step 4: Run GREEN**
 
 ```powershell
-python -B -m unittest tests.test_migration_asset_inventory.AssetDependencyTests -v
+python -B -m unittest discover -s tests -p 'test_migration_asset_inventory.py' -k AssetDependencyTests -v
+python -B -m unittest discover -s tests -p 'test_migration_asset_inventory.py' -k test_real_frozen_evidence_has_exact_reviewed_counts_and_policy_coverage -v
 ```
 
-Expected: exact deterministic dependency counts and no external side effects.
+Expected: 277 URL evidence rows, including 234 unique rows from the download
+manifest; 107 development rows split into 23 absolute, 49 environment, and 35
+repository paths; no external side effects. The 23 absolute rows represent 25
+occurrences and 17 distinct literal `/Users/a1-6/...` locator strings within
+the 90 governed assets only.
 
 **Step 5: Commit**
 
