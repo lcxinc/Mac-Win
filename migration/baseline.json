@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "repository": "a1112/Mac-Win",
+  "sourceCommit": "4e421fbea6f59e73e4f813c1f0a14e8db9e36de7",
+  "tag": "mw-migration-baseline-4e421fb",
+  "swiftPackagePath": "MacWinManager",
+  "evidenceTargets": [
+    {
+      "runner": "macos-15",
+      "architecture": "arm64"
+    },
+    {
+      "runner": "macos-15-intel",
+      "architecture": "x86_64"
+    }
+  ],
+  "frozenFeatureAreas": [
+    "SwiftUI",
+    "Bridge",
+    "legacy-launcher"
+  ]
+}
