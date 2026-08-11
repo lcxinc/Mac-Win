@@ -2,11 +2,11 @@
 
 ## Baseline identity and freeze
 
-Mac-Win is frozen at `4e421fbea6f59e73e4f813c1f0a14e8db9e36de7` for migration evidence.
+Mac-Win is frozen at `db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527` for migration evidence.
 
 New SwiftUI, Bridge, and legacy launcher product features are not accepted.
 
-The immutable annotated baseline tag is `mw-migration-baseline-4e421fb`.
+The immutable annotated baseline tag is `mw-migration-baseline-db12d5e`.
 
 ## Authoritative macOS evidence
 
@@ -36,19 +36,19 @@ Tag evidence must record both the annotated tag object ID and its peeled commit 
 
 Before tag creation, run `python tools/validate_migration_baseline.py`; this pre-tag check intentionally does not require the tag and is not tag evidence.
 
-After the merge commit passes all three required jobs—the `repository-contract` job, Apple Silicon `macos-15` / `arm64`, and Intel `macos-15-intel` / `x86_64`—create the annotated tag directly at the frozen source with `git tag --no-sign -a mw-migration-baseline-4e421fb 4e421fbea6f59e73e4f813c1f0a14e8db9e36de7 -m "Mac-Win migration source baseline 4e421fb"`.
+After the merge commit passes all three required jobs—the `repository-contract` job, Apple Silicon `macos-15` / `arm64`, and Intel `macos-15-intel` / `x86_64`—create the annotated tag directly at the frozen source with `git tag --no-sign -a mw-migration-baseline-db12d5e db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527 -m "Mac-Win migration source baseline db12d5e"`.
 
 If any of the three required jobs fails, is cancelled, or is unavailable, do not create or publish the baseline tag.
 
-Before publication, run `python tools/validate_migration_baseline.py --require-tag`; this post-tag check requires a local annotated tag that directly references and peels to `4e421fbea6f59e73e4f813c1f0a14e8db9e36de7`.
+Before publication, run `python tools/validate_migration_baseline.py --require-tag`; this post-tag check requires a local annotated tag that directly references and peels to `db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527`.
 
-Publish only the verified tag with `git push origin refs/tags/mw-migration-baseline-4e421fb` and record the tag object ID plus peeled commit ID as the authoritative tag evidence.
+Publish only the verified tag with `git push origin refs/tags/mw-migration-baseline-db12d5e` and record the tag object ID plus peeled commit ID as the authoritative tag evidence.
 
 ## Rollback and ownership
 
 Before tag publication, rollback is a normal revert of the migration-baseline change; a failed or unavailable target keeps MW-MIG-001 open and prevents tag publication.
 
-After publication, `mw-migration-baseline-4e421fb` must not be moved or deleted; corrections use a new superseding annotated tag and an explicit issue record.
+After publication, `mw-migration-baseline-db12d5e` must not be moved or deleted; corrections use a new superseding annotated tag and an explicit issue record.
 
 MW-MIG-002 is the next owner after MW-MIG-001 completes.
 

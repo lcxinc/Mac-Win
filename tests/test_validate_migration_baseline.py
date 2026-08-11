@@ -24,9 +24,9 @@ MIGRATION_DOCUMENT_PATH = ROOT / "docs" / "migration-baseline.md"
 WORKFLOW_PATH = ROOT / ".github" / "workflows" / "migration-baseline.yml"
 WORKFLOW_RELATIVE_PATH = ".github/workflows/migration-baseline.yml"
 
-SOURCE_COMMIT = "4e421fbea6f59e73e4f813c1f0a14e8db9e36de7"
-BASELINE_TAG = "mw-migration-baseline-4e421fb"
-TAG_MESSAGE = "Mac-Win migration source baseline 4e421fb"
+SOURCE_COMMIT = "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527"
+BASELINE_TAG = "mw-migration-baseline-db12d5e"
+TAG_MESSAGE = "Mac-Win migration source baseline db12d5e"
 MAX_TAG_OBJECT_BYTES = 16_384
 TAG_CREATION_GATE_STATEMENT = (
     "After the merge commit passes all three required jobs—the `repository-contract` "
@@ -289,8 +289,8 @@ GIT_SIGNING_POLLUTION = {
 CANONICAL = {
     "schemaVersion": 1,
     "repository": "a1112/Mac-Win",
-    "sourceCommit": "4e421fbea6f59e73e4f813c1f0a14e8db9e36de7",
-    "tag": "mw-migration-baseline-4e421fb",
+    "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+    "tag": "mw-migration-baseline-db12d5e",
     "swiftPackagePath": "MacWinManager",
     "evidenceTargets": [
         {"runner": "macos-15", "architecture": "arm64"},
@@ -421,7 +421,7 @@ class MigrationBaselineManifestTests(unittest.TestCase):
 
     def test_rejects_malformed_source_commits(self):
         malformed = {
-            "short": "4e421fb",
+            "short": "db12d5e",
             "uppercase": "4E421FBEA6F59E73E4F813C1F0A14E8DB9E36DE7",
             "nonhex": "ge421fbea6f59e73e4f813c1f0a14e8db9e36de7",
         }
@@ -439,14 +439,14 @@ class MigrationBaselineManifestTests(unittest.TestCase):
         mutated["sourceCommit"] = "0" * 40
         self.assertInvalid(
             mutated,
-            "sourceCommit must equal 4e421fbea6f59e73e4f813c1f0a14e8db9e36de7",
+            "sourceCommit must equal db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
         )
 
     def test_rejects_wrong_tag(self):
         mutated = copy.deepcopy(CANONICAL)
         mutated["tag"] = "mw-migration-baseline-other"
         self.assertInvalid(
-            mutated, "tag must equal mw-migration-baseline-4e421fb"
+            mutated, "tag must equal mw-migration-baseline-db12d5e"
         )
 
     def test_rejects_unsafe_and_wrong_package_paths(self):
@@ -840,7 +840,7 @@ class MigrationBaselineDocumentTests(unittest.TestCase):
             "After the merge commit passes both macOS evidence jobs, create the "
             "annotated tag directly at the frozen source with `git tag --no-sign "
             f"-a {BASELINE_TAG} {SOURCE_COMMIT} -m \"Mac-Win migration baseline "
-            "4e421fb\"`."
+            "db12d5e\"`."
         )
         mutations = (
             MIGRATION_DOCUMENT_CANONICAL.replace(
@@ -850,8 +850,8 @@ class MigrationBaselineDocumentTests(unittest.TestCase):
                 "all three required jobs", "both macOS evidence jobs"
             ),
             MIGRATION_DOCUMENT_CANONICAL.replace(
-                "Mac-Win migration source baseline 4e421fb",
-                "Mac-Win migration baseline 4e421fb",
+                "Mac-Win migration source baseline db12d5e",
+                "Mac-Win migration baseline db12d5e",
             ),
             MIGRATION_DOCUMENT_CANONICAL.replace(
                 TAG_FAILURE_GATE_STATEMENT,

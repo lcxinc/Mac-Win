@@ -29,9 +29,9 @@ WORKFLOW_RELATIVE_PATH = ".github/workflows/migration-baseline.yml"
 
 SCHEMA_VERSION = 1
 REPOSITORY = "a1112/Mac-Win"
-SOURCE_COMMIT = "4e421fbea6f59e73e4f813c1f0a14e8db9e36de7"
-TAG = "mw-migration-baseline-4e421fb"
-TAG_MESSAGE = "Mac-Win migration source baseline 4e421fb"
+SOURCE_COMMIT = "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527"
+TAG = "mw-migration-baseline-db12d5e"
+TAG_MESSAGE = "Mac-Win migration source baseline db12d5e"
 SWIFT_PACKAGE_PATH = "MacWinManager"
 EVIDENCE_TARGETS = [
     {"runner": "macos-15", "architecture": "arm64"},

@@ -2,7 +2,7 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Freeze Mac-Win commit `4e421fbea6f59e73e4f813c1f0a14e8db9e36de7`, prove the Swift package on Intel and Apple Silicon macOS runners, and publish an immutable annotated source-baseline tag.
+**Goal:** Freeze Mac-Win commit `db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527`, prove the Swift package on Intel and Apple Silicon macOS runners, and publish an immutable annotated source-baseline tag.
 
 **Architecture:** A closed JSON manifest and dependency-free Python validator bind the source commit, tag, frozen feature areas, reviewed documents, and exact CI workflow. A GitHub Actions workflow runs repository-contract checks plus the same Swift package suite on `macos-15` and `macos-15-intel`; the tag is created only after the merge commit's three jobs pass.
 
@@ -27,8 +27,8 @@ canonical object:
 CANONICAL = {
     "schemaVersion": 1,
     "repository": "a1112/Mac-Win",
-    "sourceCommit": "4e421fbea6f59e73e4f813c1f0a14e8db9e36de7",
-    "tag": "mw-migration-baseline-4e421fb",
+    "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+    "tag": "mw-migration-baseline-db12d5e",
     "swiftPackagePath": "MacWinManager",
     "evidenceTargets": [
         {"runner": "macos-15", "architecture": "arm64"},
@@ -177,7 +177,7 @@ git commit -s -m "fix: bind migration baseline to local Git objects"
 Require the README to contain a standalone, visible statement equivalent to:
 
 ```text
-Mac-Win is frozen at 4e421fbea6f59e73e4f813c1f0a14e8db9e36de7 for migration evidence. New SwiftUI, Bridge, and legacy launcher product features are not accepted.
+Mac-Win is frozen at db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527 for migration evidence. New SwiftUI, Bridge, and legacy launcher product features are not accepted.
 ```
 
 Require `docs/migration-baseline.md` to record:
@@ -323,8 +323,8 @@ manifest, Git source, reviewed documents, and workflow. Tag mode additionally
 requires:
 
 ```text
-git cat-file -t refs/tags/mw-migration-baseline-4e421fb == tag
-git rev-parse refs/tags/mw-migration-baseline-4e421fb^{} == 4e421f...
+git cat-file -t refs/tags/mw-migration-baseline-db12d5e == tag
+git rev-parse refs/tags/mw-migration-baseline-db12d5e^{} == 4e421f...
 ```
 
 Emit one stable success line and send failures to stderr with exit status 1.
@@ -419,7 +419,7 @@ configured, create an explicitly non-signed annotated tag so ambient global
 configuration cannot enable signing:
 
 ```powershell
-git tag -a --no-sign mw-migration-baseline-4e421fb 4e421fbea6f59e73e4f813c1f0a14e8db9e36de7 -m "Mac-Win migration source baseline 4e421fb"
+git tag -a --no-sign mw-migration-baseline-db12d5e db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527 -m "Mac-Win migration source baseline db12d5e"
 ```
 
 Push only that tag. Verify the remote tag object and peeled SHA independently.

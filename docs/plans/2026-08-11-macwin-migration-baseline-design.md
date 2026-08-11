@@ -3,7 +3,7 @@
 ## Purpose
 
 MW-MIG-001 freezes Mac-Win commit
-`4e421fbea6f59e73e4f813c1f0a14e8db9e36de7` as the migration source
+`db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527` as the migration source
 baseline. The repository remains available as evidence and as an input to
 later asset extraction, but it stops accepting new SwiftUI, Bridge, or legacy
 launcher product features.
@@ -25,9 +25,9 @@ The baseline is represented in three complementary forms:
    Apple Silicon runner and an Intel runner and records the host facts in the
    run summary and logs.
 
-The baseline tag is `mw-migration-baseline-4e421fb`. It is an annotated tag
+The baseline tag is `mw-migration-baseline-db12d5e`. It is an annotated tag
 whose peeled commit must be exactly
-`4e421fbea6f59e73e4f813c1f0a14e8db9e36de7`. The tag intentionally identifies
+`db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527`. The tag intentionally identifies
 the source snapshot, not the later commit that adds freeze documentation and
 CI. After publication it must not be moved or deleted; corrections use a new
 superseding tag.
@@ -56,8 +56,8 @@ The existing Swift package and product sources are not modified.
 - `schemaVersion`: integer `1`.
 - `repository`: exact string `a1112/Mac-Win`.
 - `sourceCommit`: exact 40-character lowercase SHA-1
-  `4e421fbea6f59e73e4f813c1f0a14e8db9e36de7`.
-- `tag`: exact string `mw-migration-baseline-4e421fb`.
+  `db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527`.
+- `tag`: exact string `mw-migration-baseline-db12d5e`.
 - `swiftPackagePath`: exact relative path `MacWinManager`.
 - `evidenceTargets`: exactly one `macos-15`/`arm64` entry and one
   `macos-15-intel`/`x86_64` entry.
