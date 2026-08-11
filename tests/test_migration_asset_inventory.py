@@ -379,6 +379,41 @@ class AssetPolicyTests(unittest.TestCase):
                     "inventory policy dependency is invalid", candidate
                 )
 
+    def test_rejects_hidden_format_controls_in_refs_and_locators(self):
+        for hostile in ("\u202e", "\u2066", "\u200b", "\ufeff"):
+            for ensure_ascii in (False, True):
+                representation = "escaped" if ensure_ascii else "direct"
+                with self.subTest(
+                    group_reference=ascii(hostile), representation=representation
+                ):
+                    candidate = copy.deepcopy(self.policy)
+                    candidate["groups"][0]["externalRefs"] = [hostile]
+                    raw = json.dumps(candidate, ensure_ascii=ensure_ascii).encode(
+                        "utf-8"
+                    )
+                    self.assert_policy_error(
+                        "inventory policy dependency reference is invalid", raw=raw
+                    )
+
+                with self.subTest(
+                    locator=ascii(hostile), representation=representation
+                ):
+                    candidate = copy.deepcopy(self.policy)
+                    candidate["dependencyPolicy"]["externalRefs"] = [
+                        {
+                            "sourcePath": "scripts/example.sh",
+                            "locator": hostile,
+                            "kind": "url",
+                            "status": "external-unverified",
+                        }
+                    ]
+                    raw = json.dumps(candidate, ensure_ascii=ensure_ascii).encode(
+                        "utf-8"
+                    )
+                    self.assert_policy_error(
+                        "inventory policy dependency is invalid", raw=raw
+                    )
+
     def test_accepts_supplementary_unicode_in_reviewed_locators(self):
         locator = "https://example.invalid/\N{GRINNING FACE}"
         candidate = copy.deepcopy(self.policy)

@@ -174,7 +174,10 @@ def _require_list(value):
 def _require_string(value, invalid_message="inventory policy string is invalid"):
     if type(value) is not str:
         raise InventoryError("inventory policy value type is invalid")
-    if any(unicodedata.category(character) in ("Cc", "Cs") for character in value):
+    if any(
+        unicodedata.category(character) in ("Cc", "Cf", "Cs")
+        for character in value
+    ):
         raise InventoryError(invalid_message)
     return value
 
