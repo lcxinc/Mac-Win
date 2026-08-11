@@ -35,6 +35,16 @@ GENERATOR_PATH = ROOT / "tools" / "generate_migration_asset_inventory.py"
 NATIVE_LINE_ENDING = os.linesep.encode("ascii")
 
 
+def _fixture_git_environment(source=None):
+    """Copy process facilities without inheriting Git repository/config state."""
+    environment = dict(os.environ if source is None else source)
+    for key in tuple(environment):
+        if key.upper().startswith("GIT_"):
+            del environment[key]
+    environment["GIT_TERMINAL_PROMPT"] = "0"
+    return environment
+
+
 class MigrationAssetInventoryEntrypointTests(unittest.TestCase):
     def test_frozen_contract_constants_are_stable(self):
         self.assertEqual(
@@ -558,13 +568,19 @@ class AssetGitBindingTests(unittest.TestCase):
                 "git",
                 "-c",
                 f"safe.directory={self.repository}",
+                "-c",
+                "commit.gpgSign=false",
+                "-c",
+                "tag.gpgSign=false",
                 *arguments,
             ],
             cwd=self.repository,
             input=input_bytes,
             capture_output=True,
             check=False,
+            shell=False,
             text=input_bytes is None,
+            env=_fixture_git_environment(),
         )
         if check and result.returncode:
             self.fail(f"fixture Git command failed: {arguments!r}: {result.stderr!r}")
@@ -827,6 +843,57 @@ class AssetGitBindingTests(unittest.TestCase):
         self._fixture_git("gc", "--prune=now")
         self.assertTrue(any((self.repository / ".git" / "objects" / "pack").glob("*.pack")))
         self.assertEqual(self.bind(), expected)
+
+    def test_fixture_git_ignores_process_local_hostile_signing_configuration(self):
+        hostile = {
+            "GIT_CONFIG_COUNT": "3",
+            "GIT_CONFIG_KEY_0": "commit.gpgSign",
+            "GIT_CONFIG_VALUE_0": "true",
+            "GIT_CONFIG_KEY_1": "tag.gpgSign",
+            "GIT_CONFIG_VALUE_1": "true",
+            "GIT_CONFIG_KEY_2": "user.signingKey",
+            "GIT_CONFIG_VALUE_2": "missing-inventory-test-signer",
+        }
+        with mock.patch.dict(os.environ, hostile, clear=False):
+            (self.repository / self.asset_path).write_bytes(b"unsigned commit\n")
+            self._fixture_git("add", "--", self.asset_path)
+            self._fixture_git("commit", "-q", "-m", "unsigned fixture commit")
+            commit = self._fixture_git("rev-parse", "HEAD").stdout.strip()
+            self._fixture_git(
+                "tag", "-a", "unsigned-fixture-tag", "-m", "unsigned", commit
+            )
+
+        self.assertEqual(
+            self._fixture_git("cat-file", "-t", "unsigned-fixture-tag").stdout.strip(),
+            "tag",
+        )
+
+    def test_fixture_git_environment_preserves_path_and_scrubs_git_injection(self):
+        source = {
+            "PATH": "fixture-path",
+            "KEEP_ME": "yes",
+            "GIT_DIR": "decoy",
+            "GIT_WORK_TREE": "decoy",
+            "GIT_COMMON_DIR": "decoy",
+            "GIT_INDEX_FILE": "decoy",
+            "GIT_OBJECT_DIRECTORY": "decoy",
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES": "decoy",
+            "GIT_NAMESPACE": "decoy",
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "commit.gpgSign",
+            "GIT_CONFIG_VALUE_0": "true",
+            "GIT_CONFIG_GLOBAL": "decoy",
+            "GIT_CONFIG_SYSTEM": "decoy",
+            "GIT_CONFIG_NOSYSTEM": "0",
+        }
+        cleaned = _fixture_git_environment(source)
+        self.assertEqual(cleaned["PATH"], "fixture-path")
+        self.assertEqual(cleaned["KEEP_ME"], "yes")
+        self.assertEqual(cleaned["GIT_TERMINAL_PROMPT"], "0")
+        self.assertEqual(
+            {key for key in cleaned if key.startswith("GIT_")},
+            {"GIT_TERMINAL_PROMPT"},
+        )
 
     def test_real_frozen_tree_contains_the_approved_ninety_records(self):
         policy = parse_policy_bytes(POLICY_PATH.read_bytes())
