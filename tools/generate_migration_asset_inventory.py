@@ -2,8 +2,12 @@
 """Build the deterministic Mac-Win migration asset inventory."""
 
 import argparse
+import hashlib
 import json
+import os
 from pathlib import Path, PurePosixPath, PureWindowsPath
+import re
+import subprocess
 import sys
 import unicodedata
 
@@ -18,6 +22,22 @@ SOURCE_TAG = "mw-migration-baseline-db12d5e"
 MAX_DOCUMENT_BYTES = 64 * 1024
 MAX_JSON_DEPTH = 128
 MAX_JSON_INTEGER_DIGITS = 128
+MAX_ASSET_BYTES = 1024 * 1024
+
+GOVERNED_TREE_PATHS = (
+    "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog",
+    "patches",
+    "scripts",
+    "MacWinManager/Tools/build-native-ui-probe.sh",
+    "MacWinManager/Tools/native-ui-probe.c",
+    "MacWinManager/Tools/native-ui-probe.manifest",
+    "MacWinManager/Tools/native-ui-probe.rc",
+    "MacWinManager/Sources/MacWinCore/BottleService.swift",
+    "MacWinManager/Sources/MacWinCore/JSONStore.swift",
+    "MacWinManager/Sources/MacWinCore/MacWinPaths.swift",
+    "MacWinManager/Sources/MacWinCore/Models.swift",
+)
+_OID_PATTERN = re.compile(rb"[0-9a-f]{40}\Z")
 
 CATEGORIES = frozenset(
     ("catalog", "patches", "probes", "fixtures", "bottle-schema")
@@ -345,6 +365,208 @@ def load_policy(path=POLICY_PATH):
     return parse_policy_bytes(raw)
 
 
+def _git_environment(source=None):
+    """Copy the process environment while removing Git repository overrides."""
+    environment = dict(os.environ if source is None else source)
+    for key in tuple(environment):
+        if key.upper().startswith("GIT_"):
+            del environment[key]
+    environment.update(
+        {
+            "GIT_NO_LAZY_FETCH": "1",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_TERMINAL_PROMPT": "0",
+        }
+    )
+    return environment
+
+
+def _run_git(repository_root, *arguments):
+    """Run one local Git plumbing command with a fixed repository boundary."""
+    root = Path(repository_root).resolve()
+    try:
+        result = subprocess.run(
+            ["git", "-c", f"safe.directory={root}", *arguments],
+            cwd=root,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            check=False,
+            shell=False,
+            env=_git_environment(),
+        )
+    except OSError as error:
+        raise InventoryError("inventory Git command failed") from error
+    if result.returncode != 0:
+        raise InventoryError("inventory Git command failed")
+    return result
+
+
+def _verify_source_identity(repository_root, source_commit, source_tag):
+    """Require a local commit, a direct annotated tag, and HEAD ancestry."""
+    try:
+        commit_type = _run_git(
+            repository_root, "cat-file", "-t", source_commit
+        ).stdout.strip()
+        if commit_type != b"commit":
+            raise InventoryError("inventory source Git identity is invalid")
+        _run_git(repository_root, "cat-file", "-e", f"{source_commit}^{{commit}}")
+
+        tag_ref = f"refs/tags/{source_tag}"
+        tag_oid = _run_git(
+            repository_root, "rev-parse", "--verify", tag_ref
+        ).stdout.strip()
+        if not _OID_PATTERN.fullmatch(tag_oid):
+            raise InventoryError("inventory source Git identity is invalid")
+        if _run_git(repository_root, "cat-file", "-t", tag_oid.decode("ascii")).stdout.strip() != b"tag":
+            raise InventoryError("inventory source Git identity is invalid")
+        tag_bytes = _run_git(
+            repository_root, "cat-file", "tag", tag_oid.decode("ascii")
+        ).stdout
+        tag_lines = tag_bytes.splitlines()
+        if (
+            len(tag_lines) < 2
+            or tag_lines[0] != b"object " + source_commit.encode("ascii")
+            or tag_lines[1] != b"type commit"
+        ):
+            raise InventoryError("inventory source Git identity is invalid")
+        peeled = _run_git(
+            repository_root,
+            "rev-parse",
+            "--verify",
+            f"{tag_ref}^{{commit}}",
+        ).stdout.strip()
+        if peeled != source_commit.encode("ascii"):
+            raise InventoryError("inventory source Git identity is invalid")
+        _run_git(
+            repository_root,
+            "merge-base",
+            "--is-ancestor",
+            source_commit,
+            "HEAD",
+        )
+    except (InventoryError, UnicodeError, ValueError) as error:
+        raise InventoryError("inventory source Git identity is invalid") from error
+
+
+def _list_governed_tree(repository_root, source_commit):
+    """Resolve all governed tree entries once at the frozen commit."""
+    try:
+        raw = _run_git(
+            repository_root,
+            "ls-tree",
+            "-rz",
+            "--full-tree",
+            source_commit,
+            "--",
+            *GOVERNED_TREE_PATHS,
+        ).stdout
+    except InventoryError as error:
+        raise InventoryError("inventory governed Git tree is invalid") from error
+
+    entries = []
+    for raw_entry in raw.split(b"\0"):
+        if not raw_entry:
+            continue
+        try:
+            header, raw_path = raw_entry.split(b"\t", 1)
+            mode, object_type, oid = header.split(b" ", 2)
+            path = raw_path.decode("ascii", errors="strict")
+            mode_text = mode.decode("ascii", errors="strict")
+            type_text = object_type.decode("ascii", errors="strict")
+            oid_text = oid.decode("ascii", errors="strict")
+        except (ValueError, UnicodeError) as error:
+            raise InventoryError("inventory governed Git tree is invalid") from error
+        if not _OID_PATTERN.fullmatch(oid):
+            raise InventoryError("inventory governed Git tree is invalid")
+        entries.append((mode_text, type_text, oid_text, path))
+    return entries
+
+
+def _read_blob(repository_root, oid):
+    """Read a bounded raw blob by immutable object ID and verify its length."""
+    try:
+        if _run_git(repository_root, "cat-file", "-t", oid).stdout.strip() != b"blob":
+            raise InventoryError("inventory governed Git object is invalid")
+        raw_size = _run_git(repository_root, "cat-file", "-s", oid).stdout.strip()
+        if not raw_size or not raw_size.isdigit():
+            raise InventoryError("inventory governed Git object is invalid")
+        size = int(raw_size)
+    except InventoryError as error:
+        if str(error) == "inventory governed Git object is invalid":
+            raise
+        raise InventoryError("inventory governed Git object is invalid") from error
+    if size > MAX_ASSET_BYTES:
+        raise InventoryError("inventory governed Git object exceeds the byte limit")
+    try:
+        content = _run_git(repository_root, "cat-file", "blob", oid).stdout
+    except InventoryError as error:
+        raise InventoryError("inventory governed Git object is invalid") from error
+    if len(content) != size:
+        raise InventoryError("inventory governed Git object length is invalid")
+    return content
+
+
+def _policy_assets(policy):
+    assets = {}
+    for group in policy["groups"]:
+        metadata = {
+            "kind": group["kind"],
+            "license": group["license"],
+            "provenance": group["provenance"],
+            "intendedOwner": group["intendedOwner"],
+            "externalRefs": group["externalRefs"],
+            "developmentDependencies": group["developmentDependencies"],
+            "category": group["category"],
+        }
+        for path in group["paths"]:
+            if path in assets:
+                raise InventoryError("inventory governed path coverage is invalid")
+            assets[path] = metadata
+    return assets
+
+
+def _bind_governed_assets(repository_root, policy, source_commit, source_tag):
+    """Bind reviewed policy paths to raw objects from one immutable Git tree."""
+    root = Path(repository_root).resolve()
+    _verify_source_identity(root, source_commit, source_tag)
+    expected = _policy_assets(policy)
+    entries = _list_governed_tree(root, source_commit)
+
+    actual = {}
+    folded = set()
+    for mode, object_type, oid, path in entries:
+        if mode not in ("100644", "100755"):
+            raise InventoryError("inventory governed Git entry mode is invalid")
+        if object_type != "blob":
+            raise InventoryError("inventory governed Git object is invalid")
+        if path in actual:
+            raise InventoryError("inventory governed path coverage is invalid")
+        casefolded = path.casefold()
+        if casefolded in folded:
+            raise InventoryError("inventory governed path coverage is invalid")
+        folded.add(casefolded)
+        actual[path] = (mode, oid)
+
+    if set(actual) != set(expected):
+        raise InventoryError("inventory governed path coverage is invalid")
+
+    records = []
+    for path in sorted(expected, key=lambda value: value.encode("ascii")):
+        mode, oid = actual[path]
+        content = _read_blob(root, oid)
+        record = {
+            "sourcePath": path,
+            "sourceCommit": source_commit,
+            "gitBlobOid": oid,
+            "sha256": hashlib.sha256(content).hexdigest(),
+            "byteSize": len(content),
+            "gitMode": mode,
+        }
+        record.update(expected[path])
+        records.append(record)
+    return records
+
+
 class _StableArgumentParser(argparse.ArgumentParser):
     """Keep CLI failures stable without reflecting untrusted arguments."""
 
@@ -354,17 +576,41 @@ class _StableArgumentParser(argparse.ArgumentParser):
 
 
 def _argument_parser():
-    return _StableArgumentParser(
+    parser = _StableArgumentParser(
         prog="generate_migration_asset_inventory.py",
         add_help=False,
         allow_abbrev=False,
     )
+    parser.add_argument("--list", action="store_true")
+    return parser
 
 
 def main(arguments=()):
-    _argument_parser().parse_args(arguments)
+    options = _argument_parser().parse_args(arguments)
     try:
-        load_policy()
+        policy = load_policy()
+        if options.list:
+            records = _bind_governed_assets(
+                ROOT, policy, SOURCE_COMMIT, SOURCE_TAG
+            )
+            counts = {
+                category: sum(
+                    record["category"] == category for record in records
+                )
+                for category in sorted(CATEGORIES)
+            }
+            print(
+                "Mac-Win migration assets: "
+                + str(len(records))
+                + " ("
+                + ", ".join(
+                    f"{category}={counts[category]}" for category in sorted(counts)
+                )
+                + ")"
+            )
+            for record in records:
+                print(record["sourcePath"])
+            return 0
     except InventoryError as error:
         print(f"migration asset inventory failed: {error}", file=sys.stderr)
         return 1

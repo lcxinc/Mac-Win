@@ -9,12 +9,20 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
+
+import tools.generate_migration_asset_inventory as generator
 
 from tools.generate_migration_asset_inventory import (
+    MAX_ASSET_BYTES,
     InventoryError,
     MAX_DOCUMENT_BYTES,
     MAX_JSON_DEPTH,
     POLICY_PATH,
+    _bind_governed_assets,
+    _git_environment,
+    _read_blob,
+    _run_git,
     parse_policy_bytes,
     validate_json_depth,
 )
@@ -38,9 +46,9 @@ class MigrationAssetInventoryEntrypointTests(unittest.TestCase):
             "migration/assets",
         )
 
-    def test_cli_accepts_only_an_empty_argument_list(self):
+    def test_cli_rejects_arguments_outside_the_closed_interface(self):
         expected_stderr = (
-            b"usage: generate_migration_asset_inventory.py"
+            b"usage: generate_migration_asset_inventory.py [--list]"
             + NATIVE_LINE_ENDING
             + b"generate_migration_asset_inventory.py: error: "
             + b"invalid command-line arguments"
@@ -66,7 +74,25 @@ class MigrationAssetInventoryEntrypointTests(unittest.TestCase):
                 self.assertEqual(result.stdout, b"")
                 self.assertEqual(result.stderr, expected_stderr)
                 for argument in arguments:
-                    self.assertNotIn(argument.encode("utf-8"), result.stderr)
+                    if argument != "--":
+                        self.assertNotIn(argument.encode("utf-8"), result.stderr)
+
+    def test_list_cli_reports_the_frozen_category_counts(self):
+        result = subprocess.run(
+            [sys.executable, "-B", str(GENERATOR_PATH), "--list"],
+            cwd=ROOT,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stderr, b"")
+        lines = result.stdout.decode("utf-8").splitlines()
+        self.assertEqual(
+            lines[0],
+            "Mac-Win migration assets: 90 "
+            "(bottle-schema=4, catalog=19, fixtures=30, patches=11, probes=26)",
+        )
+        self.assertEqual(len(lines), 91)
 
 
 class AssetPolicyTests(unittest.TestCase):
@@ -499,6 +525,320 @@ class AssetPolicyTests(unittest.TestCase):
         self.assertEqual(
             owners_by_category["bottle-schema"],
             {"compatforge/bottle-schema"},
+        )
+
+
+class AssetGitBindingTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary_directory = tempfile.TemporaryDirectory(
+            prefix="Mac Win inventory [git] "
+        )
+        self.repository = Path(self.temporary_directory.name).resolve()
+        self._fixture_git("init", "-q", "--initial-branch=main")
+        self._fixture_git("config", "user.name", "Inventory Tests")
+        self._fixture_git("config", "user.email", "inventory@example.invalid")
+        self.asset_path = "scripts/example.sh"
+        asset = self.repository / self.asset_path
+        asset.parent.mkdir(parents=True)
+        asset.write_bytes(b"#!/bin/sh\nprintf frozen\\n")
+        self._fixture_git("add", "--", self.asset_path)
+        self._fixture_git("commit", "-q", "-m", "source")
+        self.source_commit = self._fixture_git("rev-parse", "HEAD").stdout.strip()
+        self._fixture_git(
+            "tag", "-a", "frozen-source", "-m", "frozen source", self.source_commit
+        )
+        self.policy = self._policy([self.asset_path])
+
+    def tearDown(self):
+        self.temporary_directory.cleanup()
+
+    def _fixture_git(self, *arguments, check=True, input_bytes=None):
+        result = subprocess.run(
+            [
+                "git",
+                "-c",
+                f"safe.directory={self.repository}",
+                *arguments,
+            ],
+            cwd=self.repository,
+            input=input_bytes,
+            capture_output=True,
+            check=False,
+            text=input_bytes is None,
+        )
+        if check and result.returncode:
+            self.fail(f"fixture Git command failed: {arguments!r}: {result.stderr!r}")
+        return result
+
+    def _policy(self, paths):
+        return {
+            "schemaVersion": 1,
+            "repository": "a1112/Mac-Win",
+            "sourceCommit": self.source_commit,
+            "sourceTag": "frozen-source",
+            "groups": [
+                {
+                    "category": "probes",
+                    "kind": "probe",
+                    "license": {"status": "unresolved"},
+                    "provenance": {"status": "unresolved"},
+                    "intendedOwner": "compatforge/probes",
+                    "externalRefs": [],
+                    "developmentDependencies": [],
+                    "paths": list(paths),
+                }
+            ],
+            "dependencyPolicy": {
+                "externalRefs": [],
+                "developmentDependencies": [],
+            },
+        }
+
+    def bind(self, policy=None, commit=None, tag="frozen-source"):
+        return _bind_governed_assets(
+            self.repository,
+            self.policy if policy is None else policy,
+            self.source_commit if commit is None else commit,
+            tag,
+        )
+
+    def assert_binding_error(self, message, **kwargs):
+        with self.assertRaisesRegex(InventoryError, f"^{message}$"):
+            self.bind(**kwargs)
+
+    def test_binds_annotated_tagged_commit_to_raw_blob_identity(self):
+        records = self.bind()
+        blob_oid = self._fixture_git(
+            "rev-parse", f"{self.source_commit}:{self.asset_path}"
+        ).stdout.strip()
+        self.assertEqual(len(records), 1)
+        self.assertEqual(
+            records[0],
+            {
+                "sourcePath": self.asset_path,
+                "sourceCommit": self.source_commit,
+                "gitBlobOid": blob_oid,
+                "sha256": "4dc359967546dc8d3c9ccc74bb45d23339ba47523aa6050a6ba1af05041cb4e2",
+                "byteSize": 25,
+                "gitMode": "100644",
+                "kind": "probe",
+                "license": {"status": "unresolved"},
+                "provenance": {"status": "unresolved"},
+                "intendedOwner": "compatforge/probes",
+                "externalRefs": [],
+                "developmentDependencies": [],
+                "category": "probes",
+            },
+        )
+
+    def test_requires_local_commit_annotated_direct_tag_and_head_ancestry(self):
+        blob = self._fixture_git(
+            "rev-parse", f"{self.source_commit}:{self.asset_path}"
+        ).stdout.strip()
+        self.assert_binding_error(
+            "inventory source Git identity is invalid", commit=blob
+        )
+        self.assert_binding_error(
+            "inventory source Git identity is invalid", commit="0" * 40
+        )
+
+        self._fixture_git("tag", "-d", "frozen-source")
+        self._fixture_git("tag", "frozen-source", self.source_commit)
+        self.assert_binding_error("inventory source Git identity is invalid")
+
+        self._fixture_git("tag", "-d", "frozen-source")
+        (self.repository / self.asset_path).write_bytes(b"different\n")
+        self._fixture_git("add", "--", self.asset_path)
+        self._fixture_git("commit", "-q", "-m", "other")
+        other = self._fixture_git("rev-parse", "HEAD").stdout.strip()
+        self._fixture_git("tag", "-a", "frozen-source", "-m", "wrong", other)
+        self.assert_binding_error("inventory source Git identity is invalid")
+
+        self._fixture_git("tag", "-d", "frozen-source")
+        self._fixture_git("tag", "-a", "frozen-source", "-m", "source", self.source_commit)
+        self._fixture_git("checkout", "-q", "--orphan", "unrelated")
+        self._fixture_git("rm", "-q", "--cached", "--", self.asset_path)
+        (self.repository / self.asset_path).write_bytes(b"unrelated\n")
+        self._fixture_git("add", "--", self.asset_path)
+        self._fixture_git("commit", "-q", "-m", "unrelated")
+        self.assert_binding_error("inventory source Git identity is invalid")
+
+    def test_governed_tree_coverage_rejects_added_removed_and_case_colliding_paths(self):
+        policy = self._policy([])
+        self.assert_binding_error("inventory governed path coverage is invalid", policy=policy)
+
+        extra = self.repository / "scripts" / "extra.sh"
+        extra.write_bytes(b"extra\n")
+        self._fixture_git("add", "--", "scripts/extra.sh")
+        self._fixture_git("commit", "-q", "-m", "extra")
+        self.source_commit = self._fixture_git("rev-parse", "HEAD").stdout.strip()
+        self._fixture_git("tag", "-f", "-a", "frozen-source", "-m", "extra", self.source_commit)
+        self.policy = self._policy([self.asset_path])
+        self.assert_binding_error("inventory governed path coverage is invalid")
+
+        self.policy = self._policy([self.asset_path, "Scripts/Example.sh"])
+        self.assert_binding_error("inventory governed path coverage is invalid")
+
+    def _replace_asset_mode(self, mode, oid=None):
+        if oid is None:
+            oid = self._fixture_git(
+                "rev-parse", f"HEAD:{self.asset_path}"
+            ).stdout.strip()
+        self._fixture_git(
+            "update-index", "--add", "--cacheinfo", f"{mode},{oid},{self.asset_path}"
+        )
+        self._fixture_git("commit", "-q", "-m", f"mode {mode}")
+        self.source_commit = self._fixture_git("rev-parse", "HEAD").stdout.strip()
+        self._fixture_git("tag", "-f", "-a", "frozen-source", "-m", "mode", self.source_commit)
+        self.policy = self._policy([self.asset_path])
+
+    def test_accepts_executable_and_rejects_symlink_submodule_and_unknown_mode(self):
+        self._replace_asset_mode("100755")
+        self.assertEqual(self.bind()[0]["gitMode"], "100755")
+
+        for mode, message in (
+            ("120000", "inventory governed Git entry mode is invalid"),
+            ("160000", "inventory governed Git entry mode is invalid"),
+        ):
+            with self.subTest(mode=mode):
+                self._replace_asset_mode(mode, self.source_commit if mode == "160000" else None)
+                self.assert_binding_error(message)
+
+        with mock.patch.object(
+            generator,
+            "_list_governed_tree",
+            return_value=[("100664", "blob", "1" * 40, self.asset_path)],
+        ):
+            self.assert_binding_error("inventory governed Git entry mode is invalid")
+
+    def test_rejects_tree_tag_missing_oversized_and_truncated_blob_objects(self):
+        tree_oid = self._fixture_git("rev-parse", f"{self.source_commit}:scripts").stdout.strip()
+        tag_oid = self._fixture_git("rev-parse", "refs/tags/frozen-source").stdout.strip()
+        small_oid = self._fixture_git(
+            "rev-parse", f"{self.source_commit}:{self.asset_path}"
+        ).stdout.strip()
+        for oid in (tree_oid, tag_oid, "0" * 40):
+            with self.subTest(oid=oid):
+                with self.assertRaisesRegex(
+                    InventoryError, "^inventory governed Git object is invalid$"
+                ):
+                    _read_blob(self.repository, oid)
+
+        huge = self.repository / self.asset_path
+        huge.write_bytes(b"x" * (MAX_ASSET_BYTES + 1))
+        self._fixture_git("add", "--", self.asset_path)
+        self._fixture_git("commit", "-q", "-m", "oversized")
+        self.source_commit = self._fixture_git("rev-parse", "HEAD").stdout.strip()
+        self._fixture_git("tag", "-f", "-a", "frozen-source", "-m", "huge", self.source_commit)
+        self.policy = self._policy([self.asset_path])
+        self.assert_binding_error("inventory governed Git object exceeds the byte limit")
+
+        real_run_git = generator._run_git
+
+        def truncated(repository_root, *arguments):
+            result = real_run_git(repository_root, *arguments)
+            if arguments[:2] == ("cat-file", "blob"):
+                return subprocess.CompletedProcess(result.args, 0, b"short", b"")
+            return result
+
+        with mock.patch.object(generator, "_run_git", side_effect=truncated):
+            with self.assertRaisesRegex(
+                InventoryError, "^inventory governed Git object length is invalid$"
+            ):
+                _read_blob(self.repository, small_oid)
+
+    def test_git_environment_is_copied_scrubbed_and_forces_offline_object_reads(self):
+        hostile = {
+            "PATH": os.environ.get("PATH", ""),
+            "KEEP_ME": "yes",
+            "GIT_DIR": "decoy",
+            "GIT_WORK_TREE": "decoy",
+            "GIT_COMMON_DIR": "decoy",
+            "GIT_INDEX_FILE": "decoy",
+            "GIT_OBJECT_DIRECTORY": "decoy",
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES": "decoy",
+            "GIT_NAMESPACE": "decoy",
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "core.sshCommand",
+            "GIT_CONFIG_VALUE_0": "hostile",
+            "GIT_CONFIG_GLOBAL": "decoy",
+            "GIT_CONFIG_SYSTEM": "decoy",
+            "GIT_CONFIG_NOSYSTEM": "0",
+        }
+        cleaned = _git_environment(hostile)
+        self.assertEqual(cleaned["PATH"], hostile["PATH"])
+        self.assertEqual(cleaned["KEEP_ME"], "yes")
+        self.assertEqual(
+            {key: cleaned[key] for key in (
+                "GIT_NO_LAZY_FETCH", "GIT_NO_REPLACE_OBJECTS", "GIT_TERMINAL_PROMPT"
+            )},
+            {"GIT_NO_LAZY_FETCH": "1", "GIT_NO_REPLACE_OBJECTS": "1", "GIT_TERMINAL_PROMPT": "0"},
+        )
+        self.assertFalse(any(key.startswith("GIT_CONFIG_") for key in cleaned))
+        for key in hostile:
+            if key.startswith("GIT_"):
+                self.assertNotIn(key, cleaned)
+
+    def test_git_wrapper_uses_fixed_argv_shell_false_and_exact_repository_root(self):
+        completed = subprocess.CompletedProcess([], 0, b"ok", b"")
+        with mock.patch.object(generator.subprocess, "run", return_value=completed) as run:
+            result = _run_git(self.repository, "cat-file", "-t", "1" * 40)
+        self.assertIs(result, completed)
+        _args, kwargs = run.call_args
+        argv = _args[0]
+        self.assertEqual(argv[:3], ["git", "-c", f"safe.directory={self.repository}"])
+        self.assertEqual(argv[3:], ["cat-file", "-t", "1" * 40])
+        self.assertEqual(kwargs["cwd"], self.repository)
+        self.assertIs(kwargs["shell"], False)
+        self.assertEqual(kwargs["stdin"], subprocess.DEVNULL)
+        self.assertEqual(kwargs["env"]["PATH"], os.environ["PATH"])
+
+    def test_replace_refs_ambient_git_state_dirty_crlf_worktree_do_not_change_records(self):
+        expected = self.bind()
+        (self.repository / self.asset_path).write_bytes(b"dirty\r\nworktree\r\n")
+
+        alternate = Path(self.temporary_directory.name) / "alternate objects"
+        alternate.mkdir()
+        hostile = {
+            "GIT_DIR": str(self.repository / "decoy.git"),
+            "GIT_WORK_TREE": str(self.repository / "decoy-worktree"),
+            "GIT_COMMON_DIR": str(self.repository / "decoy-common"),
+            "GIT_INDEX_FILE": str(self.repository / "decoy-index"),
+            "GIT_OBJECT_DIRECTORY": str(alternate),
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(alternate),
+            "GIT_NAMESPACE": "hostile",
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "core.replaceRefs",
+            "GIT_CONFIG_VALUE_0": "true",
+        }
+        with mock.patch.dict(os.environ, hostile, clear=False):
+            self.assertEqual(self.bind(), expected)
+
+        replacement_asset = self.repository / self.asset_path
+        replacement_asset.write_bytes(b"replacement\n")
+        self._fixture_git("add", "--", self.asset_path)
+        self._fixture_git("commit", "-q", "-m", "replacement")
+        replacement = self._fixture_git("rev-parse", "HEAD").stdout.strip()
+        self._fixture_git("replace", self.source_commit, replacement)
+        self.assertEqual(self.bind(), expected)
+
+    def test_reads_the_same_binding_from_packed_objects(self):
+        expected = self.bind()
+        self._fixture_git("gc", "--prune=now")
+        self.assertTrue(any((self.repository / ".git" / "objects" / "pack").glob("*.pack")))
+        self.assertEqual(self.bind(), expected)
+
+    def test_real_frozen_tree_contains_the_approved_ninety_records(self):
+        policy = parse_policy_bytes(POLICY_PATH.read_bytes())
+        records = _bind_governed_assets(ROOT, policy, SOURCE_COMMIT, "mw-migration-baseline-db12d5e")
+        self.assertEqual(len(records), 90)
+        self.assertEqual(len({record["sourcePath"] for record in records}), 90)
+        counts = {}
+        for record in records:
+            counts[record["category"]] = counts.get(record["category"], 0) + 1
+        self.assertEqual(
+            counts,
+            {"catalog": 19, "patches": 11, "probes": 26, "fixtures": 30, "bottle-schema": 4},
         )
 
 
