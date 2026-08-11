@@ -337,7 +337,7 @@ Cover:
 **Step 2: Run RED**
 
 ```powershell
-python -B -m unittest tests.test_migration_asset_inventory.AssetCanonicalOutputTests -v
+python -B -m unittest discover -s tests -p 'test_migration_asset_inventory.py' -k AssetCanonicalOutputTests -v
 ```
 
 Expected: output renderer, CLI, and validator are missing.
@@ -359,7 +359,7 @@ Generate the reviewed JSON files only after all in-memory validation succeeds.
 **Step 4: Run GREEN and generate reviewed outputs**
 
 ```powershell
-python -B -m unittest tests.test_migration_asset_inventory.AssetCanonicalOutputTests -v
+python -B -m unittest discover -s tests -p 'test_migration_asset_inventory.py' -k AssetCanonicalOutputTests -v
 python -B tools/generate_migration_asset_inventory.py --write
 python -B tools/generate_migration_asset_inventory.py --check
 python -B tools/validate_migration_asset_inventory.py
