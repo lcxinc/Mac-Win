@@ -622,6 +622,18 @@ def _leaf_identity(status):
     )
 
 
+def _destination_identity(status):
+    if os.name == "nt":
+        return (
+            getattr(status, "st_dev", None) & 0xFFFFFFFF,
+            getattr(status, "st_ino", None),
+        )
+    return (
+        getattr(status, "st_dev", None),
+        getattr(status, "st_ino", None),
+    )
+
+
 def _inspect_reviewed_file(repository_root, relative_path):
     root = Path(os.path.abspath(os.fspath(repository_root)))
     try:
@@ -1636,7 +1648,9 @@ def _destination_status(destination, directory_fd):
     return os.stat(destination.name, dir_fd=directory_fd, follow_symlinks=False)
 
 
-def _validate_destination_leaf(destination, directory_fd, expected_exists=None):
+def _validate_destination_leaf(
+    destination, directory_fd, expected_exists=None, expected_identity=None
+):
     try:
         status = _destination_status(destination, directory_fd)
     except FileNotFoundError:
@@ -1651,11 +1665,16 @@ def _validate_destination_leaf(destination, directory_fd, expected_exists=None):
         or _is_reparse(status)
     ):
         raise InventoryError("inventory output transaction failed")
+    if (
+        expected_identity is not None
+        and _destination_identity(status) != expected_identity
+    ):
+        raise InventoryError("inventory output transaction failed")
     return status
 
 
 @contextmanager
-def _hold_destination_leaf(destination, expected_exists):
+def _hold_destination_leaf(destination, expected_exists, expected_identity=None):
     """Bind a Windows destination identity and deny swaps until replacement."""
     if os.name != "nt" or not expected_exists:
         yield
@@ -1734,6 +1753,12 @@ def _hold_destination_leaf(destination, expected_exists):
             or get_file_type(handle) != file_type_disk
         ):
             raise InventoryError("inventory output transaction failed")
+        handle_identity = (
+            information.volume_serial_number,
+            (information.file_index_high << 32) | information.file_index_low,
+        )
+        if expected_identity is not None and handle_identity != expected_identity:
+            raise InventoryError("inventory output transaction failed")
         yield
     finally:
         close_handle(handle)
@@ -1794,6 +1819,7 @@ def _write_inventory_documents(repository_root, documents):
     snapshot = _snapshot_output_directory(root)
     staged = {}
     backups = {}
+    backup_identities = {}
     temporary_paths = set()
     replaced = []
     with _hold_output_directory_chain(root, snapshot) as directory_fd:
@@ -1828,7 +1854,9 @@ def _write_inventory_documents(repository_root, documents):
                 else:
                     if status is None:
                         backups[relative_path] = None
+                        backup_identities[relative_path] = None
                         continue
+                    backup_identities[relative_path] = _destination_identity(status)
                     old = _read_output_file(
                         destination if directory_fd is None else destination.name,
                         MAX_DOCUMENT_BYTES,
@@ -1854,9 +1882,12 @@ def _write_inventory_documents(repository_root, documents):
                     destination,
                     directory_fd,
                     expected_exists=backups[relative_path] is not None,
+                    expected_identity=backup_identities[relative_path],
                 )
                 with _hold_destination_leaf(
-                    destination, backups[relative_path] is not None
+                    destination,
+                    backups[relative_path] is not None,
+                    backup_identities[relative_path],
                 ):
                     _replace_output_file(
                         staged[relative_path],

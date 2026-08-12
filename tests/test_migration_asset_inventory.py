@@ -1,6 +1,7 @@
 """Tests for the canonical migration asset inventory contract."""
 
 import copy
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -2829,6 +2830,55 @@ class InventoryTransactionalWriteTests(unittest.TestCase):
                 all(raw == external_raw for raw in external_observations)
             )
             self.assertEqual(external.read_bytes(), external_raw)
+            self.assert_documents(root, old)
+            self.assert_no_transaction_temps(assets)
+
+    @unittest.skipUnless(os.name == "nt", "Windows leaf identity only")
+    def test_fourth_destination_regular_substitution_is_rejected_and_rolled_back(self):
+        old = self.documents("old")
+        new = self.documents("new")
+        with tempfile.TemporaryDirectory(prefix="inventory regular substitution ") as directory:
+            root = Path(directory).resolve()
+            assets = self.prepare(root, old)
+            relative_path = OUTPUT_RELATIVE_PATHS[3]
+            destination = root / PurePosixPath(relative_path)
+            displaced = root / "fourth-original.json"
+            substitute = root / "fourth-substitute.json"
+            substitute_raw = b"unrelated regular substitute\n"
+            substitute.write_bytes(substitute_raw)
+            real_hold = generator._hold_destination_leaf
+            hold_calls = 0
+            substituted = False
+
+            @contextmanager
+            def substitute_before_fourth_hold(*args, **kwargs):
+                nonlocal hold_calls, substituted
+                hold_calls += 1
+                if hold_calls == 4:
+                    destination.rename(displaced)
+                    substitute.rename(destination)
+                    substituted = True
+                with real_hold(*args, **kwargs):
+                    yield
+
+            try:
+                with mock.patch.object(
+                    generator,
+                    "_hold_destination_leaf",
+                    side_effect=substitute_before_fourth_hold,
+                ):
+                    with self.assertRaisesRegex(
+                        InventoryError, "^inventory output transaction failed$"
+                    ):
+                        generator._write_inventory_documents(root, new)
+            finally:
+                if substituted:
+                    self.assertEqual(destination.read_bytes(), substitute_raw)
+                    destination.rename(substitute)
+                    displaced.rename(destination)
+
+            self.assertTrue(substituted)
+            self.assertEqual(substitute.read_bytes(), substitute_raw)
             self.assert_documents(root, old)
             self.assert_no_transaction_temps(assets)
 
