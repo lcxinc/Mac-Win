@@ -2533,6 +2533,75 @@ class InventoryTransactionalWriteTests(unittest.TestCase):
             self.assert_documents(root, old)
             self.assert_no_transaction_temps(assets)
 
+    def test_backup_mutation_after_prevalidation_still_restores_all_documents(self):
+        old = self.documents("old")
+        new = self.documents("new")
+        with tempfile.TemporaryDirectory(prefix="inventory backup hold race ") as directory:
+            root = Path(directory).resolve()
+            assets = self.prepare(root, old)
+            real_replace = generator._replace_output_file
+            real_hold = generator._hold_staged_leaf
+            forward_replacements = 0
+            original_backup_mutated = False
+
+            def fail_second_forward_replace(source, target, *args, **kwargs):
+                nonlocal forward_replacements
+                source_path = Path(source)
+                if not source_path.is_absolute():
+                    source_path = assets / source_path
+                if ".new." in source_path.name:
+                    forward_replacements += 1
+                    if forward_replacements == 2:
+                        raise OSError("injected second forward replace failure")
+                return real_replace(source, target, *args, **kwargs)
+
+            @contextmanager
+            def mutate_original_backup_if_rollback_reuses_it(
+                source, expected_identity, directory_fd, *args, **kwargs
+            ):
+                nonlocal original_backup_mutated
+                source_path = Path(source)
+                if not source_path.is_absolute():
+                    source_path = assets / source_path
+                if (
+                    forward_replacements >= 2
+                    and not original_backup_mutated
+                    and ".backup." in source_path.name
+                ):
+                    expected = source_path.read_bytes()
+                    poisoned = bytes([expected[0] ^ 1]) + expected[1:]
+                    self.overwrite_in_place_preserving_metadata(
+                        source_path, poisoned
+                    )
+                    original_backup_mutated = True
+                with real_hold(
+                    source,
+                    expected_identity,
+                    directory_fd,
+                    *args,
+                    **kwargs,
+                ) as verify:
+                    yield verify
+
+            with mock.patch.object(
+                generator,
+                "_replace_output_file",
+                side_effect=fail_second_forward_replace,
+            ), mock.patch.object(
+                generator,
+                "_hold_staged_leaf",
+                side_effect=mutate_original_backup_if_rollback_reuses_it,
+            ):
+                with self.assertRaisesRegex(
+                    InventoryError, "^inventory output transaction failed$"
+                ):
+                    generator._write_inventory_documents(root, new)
+
+            self.assertEqual(forward_replacements, 2)
+            self.assertFalse(original_backup_mutated)
+            self.assert_documents(root, old)
+            self.assert_no_transaction_temps(assets)
+
     @unittest.skipUnless(os.name == "nt", "Windows staged identity only")
     def test_windows_staged_swap_after_name_check_rolls_back_all_documents(self):
         old = self.documents("old")

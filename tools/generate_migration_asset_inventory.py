@@ -2228,7 +2228,6 @@ def _write_inventory_documents(repository_root, documents):
     staged_expected_bytes = {}
     backups = {}
     backup_identities = {}
-    backup_staged_identities = {}
     backup_expected_bytes = {}
     temporary_paths = set()
     replaced = []
@@ -2279,7 +2278,7 @@ def _write_inventory_documents(repository_root, documents):
                         root,
                         expected_identity=backup_identities[relative_path],
                     )
-                    backup, backup_staged_identity = _stage_output_file(
+                    backup, _ = _stage_output_file(
                         root,
                         assets,
                         destination,
@@ -2289,9 +2288,6 @@ def _write_inventory_documents(repository_root, documents):
                         directory_fd,
                     )
                     backups[relative_path] = backup
-                    backup_staged_identities[relative_path] = (
-                        backup_staged_identity
-                    )
                     backup_expected_bytes[relative_path] = old
                     temporary_paths.add(backup)
 
@@ -2370,31 +2366,19 @@ def _write_inventory_documents(repository_root, documents):
                             root,
                             expected_identity=rollback_destination_identity,
                         )
-                        rollback_source = backup
-                        rollback_source_identity = backup_staged_identities[
-                            relative_path
-                        ]
-                        try:
-                            _validate_output_leaf_bytes(
-                                rollback_source,
-                                directory_fd,
-                                rollback_source_identity,
-                                backup_expected_bytes[relative_path],
-                            )
-                        except InventoryError:
-                            (
-                                rollback_source,
-                                rollback_source_identity,
-                            ) = _stage_output_file(
-                                root,
-                                assets,
-                                destination,
-                                backup_expected_bytes[relative_path],
-                                "rollback",
-                                snapshot,
-                                directory_fd,
-                            )
-                            temporary_paths.add(rollback_source)
+                        (
+                            rollback_source,
+                            rollback_source_identity,
+                        ) = _stage_output_file(
+                            root,
+                            assets,
+                            destination,
+                            backup_expected_bytes[relative_path],
+                            "rollback",
+                            snapshot,
+                            directory_fd,
+                        )
+                        temporary_paths.add(rollback_source)
                         with _hold_destination_leaf(
                             destination,
                             True,
