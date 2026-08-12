@@ -42,11 +42,17 @@ README_FREEZE_STATEMENT = (
     f"Mac-Win is frozen at {SOURCE_COMMIT} for migration evidence. "
     "New SwiftUI, Bridge, and legacy launcher product features are not accepted."
 )
+README_ASSET_INVENTORY_LINK_STATEMENT = (
+    "See [Migration asset inventory and ownership boundary]"
+    "(docs/migration-asset-inventory.md)."
+)
 README_CANONICAL = f"""# Mac-Win
 
 {README_FREEZE_STATEMENT}
 
 See [Migration baseline and evidence boundary](docs/migration-baseline.md).
+
+{README_ASSET_INVENTORY_LINK_STATEMENT}
 """
 MIGRATION_DOCUMENT_CANONICAL = f"""# Mac-Win migration baseline
 
@@ -139,7 +145,9 @@ jobs:
         run: |
           set -euo pipefail
           python -B -m unittest discover -s tests -p "test_*.py" -v
-          python tools/validate_migration_baseline.py
+          python -B tools/validate_migration_baseline.py --require-tag
+          python -B tools/generate_migration_asset_inventory.py --check
+          python -B tools/validate_migration_asset_inventory.py
 
   swift-evidence:
     name: Swift evidence (${{ matrix.runner }} / ${{ matrix.architecture }})
@@ -1183,6 +1191,20 @@ class MigrationBaselineDocumentTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertReadmeInvalid(text, diagnostic)
 
+    def test_readme_requires_visible_asset_inventory_document_link(self):
+        diagnostic = "README is missing the standalone asset inventory document link"
+        missing = README_CANONICAL.replace(
+            README_ASSET_INVENTORY_LINK_STATEMENT,
+            "See the migration asset inventory documentation.",
+        )
+        commented = README_CANONICAL.replace(
+            README_ASSET_INVENTORY_LINK_STATEMENT,
+            f"<!-- {README_ASSET_INVENTORY_LINK_STATEMENT} -->",
+        )
+        for text in (missing, commented):
+            with self.subTest(text=text):
+                self.assertReadmeInvalid(text, diagnostic)
+
     def test_document_requires_full_sha_both_architectures_and_known_failures(self):
         diagnostic = (
             "migration document is missing a required standalone evidence statement"
@@ -1527,6 +1549,69 @@ class MigrationBaselineWorkflowTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertNotEqual(text, WORKFLOW_CANONICAL)
                 self.assertWorkflowInvalid(text)
+
+    def test_repository_contract_runs_the_complete_inventory_gate_in_order(self):
+        validator = load_validator()
+        repository_job = WORKFLOW_CANONICAL.split(
+            "  repository-contract:\n", 1
+        )[1].split("\n  swift-evidence:\n", 1)[0]
+        required_lines = (
+            "          fetch-depth: 0",
+            '          python -B -m unittest discover -s tests -p "test_*.py" -v',
+            "          python -B tools/validate_migration_baseline.py --require-tag",
+            "          python -B tools/generate_migration_asset_inventory.py --check",
+            "          python -B tools/validate_migration_asset_inventory.py",
+        )
+        positions = []
+        for line in required_lines:
+            self.assertEqual(repository_job.count(line), 1)
+            positions.append(repository_job.index(line))
+        self.assertEqual(positions, sorted(positions))
+        self.assertIn("    runs-on: ubuntu-24.04\n", repository_job)
+
+        mutations = {
+            "baseline tag requirement deleted": WORKFLOW_CANONICAL.replace(
+                " --require-tag\n", "\n", 1
+            ),
+            "inventory check changed to write": WORKFLOW_CANONICAL.replace(
+                "generate_migration_asset_inventory.py --check",
+                "generate_migration_asset_inventory.py --write",
+                1,
+            ),
+            "inventory validator deleted": WORKFLOW_CANONICAL.replace(
+                "          python -B tools/validate_migration_asset_inventory.py\n",
+                "",
+                1,
+            ),
+            "inventory validator is only a comment": WORKFLOW_CANONICAL.replace(
+                "          python -B tools/validate_migration_asset_inventory.py\n",
+                "          # python -B tools/validate_migration_asset_inventory.py\n",
+                1,
+            ),
+            "generator and validator reordered": WORKFLOW_CANONICAL.replace(
+                "          python -B tools/generate_migration_asset_inventory.py --check\n"
+                "          python -B tools/validate_migration_asset_inventory.py\n",
+                "          python -B tools/validate_migration_asset_inventory.py\n"
+                "          python -B tools/generate_migration_asset_inventory.py --check\n",
+                1,
+            ),
+            "full tests moved after validation": WORKFLOW_CANONICAL.replace(
+                '          python -B -m unittest discover -s tests -p "test_*.py" -v\n'
+                "          python -B tools/validate_migration_baseline.py --require-tag\n",
+                "          python -B tools/validate_migration_baseline.py --require-tag\n"
+                '          python -B -m unittest discover -s tests -p "test_*.py" -v\n',
+                1,
+            ),
+        }
+        for name, text in mutations.items():
+            with self.subTest(name=name):
+                self.assertNotEqual(text, WORKFLOW_CANONICAL)
+                self.assertWorkflowInvalid(text)
+                with self.assertRaises(
+                    validator.BaselineValidationError
+                ) as caught:
+                    validator._validate_workflow_semantics(text)
+                self.assertEqual(str(caught.exception), self.SEMANTIC_DIAGNOSTIC)
 
     def test_rejects_forbidden_capability_and_failure_masking_mutations(self):
         insert_at_job = "  repository-contract:\n"
@@ -2430,10 +2515,19 @@ class MigrationBaselineTagTests(unittest.TestCase):
             repository / "tools" / "validate_migration_baseline.py",
         )
         shutil.copyfile(
+            README_PATH,
+            repository / README_PATH.relative_to(ROOT),
+        )
+        shutil.copyfile(
             WORKFLOW_PATH,
             repository / WORKFLOW_PATH.relative_to(ROOT),
         )
-        self.runGit(repository, "add", WORKFLOW_RELATIVE_PATH)
+        self.runGit(
+            repository,
+            "add",
+            README_PATH.relative_to(ROOT).as_posix(),
+            WORKFLOW_RELATIVE_PATH,
+        )
         return repository
 
     def createRawTagObject(
@@ -2543,6 +2637,10 @@ class MigrationBaselineTagTests(unittest.TestCase):
         self.assertTrue(
             (repository / "tools" / "validate_migration_baseline.py").is_file()
         )
+        self.assertEqual(
+            (repository / README_PATH.relative_to(ROOT)).read_bytes(),
+            README_PATH.read_bytes(),
+        )
         self.assertTrue((repository / WORKFLOW_PATH.relative_to(ROOT)).is_file())
         self.assertEqual(git_commands.call_count, 2)
         checkout_repository, command, mode, current_head = (
@@ -2553,7 +2651,12 @@ class MigrationBaselineTagTests(unittest.TestCase):
         self.assertRegex(current_head, r"\A[0-9a-f]{40}(?:[0-9a-f]{24})?\Z")
         self.assertEqual(
             git_commands.call_args_list[1].args,
-            (repository, "add", WORKFLOW_RELATIVE_PATH),
+            (
+                repository,
+                "add",
+                README_PATH.relative_to(ROOT).as_posix(),
+                WORKFLOW_RELATIVE_PATH,
+            ),
         )
         clone_calls = [
             call for call in recorded_calls if "clone" in call[0][0]

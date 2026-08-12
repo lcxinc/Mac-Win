@@ -57,11 +57,17 @@ README_FREEZE_STATEMENT = (
 README_DOCUMENT_LINK_STATEMENT = (
     "See [Migration baseline and evidence boundary](docs/migration-baseline.md)."
 )
+README_ASSET_INVENTORY_LINK_STATEMENT = (
+    "See [Migration asset inventory and ownership boundary]"
+    "(docs/migration-asset-inventory.md)."
+)
 APPROVED_README_TEXT = f"""# Mac-Win
 
 {README_FREEZE_STATEMENT}
 
 {README_DOCUMENT_LINK_STATEMENT}
+
+{README_ASSET_INVENTORY_LINK_STATEMENT}
 """
 MIGRATION_DOCUMENT_REQUIRED_STATEMENTS = (
     f"Mac-Win is frozen at `{SOURCE_COMMIT}` for migration evidence.",
@@ -191,7 +197,9 @@ jobs:
         run: |
           set -euo pipefail
           python -B -m unittest discover -s tests -p "test_*.py" -v
-          python tools/validate_migration_baseline.py
+          python -B tools/validate_migration_baseline.py --require-tag
+          python -B tools/generate_migration_asset_inventory.py --check
+          python -B tools/validate_migration_asset_inventory.py
 
   swift-evidence:
     name: Swift evidence (${{ matrix.runner }} / ${{ matrix.architecture }})
@@ -326,7 +334,7 @@ jobs:
           echo >> "$summary_path"
           exit "$swift_status"
 """
-WORKFLOW_SHA256 = "41d65d01b6c0c308c81253de6b80877d98d4d5748604ac4269e0219e8e449947"
+WORKFLOW_SHA256 = "307b0b4dac89cc9e726c3cb34b2164d02afd4051ddfced681d47022c4fd58805"
 TOP_LEVEL_FIELDS = (
     "schemaVersion",
     "repository",
@@ -755,6 +763,10 @@ def validate_readme_document(text):
     if README_DOCUMENT_LINK_STATEMENT not in statements:
         raise BaselineValidationError(
             "README is missing the standalone migration document link"
+        )
+    if README_ASSET_INVENTORY_LINK_STATEMENT not in statements:
+        raise BaselineValidationError(
+            "README is missing the standalone asset inventory document link"
         )
 
 

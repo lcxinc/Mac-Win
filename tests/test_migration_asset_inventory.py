@@ -40,6 +40,8 @@ SOURCE_TAG_MESSAGE = "Mac-Win migration source baseline db12d5e"
 INVENTORY_DIRECTORY = ROOT / "migration" / "assets"
 GENERATOR_PATH = ROOT / "tools" / "generate_migration_asset_inventory.py"
 VALIDATOR_PATH = ROOT / "tools" / "validate_migration_asset_inventory.py"
+README_PATH = ROOT / "README.md"
+DOCUMENTATION_PATH = ROOT / "docs" / "migration-asset-inventory.md"
 NATIVE_LINE_ENDING = os.linesep.encode("ascii")
 OUTPUT_RELATIVE_PATHS = (
     "migration/assets/index.json",
@@ -2284,6 +2286,113 @@ class AssetCanonicalOutputTests(unittest.TestCase):
             ):
                 validator.validate_inventory(ROOT)
         self.assertIn(relative_path, documents)
+
+
+class AssetDocumentationTests(unittest.TestCase):
+    def visibleDocumentation(self):
+        self.assertTrue(
+            DOCUMENTATION_PATH.is_file(), "migration asset inventory documentation is missing"
+        )
+        text = DOCUMENTATION_PATH.read_text(encoding="utf-8")
+        while "<!--" in text:
+            start = text.index("<!--")
+            end = text.find("-->", start + 4)
+            self.assertNotEqual(end, -1, "documentation has an unterminated comment")
+            text = text[:start] + text[end + 3 :]
+        return text
+
+    def test_readme_has_a_visible_inventory_boundary_link(self):
+        statement = (
+            "See [Migration asset inventory and ownership boundary]"
+            "(docs/migration-asset-inventory.md)."
+        )
+        readme = README_PATH.read_text(encoding="utf-8")
+        self.assertIn(statement, readme)
+        self.assertNotIn(f"<!-- {statement} -->", readme)
+
+    def test_documents_frozen_identity_and_exact_asset_counts(self):
+        text = self.visibleDocumentation()
+        required = (
+            f"`{SOURCE_COMMIT}`",
+            "`mw-migration-baseline-db12d5e`",
+            "| Catalog | 19 |",
+            "| Patches | 11 |",
+            "| Probes | 26 |",
+            "| Fixtures | 30 |",
+            "| Bottle schema | 4 |",
+            "| **Total** | **90** |",
+        )
+        for statement in required:
+            with self.subTest(statement=statement):
+                self.assertIn(statement, text)
+
+    def test_documents_dependency_evidence_and_bounded_outputs(self):
+        text = self.visibleDocumentation()
+        normalized = " ".join(text.split())
+        required = (
+            "277 URL evidence identities",
+            "234 identities from `scripts/download-software-samples.sh`",
+            "108 development-machine dependency identities",
+            "23 `absolute-path`",
+            "50 `environment-path`",
+            "35 `repository-path`",
+            "seven generated JSON documents",
+            "64 KiB",
+        )
+        for statement in required:
+            with self.subTest(statement=statement):
+                self.assertIn(statement, normalized)
+
+    def test_documents_policy_owner_and_quarantine_boundaries(self):
+        text = self.visibleDocumentation()
+        for owner in (
+            "compatforge/catalog",
+            "compatforge/patches",
+            "compatforge/probes",
+            "compatforge/bottle-schema",
+            "macwin/archive",
+            "quarantine/unresolved",
+        ):
+            with self.subTest(owner=owner):
+                self.assertIn(f"`{owner}`", text)
+        required = (
+            "License and provenance remain `unresolved`",
+            "An intended owner is routing metadata, not publication approval.",
+            "Unresolved assets remain quarantined from publication.",
+            "MW-ASSET-002 owns license, provenance, and quarantine resolution.",
+        )
+        for statement in required:
+            with self.subTest(statement=statement):
+                self.assertIn(statement, text)
+
+    def test_documents_explicit_non_claims_and_no_side_effect_boundary(self):
+        text = self.visibleDocumentation()
+        required = (
+            "This inventory is evidence, not a portability, compatibility, or license attestation.",
+            "Generation and validation do not download dependencies or resolve URLs.",
+            "They do not execute inventoried assets or probes.",
+            "They do not read, inspect, create, or mutate a user Bottle.",
+        )
+        for statement in required:
+            with self.subTest(statement=statement):
+                self.assertIn(statement, text)
+
+    def test_documents_the_complete_canonical_local_command_sequence(self):
+        text = self.visibleDocumentation()
+        commands = (
+            "python -B tools/generate_migration_asset_inventory.py --list",
+            "python -B tools/generate_migration_asset_inventory.py --check",
+            "python -B tools/generate_migration_asset_inventory.py --write",
+            "python -B tools/validate_migration_asset_inventory.py",
+            "python -B tools/validate_migration_baseline.py --require-tag",
+            "git diff --check",
+            "git diff --exit-code -- migration/assets",
+        )
+        positions = []
+        for command in commands:
+            self.assertEqual(text.count(command), 1, command)
+            positions.append(text.index(command))
+        self.assertEqual(positions, sorted(positions))
 
 
 class AssetSideEffectTests(unittest.TestCase):
