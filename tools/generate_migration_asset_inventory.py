@@ -1556,10 +1556,14 @@ def _create_output_temp(assets, destination, purpose, directory_fd):
     raise OSError("could not allocate inventory transaction file")
 
 
-def _read_output_file(token, maximum_bytes, directory_fd):
+def _read_output_file(token, maximum_bytes, directory_fd, repository_root):
     if directory_fd is None:
-        with Path(token).open("rb") as stream:
-            raw = stream.read(maximum_bytes + 1)
+        root = Path(repository_root)
+        try:
+            relative_path = Path(token).relative_to(root).as_posix()
+        except ValueError as error:
+            raise InventoryError("inventory output transaction failed") from error
+        raw = _read_bounded_reviewed_file(root, relative_path, maximum_bytes)
     else:
         flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | os.O_NOFOLLOW
         descriptor = os.open(token, flags, dir_fd=directory_fd)
@@ -1601,6 +1605,24 @@ def _destination_status(destination, directory_fd):
     return os.stat(destination.name, dir_fd=directory_fd, follow_symlinks=False)
 
 
+def _validate_destination_leaf(destination, directory_fd, expected_exists=None):
+    try:
+        status = _destination_status(destination, directory_fd)
+    except FileNotFoundError:
+        if expected_exists:
+            raise InventoryError("inventory output transaction failed")
+        return None
+    if expected_exists is False:
+        raise InventoryError("inventory output transaction failed")
+    if (
+        not stat.S_ISREG(status.st_mode)
+        or stat.S_ISLNK(status.st_mode)
+        or _is_reparse(status)
+    ):
+        raise InventoryError("inventory output transaction failed")
+    return status
+
+
 def _stage_output_file(
     root, assets, destination, raw, purpose, snapshot, directory_fd
 ):
@@ -1621,7 +1643,9 @@ def _stage_output_file(
         if not hasattr(os, "fchmod"):
             os.chmod(temporary, 0o644)
         _verify_output_directory_identity(root, snapshot)
-        if _read_output_file(temporary, MAX_DOCUMENT_BYTES, directory_fd) != raw:
+        if _read_output_file(
+            temporary, MAX_DOCUMENT_BYTES, directory_fd, root
+        ) != raw:
             raise InventoryError("inventory output transaction failed")
         return temporary
     except (OSError, ValueError, InventoryError) as error:
@@ -1678,16 +1702,22 @@ def _write_inventory_documents(repository_root, documents):
                 destination = root / PurePosixPath(relative_path)
                 _verify_output_directory_identity(root, snapshot)
                 try:
-                    _destination_status(destination, directory_fd)
+                    status = _validate_destination_leaf(
+                        destination, directory_fd
+                    )
                 except FileNotFoundError:
                     backups[relative_path] = None
                 except OSError as error:
                     raise InventoryError("inventory output transaction failed") from error
                 else:
+                    if status is None:
+                        backups[relative_path] = None
+                        continue
                     old = _read_output_file(
                         destination if directory_fd is None else destination.name,
                         MAX_DOCUMENT_BYTES,
                         directory_fd,
+                        root,
                     )
                     backup = _stage_output_file(
                         root,
@@ -1704,6 +1734,11 @@ def _write_inventory_documents(repository_root, documents):
             for relative_path in documents:
                 destination = root / PurePosixPath(relative_path)
                 _verify_output_directory_identity(root, snapshot)
+                _validate_destination_leaf(
+                    destination,
+                    directory_fd,
+                    expected_exists=backups[relative_path] is not None,
+                )
                 _replace_output_file(
                     staged[relative_path], destination, directory_fd
                 )

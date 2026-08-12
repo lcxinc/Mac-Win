@@ -2368,6 +2368,9 @@ class InventoryTransactionalWriteTests(unittest.TestCase):
         for relative_path, raw in documents.items():
             self.assertEqual((root / PurePosixPath(relative_path)).read_bytes(), raw)
 
+    def assert_no_transaction_temps(self, assets):
+        self.assertEqual(list(assets.glob("*.tmp")), [])
+
     def test_all_new_and_backup_files_are_staged_before_first_replace(self):
         old = self.documents("old")
         new = self.documents("new")
@@ -2492,6 +2495,173 @@ class InventoryTransactionalWriteTests(unittest.TestCase):
             self.assertEqual(list(external.iterdir()), [])
             self.assert_documents(root, old)
             self.assertEqual(list(assets.glob("*.tmp")), [])
+
+    def test_existing_leaf_symlink_is_rejected_without_external_read_or_mutation(self):
+        old = self.documents("old")
+        new = self.documents("new")
+        with tempfile.TemporaryDirectory(prefix="inventory leaf symlink ") as directory:
+            root = Path(directory).resolve()
+            assets = self.prepare(root, old)
+            relative_path = OUTPUT_RELATIVE_PATHS[0]
+            destination = root / PurePosixPath(relative_path)
+            displaced = root / "index-displaced.json"
+            external = root / "external-index.json"
+            external_raw = b"external sentinel must remain unread and unchanged\n"
+            external.write_bytes(external_raw)
+            destination.rename(displaced)
+            try:
+                destination.symlink_to(external)
+            except OSError as error:
+                displaced.rename(destination)
+                self.skipTest(f"file symlink creation is unavailable: {error}")
+
+            real_path_open = Path.open
+
+            def reject_link_follow(path, *args, **kwargs):
+                if Path(path) == destination:
+                    raise AssertionError("linked external file was opened")
+                return real_path_open(path, *args, **kwargs)
+
+            try:
+                with mock.patch.object(Path, "open", reject_link_follow):
+                    with self.assertRaisesRegex(
+                        InventoryError, "^inventory output transaction failed$"
+                    ):
+                        generator._write_inventory_documents(root, new)
+            finally:
+                destination.unlink(missing_ok=True)
+                displaced.rename(destination)
+
+            self.assertEqual(external.read_bytes(), external_raw)
+            self.assert_documents(root, old)
+            self.assert_no_transaction_temps(assets)
+
+    def test_existing_leaf_hardlink_is_an_allowed_regular_file(self):
+        old = self.documents("old")
+        new = self.documents("new")
+        with tempfile.TemporaryDirectory(prefix="inventory leaf hardlink ") as directory:
+            root = Path(directory).resolve()
+            assets = self.prepare(root, old)
+            relative_path = OUTPUT_RELATIVE_PATHS[0]
+            destination = root / PurePosixPath(relative_path)
+            external = root / "hardlinked-index.json"
+            destination.rename(external)
+            os.link(external, destination)
+
+            generator._write_inventory_documents(root, new)
+
+            self.assertEqual(external.read_bytes(), old[relative_path])
+            self.assert_documents(root, new)
+            self.assert_no_transaction_temps(assets)
+
+    def test_leaf_swap_between_status_and_open_is_rejected_before_read(self):
+        old = self.documents("old")
+        new = self.documents("new")
+        with tempfile.TemporaryDirectory(prefix="inventory leaf open swap ") as directory:
+            root = Path(directory).resolve()
+            assets = self.prepare(root, old)
+            relative_path = OUTPUT_RELATIVE_PATHS[0]
+            destination = root / PurePosixPath(relative_path)
+            displaced = root / "index-displaced.json"
+            external = root / "external-index.json"
+            external_raw = b"external swap sentinel must remain unread and unchanged\n"
+            external.write_bytes(external_raw)
+            real_status = generator._destination_status
+            real_path_open = Path.open
+            swapped = False
+
+            def swap_after_status(path, directory_fd):
+                nonlocal swapped
+                status = real_status(path, directory_fd)
+                if not swapped and Path(path) == destination:
+                    destination.rename(displaced)
+                    try:
+                        destination.symlink_to(external)
+                    except OSError as error:
+                        displaced.rename(destination)
+                        self.skipTest(
+                            f"file symlink creation is unavailable: {error}"
+                        )
+                    swapped = True
+                return status
+
+            def reject_link_follow(path, *args, **kwargs):
+                if Path(path) == destination:
+                    raise AssertionError("swapped external file was opened")
+                return real_path_open(path, *args, **kwargs)
+
+            try:
+                with mock.patch.object(
+                    generator,
+                    "_destination_status",
+                    side_effect=swap_after_status,
+                ), mock.patch.object(Path, "open", reject_link_follow):
+                    with self.assertRaisesRegex(
+                        InventoryError, "^inventory output transaction failed$"
+                    ):
+                        generator._write_inventory_documents(root, new)
+            finally:
+                if swapped:
+                    destination.unlink(missing_ok=True)
+                    displaced.rename(destination)
+
+            self.assertEqual(external.read_bytes(), external_raw)
+            self.assert_documents(root, old)
+            self.assert_no_transaction_temps(assets)
+
+    def test_leaf_swap_after_backup_read_is_rejected_before_replace(self):
+        old = self.documents("old")
+        new = self.documents("new")
+        with tempfile.TemporaryDirectory(prefix="inventory leaf replace swap ") as directory:
+            root = Path(directory).resolve()
+            assets = self.prepare(root, old)
+            relative_path = OUTPUT_RELATIVE_PATHS[0]
+            destination = root / PurePosixPath(relative_path)
+            displaced = root / "index-displaced.json"
+            external = root / "external-index.json"
+            external_raw = b"external replace sentinel must remain unchanged\n"
+            external.write_bytes(external_raw)
+            real_read = generator._read_output_file
+            swapped = False
+
+            def swap_after_read(token, maximum_bytes, directory_fd, repository_root):
+                nonlocal swapped
+                raw = real_read(
+                    token, maximum_bytes, directory_fd, repository_root
+                )
+                token_path = Path(token)
+                is_destination = token_path == destination or (
+                    directory_fd is not None
+                    and token_path.name == destination.name
+                )
+                if not swapped and is_destination:
+                    destination.rename(displaced)
+                    try:
+                        destination.symlink_to(external)
+                    except OSError as error:
+                        displaced.rename(destination)
+                        self.skipTest(
+                            f"file symlink creation is unavailable: {error}"
+                        )
+                    swapped = True
+                return raw
+
+            try:
+                with mock.patch.object(
+                    generator, "_read_output_file", side_effect=swap_after_read
+                ):
+                    with self.assertRaisesRegex(
+                        InventoryError, "^inventory output transaction failed$"
+                    ):
+                        generator._write_inventory_documents(root, new)
+            finally:
+                if swapped:
+                    destination.unlink(missing_ok=True)
+                    displaced.rename(destination)
+
+            self.assertEqual(external.read_bytes(), external_raw)
+            self.assert_documents(root, old)
+            self.assert_no_transaction_temps(assets)
 
 
 class InventoryRendererBoundaryTests(unittest.TestCase):
