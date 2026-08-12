@@ -1503,7 +1503,6 @@ def _hold_output_directory_chain(repository_root, snapshot):
 
     file_share_read = 0x00000001
     file_share_write = 0x00000002
-    delete_access = 0x00010000
     file_read_attributes = 0x00000080
     open_existing = 3
     file_flag_backup_semantics = 0x02000000
@@ -1516,7 +1515,7 @@ def _hold_output_directory_chain(repository_root, snapshot):
         for component in components:
             handle = create_file(
                 os.fspath(component),
-                delete_access | file_read_attributes,
+                file_read_attributes,
                 file_share_read | file_share_write,
                 None,
                 open_existing,

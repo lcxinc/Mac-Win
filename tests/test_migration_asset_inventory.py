@@ -2554,6 +2554,46 @@ class InventoryTransactionalWriteTests(unittest.TestCase):
             self.assert_documents(root, new)
             self.assert_no_transaction_temps(assets)
 
+    @unittest.skipUnless(os.name == "nt", "Windows directory sharing only")
+    def test_write_succeeds_when_repository_root_is_held_without_delete_share(self):
+        import ctypes
+        from ctypes import wintypes
+
+        old = self.documents("old")
+        new = self.documents("new")
+        with tempfile.TemporaryDirectory(prefix="inventory held root ") as directory:
+            root = Path(directory).resolve()
+            assets = self.prepare(root, old)
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            create_file = kernel32.CreateFileW
+            create_file.argtypes = (
+                wintypes.LPCWSTR,
+                wintypes.DWORD,
+                wintypes.DWORD,
+                wintypes.LPVOID,
+                wintypes.DWORD,
+                wintypes.DWORD,
+                wintypes.HANDLE,
+            )
+            create_file.restype = wintypes.HANDLE
+            handle = create_file(
+                os.fspath(root),
+                0x00000080,
+                0x00000001 | 0x00000002,
+                None,
+                3,
+                0x02000000 | 0x00200000,
+                None,
+            )
+            self.assertNotEqual(handle, ctypes.c_void_p(-1).value)
+            try:
+                generator._write_inventory_documents(root, new)
+            finally:
+                kernel32.CloseHandle(handle)
+
+            self.assert_documents(root, new)
+            self.assert_no_transaction_temps(assets)
+
     def test_leaf_swap_between_status_and_open_is_rejected_before_read(self):
         old = self.documents("old")
         new = self.documents("new")
