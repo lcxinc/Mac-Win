@@ -801,20 +801,27 @@ def _validate_primary_object_database(repository_root):
     try:
         if object_directory != common_directory / "objects":
             raise InventoryError("inventory Git object database is not self-contained")
+        info_directory = object_directory / "info"
+        pack_directory = object_directory / "pack"
+        _validate_git_directory_path(info_directory)
+        _validate_git_directory_path(pack_directory)
         for sentinel in (
-            object_directory / "info" / "alternates",
-            object_directory / "info" / "http-alternates",
+            info_directory / "alternates",
+            info_directory / "http-alternates",
         ):
             if sentinel.exists():
                 raise InventoryError(
                     "inventory Git object database is not self-contained"
                 )
-        pack_directory = object_directory / "pack"
-        if pack_directory.exists() and any(
+        if any(
             path.is_file() and path.suffix.casefold() == ".promisor"
             for path in pack_directory.iterdir()
         ):
             raise InventoryError("inventory Git object database is not self-contained")
+    except InventoryError as error:
+        raise InventoryError(
+            "inventory Git object database is not self-contained"
+        ) from error
     except OSError as error:
         raise InventoryError("inventory Git object database is invalid") from error
 

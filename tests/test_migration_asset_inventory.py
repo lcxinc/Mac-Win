@@ -1427,6 +1427,32 @@ class AssetGitBindingTests(unittest.TestCase):
             "inventory Git object database is not self-contained"
         )
 
+    def test_rejects_linked_primary_object_database_child_directories(self):
+        objects = self.repository / ".git" / "objects"
+        for child_name in ("info", "pack"):
+            with self.subTest(child_name=child_name):
+                child = objects / child_name
+                displaced = objects / f"{child_name}-displaced"
+                external = self.repository / f"external-{child_name}"
+                child.rename(displaced)
+                external.mkdir()
+                try:
+                    child.symlink_to(external, target_is_directory=True)
+                except OSError as error:
+                    external.rmdir()
+                    displaced.rename(child)
+                    self.skipTest(
+                        f"directory symlink creation is unavailable: {error}"
+                    )
+                try:
+                    self.assert_binding_error(
+                        "inventory Git object database is not self-contained"
+                    )
+                finally:
+                    child.unlink()
+                    external.rmdir()
+                    displaced.rename(child)
+
     def test_rejects_promisor_pack_and_partial_clone_configuration(self):
         pack_directory = self.repository / ".git" / "objects" / "pack"
         for filename in ("hostile.promisor", "hostile.PROMISOR"):
