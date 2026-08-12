@@ -2069,9 +2069,9 @@ class AssetCanonicalOutputTests(unittest.TestCase):
             calls = []
             real_replace = os.replace
 
-            def recording_replace(source, target):
-                calls.append((Path(source), Path(target)))
-                return real_replace(source, target)
+            def recording_replace(source, target, *args, **kwargs):
+                calls.append((Path(source), Path(target), dict(kwargs)))
+                return real_replace(source, target, *args, **kwargs)
 
             with mock.patch.object(generator.os, "replace", side_effect=recording_replace):
                 generator._write_inventory_documents(destination, documents)
@@ -2080,10 +2080,17 @@ class AssetCanonicalOutputTests(unittest.TestCase):
                 set(OUTPUT_RELATIVE_PATHS),
             )
             self.assertEqual(
-                {target.relative_to(destination).as_posix() for _, target in calls},
-                set(OUTPUT_RELATIVE_PATHS),
+                {target.name for _, target, _ in calls},
+                {Path(path).name for path in OUTPUT_RELATIVE_PATHS},
             )
-            self.assertTrue(all(source.parent == target.parent for source, target in calls))
+            self.assertTrue(
+                all(
+                    source.parent == target.parent
+                    if not kwargs
+                    else kwargs.get("src_dir_fd") == kwargs.get("dst_dir_fd")
+                    for source, target, kwargs in calls
+                )
+            )
             self.assertFalse(any(path.suffix == ".tmp" for path in destination.rglob("*")))
 
         hostile = dict(documents)
@@ -2370,10 +2377,10 @@ class InventoryTransactionalWriteTests(unittest.TestCase):
             real_replace = os.replace
             observed = []
 
-            def inspect_first_replace(source, target):
+            def inspect_first_replace(source, target, *args, **kwargs):
                 if not observed:
                     observed.append(len(list(assets.glob("*.tmp"))))
-                return real_replace(source, target)
+                return real_replace(source, target, *args, **kwargs)
 
             with mock.patch.object(
                 generator.os, "replace", side_effect=inspect_first_replace
@@ -2395,15 +2402,15 @@ class InventoryTransactionalWriteTests(unittest.TestCase):
                 real_replace = os.replace
                 replacements = 0
 
-                def fail_selected_replace(source, target):
+                def fail_selected_replace(source, target, *args, **kwargs):
                     nonlocal replacements
                     if Path(target).name in {
                         Path(path).name for path in OUTPUT_RELATIVE_PATHS
-                    } and Path(source).suffix == ".tmp":
+                    } and Path(source).name.endswith(".tmp"):
                         replacements += 1
                         if replacements == failure_position:
                             raise OSError("injected destination replace failure")
-                    return real_replace(source, target)
+                    return real_replace(source, target, *args, **kwargs)
 
                 with mock.patch.object(
                     generator.os, "replace", side_effect=fail_selected_replace
