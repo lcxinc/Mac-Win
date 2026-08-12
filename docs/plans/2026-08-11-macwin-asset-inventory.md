@@ -46,8 +46,8 @@ Run:
 
 ```powershell
 $env:PYTHONDONTWRITEBYTECODE='1'
-python -B -m unittest tests.test_validate_migration_baseline.MigrationBaselineManifestTests.test_migration_json_is_lf_pinned -v
-python -B -m unittest tests.test_migration_asset_inventory -v
+python -B -m unittest discover -s tests -p 'test_validate_migration_baseline.py' -k test_migration_json_attributes_have_lf_semantics -v
+python -B -m unittest discover -s tests -p 'test_migration_asset_inventory.py' -v
 ```
 
 Expected: the attribute is unspecified and inventory paths are missing.
@@ -77,7 +77,7 @@ Do not weaken index/blob verification in the production validator.
 Run:
 
 ```powershell
-python -B -m unittest tests.test_validate_migration_baseline.MigrationBaselineManifestTests -v
+python -B -m unittest discover -s tests -p 'test_validate_migration_baseline.py' -k MigrationBaselineManifestTests -v
 python -B -m unittest discover -s tests -p 'test_*.py' -v
 ```
 
@@ -463,8 +463,8 @@ seal must reject the changed workflow until intentionally updated.
 **Step 2: Run RED**
 
 ```powershell
-python -B -m unittest tests.test_validate_migration_baseline.MigrationBaselineWorkflowTests -v
-python -B -m unittest tests.test_migration_asset_inventory.AssetDocumentationTests -v
+python -B -m unittest discover -s tests -p 'test_validate_migration_baseline.py' -k MigrationBaselineWorkflowTests -v
+python -B -m unittest discover -s tests -p 'test_migration_asset_inventory.py' -k AssetDocumentationTests -v
 ```
 
 Expected: missing docs/README statement and workflow command/seal mismatch.
@@ -480,8 +480,8 @@ permission/toolchain regressions.
 **Step 4: Run GREEN**
 
 ```powershell
-python -B -m unittest tests.test_validate_migration_baseline.MigrationBaselineWorkflowTests -v
-python -B -m unittest tests.test_migration_asset_inventory.AssetDocumentationTests -v
+python -B -m unittest discover -s tests -p 'test_validate_migration_baseline.py' -k MigrationBaselineWorkflowTests -v
+python -B -m unittest discover -s tests -p 'test_migration_asset_inventory.py' -k AssetDocumentationTests -v
 python -B tools/validate_migration_baseline.py
 python -B tools/validate_migration_asset_inventory.py
 ```
