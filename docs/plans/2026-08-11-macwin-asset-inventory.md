@@ -398,7 +398,7 @@ verify they remain inert data.
 **Step 2: Run RED**
 
 ```powershell
-python -B -m unittest tests.test_migration_asset_inventory.AssetSideEffectTests -v
+python -B -m unittest discover -s tests -p 'test_migration_asset_inventory.py' -k AssetSideEffectTests -v
 ```
 
 Expected: the initial instrumentation exposes any unbounded or overly broad
@@ -415,7 +415,7 @@ strictly read-only.
 **Step 4: Run GREEN and the complete focused suite**
 
 ```powershell
-python -B -m unittest tests.test_migration_asset_inventory -v
+python -B -m unittest discover -s tests -p 'test_migration_asset_inventory.py' -v
 ```
 
 Expected: all inventory tests pass with no cache or temporary files left.
