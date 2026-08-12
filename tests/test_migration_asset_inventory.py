@@ -7,11 +7,13 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
 import unittest
 import importlib.util
+import urllib.request
 from unittest import mock
 import zlib
 
@@ -1311,6 +1313,7 @@ class AssetGitBindingTests(unittest.TestCase):
                 "GIT_CONFIG_NOSYSTEM",
                 "GIT_NO_LAZY_FETCH",
                 "GIT_NO_REPLACE_OBJECTS",
+                "GIT_OPTIONAL_LOCKS",
                 "GIT_TERMINAL_PROMPT",
             )},
             {
@@ -1318,6 +1321,7 @@ class AssetGitBindingTests(unittest.TestCase):
                 "GIT_CONFIG_NOSYSTEM": "1",
                 "GIT_NO_LAZY_FETCH": "1",
                 "GIT_NO_REPLACE_OBJECTS": "1",
+                "GIT_OPTIONAL_LOCKS": "0",
                 "GIT_TERMINAL_PROMPT": "0",
             },
         )
@@ -1364,7 +1368,18 @@ class AssetGitBindingTests(unittest.TestCase):
         _args, kwargs = run.call_args
         argv = _args[0]
         self.assertEqual(argv[:3], ["git", "-c", f"safe.directory={self.repository}"])
-        self.assertEqual(argv[3:], ["cat-file", "-t", "1" * 40])
+        self.assertEqual(
+            argv[3:],
+            [
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                f"core.hooksPath={os.devnull}",
+                "cat-file",
+                "-t",
+                "1" * 40,
+            ],
+        )
         self.assertEqual(kwargs["cwd"], self.repository)
         self.assertIs(kwargs["shell"], False)
         self.assertEqual(kwargs["stdin"], subprocess.DEVNULL)
@@ -1414,6 +1429,35 @@ class AssetGitBindingTests(unittest.TestCase):
                     "inventory Git object database is not self-contained"
                 )
                 path.unlink()
+
+    def test_rejects_local_config_include_without_reading_its_malformed_target(self):
+        included = self.repository.parent / "must-not-be-read.gitconfig"
+        included.write_text("[safe]\n\tbare = false\n", encoding="utf-8")
+        self._fixture_git("config", "--local", "include.path", str(included))
+        included.write_text("[malformed\n", encoding="utf-8")
+        self.assert_binding_error(
+            "inventory Git object database is not self-contained"
+        )
+
+    def test_hardened_runner_disables_repository_fsmonitor_execution(self):
+        sentinel = self.repository.parent / "fsmonitor-executed"
+        if os.name == "nt":
+            hook = self.repository / "hostile-fsmonitor.cmd"
+            hook.write_text(
+                f'@echo off\r\n>"{sentinel}" echo executed\r\nexit /b 0\r\n',
+                encoding="utf-8",
+            )
+        else:
+            hook = self.repository / "hostile-fsmonitor.sh"
+            hook.write_text(
+                f'#!/bin/sh\nprintf executed > "{sentinel}"\nexit 0\n',
+                encoding="utf-8",
+            )
+            hook.chmod(0o755)
+        self._fixture_git("config", "--local", "core.fsmonitor", f'"{hook}"')
+        result = _run_git(self.repository, "ls-files", "--stage")
+        self.assertEqual(result.returncode, 0)
+        self.assertFalse(sentinel.exists())
 
     def test_rejects_symlinked_primary_object_database_before_path_resolution(self):
         objects = self.repository / ".git" / "objects"
@@ -1519,7 +1563,11 @@ class AssetGitBindingTests(unittest.TestCase):
         for returncode, stdout, stderr, expected in accepted:
             with self.subTest(returncode=returncode, stdout=stdout):
                 result = subprocess.CompletedProcess([], returncode, stdout, stderr)
-                with mock.patch.object(generator, "_run_git", return_value=result):
+                with mock.patch.object(
+                    generator, "_read_repository_config", return_value=b"[core]\n"
+                ), mock.patch.object(
+                    generator, "_run_git_config_bytes", return_value=result
+                ):
                     self.assertIs(
                         generator._worktree_config_enabled(self.repository), expected
                     )
@@ -1533,7 +1581,11 @@ class AssetGitBindingTests(unittest.TestCase):
         )
         for result in rejected:
             with self.subTest(returncode=result.returncode, stdout=result.stdout):
-                with mock.patch.object(generator, "_run_git", return_value=result):
+                with mock.patch.object(
+                    generator, "_read_repository_config", return_value=b"[core]\n"
+                ), mock.patch.object(
+                    generator, "_run_git_config_bytes", return_value=result
+                ):
                     with self.assertRaisesRegex(
                         InventoryError,
                         "^inventory Git worktree config state is invalid$",
@@ -2187,6 +2239,422 @@ class AssetCanonicalOutputTests(unittest.TestCase):
             ):
                 validator.validate_inventory(ROOT)
         self.assertIn(relative_path, documents)
+
+
+class AssetSideEffectTests(unittest.TestCase):
+    """Prove inventory entrypoints treat every dependency locator as inert data."""
+
+    _APPROVED_GIT_COMMANDS = frozenset(
+        (
+            "cat-file",
+            "config",
+            "for-each-ref",
+            "ls-files",
+            "ls-tree",
+            "merge-base",
+            "rev-parse",
+            "symbolic-ref",
+        )
+    )
+
+    def snapshot_tree(self, root, excluded=()):
+        root = Path(root)
+        excluded = tuple(Path(path) for path in excluded)
+        if not root.exists():
+            return ("missing",)
+        if root.is_file():
+            raw = root.read_bytes()
+            status = root.stat()
+            return (
+                "file",
+                status.st_mode,
+                status.st_size,
+                status.st_mtime_ns,
+                hashlib.sha256(raw).hexdigest(),
+            )
+        result = []
+        for path in sorted(root.rglob("*"), key=lambda value: str(value).casefold()):
+            if any(path == item or item in path.parents for item in excluded):
+                continue
+            relative = path.relative_to(root).as_posix()
+            status = path.lstat()
+            if path.is_symlink():
+                result.append((relative, "link", os.readlink(path)))
+            elif path.is_dir():
+                result.append((relative, "directory", status.st_mode, status.st_mtime_ns))
+            elif path.is_file():
+                raw = path.read_bytes()
+                result.append(
+                    (
+                        relative,
+                        "file",
+                        status.st_mode,
+                        status.st_size,
+                        status.st_mtime_ns,
+                        hashlib.sha256(raw).hexdigest(),
+                    )
+                )
+            else:
+                result.append((relative, "other", status.st_mode))
+        return tuple(result)
+
+    def git_paths(self):
+        result = subprocess.run(
+            [
+                "git",
+                "-c",
+                f"safe.directory={ROOT}",
+                "rev-parse",
+                "--path-format=absolute",
+                "--git-dir",
+                "--git-common-dir",
+                "--git-path",
+                "index",
+            ],
+            cwd=ROOT,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            check=False,
+            shell=False,
+            env=_fixture_git_environment(),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        values = result.stdout.decode("utf-8", errors="strict").splitlines()
+        self.assertEqual(len(values), 3)
+        git_directory, common_directory, index_path = map(Path, values)
+        return {
+            "git-directory": git_directory,
+            "index": index_path,
+            "config": common_directory / "config",
+            "config-worktree": git_directory / "config.worktree",
+            "refs": common_directory / "refs",
+            "objects": common_directory / "objects",
+            "worktrees": common_directory / "worktrees",
+        }
+
+    def snapshot_boundaries(self, external):
+        git_paths = self.git_paths()
+        return {
+            "repository": self.snapshot_tree(
+                ROOT, excluded=(ROOT / ".git", ROOT / "__pycache__")
+            ),
+            **{
+                f"git-{name}": self.snapshot_tree(path)
+                for name, path in git_paths.items()
+            },
+            "external": self.snapshot_tree(external),
+        }
+
+    def snapshot_repository_files(self, excluded=()):
+        excluded = {Path(path).resolve() for path in excluded}
+        result = []
+        for path in sorted(ROOT.rglob("*"), key=lambda value: str(value).casefold()):
+            if (
+                path.resolve() in excluded
+                or "__pycache__" in path.parts
+                or not path.is_file()
+            ):
+                continue
+            raw = path.read_bytes()
+            result.append(
+                (
+                    path.relative_to(ROOT).as_posix(),
+                    len(raw),
+                    hashlib.sha256(raw).hexdigest(),
+                )
+            )
+        return tuple(result)
+
+    def status_bytes(self):
+        environment = _fixture_git_environment()
+        environment["GIT_OPTIONAL_LOCKS"] = "0"
+        result = subprocess.run(
+            [
+                "git",
+                "-c",
+                f"safe.directory={ROOT}",
+                "-c",
+                "core.fsmonitor=false",
+                "status",
+                "--porcelain=v1",
+                "-z",
+                "--untracked-files=all",
+            ],
+            cwd=ROOT,
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            check=False,
+            shell=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout
+
+    @contextmanager
+    def inert_runtime(self, external):
+        real_subprocess_run = subprocess.run
+        real_path_exists = Path.exists
+        real_path_stat = Path.stat
+        real_path_lstat = Path.lstat
+        real_path_open = Path.open
+        real_path_read_bytes = Path.read_bytes
+        real_path_read_text = Path.read_text
+        real_os_open = os.open
+        observed_git = []
+        forbidden_literals = (
+            "/Users/a1-6/",
+            "$HOME/",
+            "refs/",
+            "MACWIN_",
+            str(external),
+        )
+
+        def reject_dependency_path(path):
+            text = os.fspath(path).replace("\\", "/")
+            if any(literal in text for literal in forbidden_literals):
+                raise AssertionError("dependency locator was probed")
+
+        def guarded_run(arguments, *args, **kwargs):
+            self.assertIs(type(arguments), list)
+            self.assertTrue(arguments)
+            self.assertEqual(arguments[0], "git")
+            self.assertIs(kwargs.get("shell"), False)
+            command = next(
+                (item for item in arguments if item in self._APPROVED_GIT_COMMANDS),
+                None,
+            )
+            self.assertIsNotNone(command)
+            if command == "config" and "--file" in arguments:
+                self.assertNotIn("stdin", kwargs)
+                self.assertIs(type(kwargs.get("input")), bytes)
+                self.assertLessEqual(
+                    len(kwargs["input"]), generator.MAX_GIT_CONFIG_LIST_BYTES
+                )
+            else:
+                self.assertIs(kwargs.get("stdin"), subprocess.DEVNULL)
+            environment = kwargs.get("env")
+            self.assertIs(type(environment), dict)
+            self.assertEqual(environment.get("GIT_NO_LAZY_FETCH"), "1")
+            self.assertEqual(environment.get("GIT_NO_REPLACE_OBJECTS"), "1")
+            self.assertEqual(environment.get("GIT_TERMINAL_PROMPT"), "0")
+            self.assertEqual(environment.get("GIT_OPTIONAL_LOCKS"), "0")
+            self.assertIn("core.fsmonitor=false", arguments)
+            self.assertIn(f"core.hooksPath={os.devnull}", arguments)
+            observed_git.append((command, tuple(arguments)))
+            return real_subprocess_run(arguments, *args, **kwargs)
+
+        def guarded_exists(path):
+            reject_dependency_path(path)
+            return real_path_exists(path)
+
+        def guarded_stat(path, *args, **kwargs):
+            reject_dependency_path(path)
+            return real_path_stat(path, *args, **kwargs)
+
+        def guarded_lstat(path, *args, **kwargs):
+            reject_dependency_path(path)
+            return real_path_lstat(path, *args, **kwargs)
+
+        def guarded_path_open(path, *args, **kwargs):
+            reject_dependency_path(path)
+            return real_path_open(path, *args, **kwargs)
+
+        def guarded_read_bytes(path):
+            reject_dependency_path(path)
+            return real_path_read_bytes(path)
+
+        def guarded_read_text(path, *args, **kwargs):
+            reject_dependency_path(path)
+            return real_path_read_text(path, *args, **kwargs)
+
+        def guarded_os_open(path, *args, **kwargs):
+            reject_dependency_path(path)
+            return real_os_open(path, *args, **kwargs)
+
+        hostile_environment = {
+            "HOME": str(external / "home"),
+            "USERPROFILE": str(external / "home"),
+            "MACWIN_ROOT": str(external / "Bottle"),
+            "MACWIN_VISUAL_OUTPUT_DIR": str(external / "Desktop"),
+        }
+        with mock.patch.dict(os.environ, hostile_environment, clear=False), mock.patch.object(
+            subprocess, "run", side_effect=guarded_run
+        ), mock.patch.object(Path, "exists", guarded_exists), mock.patch.object(
+            Path, "stat", guarded_stat
+        ), mock.patch.object(Path, "lstat", guarded_lstat), mock.patch.object(
+            Path, "open", guarded_path_open
+        ), mock.patch.object(Path, "read_bytes", guarded_read_bytes), mock.patch.object(
+            Path, "read_text", guarded_read_text
+        ), mock.patch.object(os, "open", side_effect=guarded_os_open), mock.patch.object(
+            Path, "expanduser", side_effect=AssertionError("dependency locator was expanded")
+        ), mock.patch.object(
+            os.path, "expandvars", side_effect=AssertionError("dependency locator was expanded")
+        ), mock.patch.object(
+            os, "getenv", side_effect=AssertionError("dependency environment was read")
+        ), mock.patch.object(
+            socket, "socket", side_effect=AssertionError("network access")
+        ), mock.patch.object(
+            socket, "create_connection", side_effect=AssertionError("network access")
+        ), mock.patch.object(
+            socket, "getaddrinfo", side_effect=AssertionError("DNS access")
+        ), mock.patch.object(
+            urllib.request, "urlopen", side_effect=AssertionError("network access")
+        ):
+            yield observed_git
+
+    def test_default_list_check_and_validator_are_inert_and_read_only(self):
+        validator = load_inventory_validator()
+        with tempfile.TemporaryDirectory(prefix="inventory external sentinels ") as directory:
+            external = Path(directory).resolve()
+            sentinels = (
+                external / "Bottle" / "manifest.json",
+                external / "ignored-refs" / "tool.exe",
+                external / "home" / "Library" / "Application Support" / "MacWin" / "Bottle",
+                external / "Desktop" / "MacWinVisualAcceptance" / "result.json",
+                external / "Downloads" / "asset.exe",
+            )
+            for sentinel in sentinels:
+                sentinel.parent.mkdir(parents=True, exist_ok=True)
+                sentinel.write_bytes(b"SIDE EFFECT SENTINEL\n")
+            before = self.snapshot_boundaries(external)
+            with self.inert_runtime(external) as observed_git, mock.patch("builtins.print"):
+                self.assertEqual(generator.main(["--list"]), 0)
+                self.assertEqual(generator.main([]), 0)
+                self.assertEqual(generator.main(["--check"]), 0)
+                self.assertEqual(validator.main([]), 0)
+            after = self.snapshot_boundaries(external)
+            self.assertTrue(observed_git)
+            self.assertEqual(after, before)
+
+    def test_dependency_command_url_path_and_environment_syntax_remains_data(self):
+        raw = (
+            b"https://example.invalid/$(touch-side-effect) "
+            b"/Users/a1-6/Library/Application Support/MacWin/Bottles/demo "
+            b"$HOME/Desktop/MacWinVisualAcceptance MACWIN_ROOT refs/secret.exe\n"
+        )
+        with tempfile.TemporaryDirectory(prefix="inventory locator sentinel ") as directory:
+            external = Path(directory).resolve()
+            sentinel = external / "sentinel"
+            sentinel.write_bytes(b"unchanged\n")
+            before = self.snapshot_tree(external)
+            with self.inert_runtime(external):
+                evidence = generator._extract_blob_dependency_evidence(
+                    "scripts/hostile.sh", raw
+                )
+            self.assertEqual(self.snapshot_tree(external), before)
+        self.assertIn(
+            "https://example.invalid/$(touch-side-effect)",
+            [entry["locator"] for entry in evidence["externalRefs"]],
+        )
+        self.assertIn(
+            "MACWIN_ROOT",
+            [entry["locator"] for entry in evidence["developmentDependencies"]],
+        )
+
+    def test_write_mode_changes_only_seven_approved_documents_and_is_idempotent(self):
+        outputs = tuple(ROOT / PurePosixPath(path) for path in OUTPUT_RELATIVE_PATHS)
+        documents = {
+            relative_path: (ROOT / PurePosixPath(relative_path)).read_bytes()
+            for relative_path in OUTPUT_RELATIVE_PATHS
+        }
+        with tempfile.TemporaryDirectory(prefix="inventory write sentinel ") as directory:
+            external = Path(directory).resolve()
+            bottle = external / "Bottle" / "manifest.json"
+            bottle.parent.mkdir(parents=True)
+            bottle.write_bytes(b"BOTTLE MUST REMAIN UNTOUCHED\n")
+            git_paths = self.git_paths()
+            before_repository = self.snapshot_repository_files(excluded=outputs)
+            before_git = {
+                name: self.snapshot_tree(path) for name, path in git_paths.items()
+            }
+            before_external = self.snapshot_tree(external)
+            before_status = self.status_bytes()
+
+            with self.inert_runtime(external), mock.patch.object(
+                generator, "generate_inventory_documents", return_value=documents
+            ), mock.patch("builtins.print"):
+                self.assertEqual(generator.main(["--write"]), 0)
+            first = {path: path.read_bytes() for path in outputs}
+            first_status = self.status_bytes()
+
+            with self.inert_runtime(external), mock.patch.object(
+                generator, "generate_inventory_documents", return_value=documents
+            ), mock.patch("builtins.print"):
+                self.assertEqual(generator.main(["--write"]), 0)
+            second = {path: path.read_bytes() for path in outputs}
+
+            self.assertEqual(len(outputs), 7)
+            self.assertEqual(
+                first,
+                {ROOT / PurePosixPath(path): raw for path, raw in documents.items()},
+            )
+            self.assertEqual(second, first)
+            self.assertEqual(self.snapshot_repository_files(excluded=outputs), before_repository)
+            self.assertEqual(
+                {name: self.snapshot_tree(path) for name, path in git_paths.items()},
+                before_git,
+            )
+            self.assertEqual(self.snapshot_tree(external), before_external)
+            self.assertEqual(first_status, before_status)
+            self.assertEqual(self.status_bytes(), before_status)
+            self.assertEqual(list((ROOT / "migration" / "assets").glob("*.tmp")), [])
+
+    def test_git_config_introspection_disables_includes(self):
+        completed = subprocess.CompletedProcess([], 0, b"", b"")
+        with mock.patch.object(
+            generator, "_read_repository_config", return_value=b"[core]\n"
+        ), mock.patch.object(
+            generator, "_run_git_config_bytes", return_value=completed
+        ) as run:
+            self.assertEqual(generator._git_config_scope_keys(ROOT, "local"), ())
+        arguments = run.call_args.args[1:]
+        self.assertEqual(arguments, (b"[core]\n", "--name-only", "--list"))
+
+    def test_repository_config_rejects_includes_before_object_store_commands(self):
+        with mock.patch.object(
+            generator, "_worktree_config_enabled", return_value=False
+        ), mock.patch.object(
+            generator, "_git_config_scope_keys", return_value=("include.path",)
+        ), mock.patch.object(
+            generator,
+            "_absolute_git_path",
+            side_effect=AssertionError("Git command ran after an unsafe include"),
+        ) as absolute_git_path:
+            with self.assertRaisesRegex(
+                InventoryError,
+                "^inventory Git object database is not self-contained$",
+            ):
+                generator._validate_primary_object_database(ROOT)
+        absolute_git_path.assert_not_called()
+
+    def test_validator_disables_bytecode_before_local_imports(self):
+        with tempfile.TemporaryDirectory(prefix="inventory pycache ") as directory:
+            cache = Path(directory).resolve()
+            environment = os.environ.copy()
+            environment.pop("PYTHONDONTWRITEBYTECODE", None)
+            environment["PYTHONPYCACHEPREFIX"] = str(cache)
+            result = subprocess.run(
+                [sys.executable, str(VALIDATOR_PATH)],
+                cwd=ROOT,
+                env=environment,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                check=False,
+                shell=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            local_bytecode = [
+                path
+                for path in cache.rglob("*.pyc")
+                if path.name.startswith(
+                    (
+                        "generate_migration_asset_inventory.",
+                        "validate_migration_asset_inventory.",
+                        "validate_migration_baseline.",
+                    )
+                )
+            ]
+            self.assertEqual(local_bytecode, [])
 
 
 class InventoryGenerationFailureTests(unittest.TestCase):

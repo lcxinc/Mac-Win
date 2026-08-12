@@ -4,22 +4,17 @@
 import argparse
 import hashlib
 from pathlib import Path
+import re
 import sys
+
+# This validator's contract is read-only even when invoked without ``python -B``.
+# Set the process policy before importing repository-local modules.
+sys.dont_write_bytecode = True
 
 try:
     from tools import generate_migration_asset_inventory as generator
-    from tools.validate_migration_baseline import (
-        BaselineValidationError,
-        _index_entry,
-        _reviewed_relative_path,
-    )
 except ModuleNotFoundError:
     import generate_migration_asset_inventory as generator
-    from validate_migration_baseline import (
-        BaselineValidationError,
-        _index_entry,
-        _reviewed_relative_path,
-    )
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -30,6 +25,63 @@ generate_inventory_documents = generator.generate_inventory_documents
 
 class InventoryValidationError(ValueError):
     """One stable, non-reflective inventory validation failure."""
+
+
+def _reviewed_relative_path(value):
+    """Return one inventory-owned reviewed path without consulting the host."""
+    try:
+        return generator._validate_path(value)
+    except generator.InventoryError as error:
+        raise InventoryValidationError(
+            "migration asset inventory reviewed file is invalid"
+        ) from error
+
+
+def _index_entry(repository_root, relative_path):
+    """Read one exact stage-0 blob identity through the hardened Git runner."""
+    path = _reviewed_relative_path(relative_path)
+    try:
+        listed = generator._run_git(
+            repository_root, "ls-files", "--stage", "-z", "--", path
+        )
+        raw = listed.stdout
+        if not raw or not raw.endswith(b"\0") or len(raw[:-1].split(b"\0")) != 1:
+            raise InventoryValidationError(
+                "migration asset inventory reviewed file is invalid"
+            )
+        metadata, indexed_path = raw[:-1].split(b"\t", 1)
+        mode, object_id, stage = metadata.split(b" ")
+        if (
+            indexed_path != path.encode("utf-8")
+            or mode != b"100644"
+            or stage != b"0"
+            or re.fullmatch(rb"(?:[0-9a-f]{40}|[0-9a-f]{64})", object_id) is None
+            or set(object_id) == {ord("0")}
+        ):
+            raise InventoryValidationError(
+                "migration asset inventory reviewed file is invalid"
+            )
+        debug = generator._run_git(
+            repository_root, "ls-files", "--debug", "-z", "--", path
+        )
+        flags = re.findall(
+            rb"(?:^|[\t ])flags: ([0-9a-fA-F]+)(?:\r?\n|$)", debug.stdout
+        )
+        if (
+            not debug.stdout.startswith(path.encode("utf-8") + b"\0")
+            or len(flags) != 1
+            or int(flags[0], 16) & 0x20000000
+        ):
+            raise InventoryValidationError(
+                "migration asset inventory reviewed file is invalid"
+            )
+        return object_id.decode("ascii")
+    except InventoryValidationError:
+        raise
+    except (generator.InventoryError, UnicodeError, ValueError) as error:
+        raise InventoryValidationError(
+            "migration asset inventory reviewed file is invalid"
+        ) from error
 
 
 def parse_inventory_document(raw):
@@ -329,7 +381,7 @@ def _read_reviewed_document(repository_root, relative_path, expected):
     try:
         object_id = _index_entry(repository_root, _reviewed_relative_path(relative_path))
         indexed = _read_index_document_bytes(repository_root, object_id)
-    except (BaselineValidationError, generator.InventoryError) as error:
+    except (InventoryValidationError, generator.InventoryError) as error:
         raise InventoryValidationError(
             "migration asset inventory reviewed file is invalid"
         ) from error
@@ -384,7 +436,6 @@ def _read_reviewed_policy(repository_root):
         )
         indexed = _read_index_document_bytes(repository_root, object_id)
     except (
-        BaselineValidationError,
         generator.InventoryError,
         InventoryValidationError,
     ) as error:

@@ -75,6 +75,11 @@ GOVERNED_TREE_PATHS = (
     "MacWinManager/Sources/MacWinCore/Models.swift",
 )
 _OID_PATTERN = re.compile(rb"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
+_CONFIG_INCLUDE_PATTERN = re.compile(
+    rb"^[ \t]*(?:\[include(?:if)?(?:[ \t\"]|\])|"
+    rb"include(?:if\.[^\r\n=]+)?\.path(?:[ \t]*=|[ \t]*$))",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 CATEGORIES = frozenset(
     ("catalog", "patches", "probes", "fixtures", "bottle-schema")
@@ -739,6 +744,7 @@ def _git_environment(source=None):
             "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_NO_LAZY_FETCH": "1",
             "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_OPTIONAL_LOCKS": "0",
             "GIT_TERMINAL_PROMPT": "0",
         }
     )
@@ -750,7 +756,7 @@ def _run_git(repository_root, *arguments, allowed_returncodes=(0,)):
     root = Path(repository_root).resolve()
     try:
         result = subprocess.run(
-            ["git", "-c", f"safe.directory={root}", *arguments],
+            _git_command_argv(root, *arguments),
             cwd=root,
             stdin=subprocess.DEVNULL,
             capture_output=True,
@@ -762,6 +768,42 @@ def _run_git(repository_root, *arguments, allowed_returncodes=(0,)):
         raise InventoryError("inventory Git command failed") from error
     if allowed_returncodes is not None and result.returncode not in allowed_returncodes:
         raise InventoryError("inventory Git command failed")
+    return result
+
+
+def _git_command_argv(repository_root, *arguments):
+    root = Path(repository_root).resolve()
+    return [
+        "git",
+        "-c",
+        f"safe.directory={root}",
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        f"core.hooksPath={os.devnull}",
+        *arguments,
+    ]
+
+
+def _run_git_config_bytes(repository_root, raw, *arguments):
+    """Parse one bounded repository config from stdin without following includes."""
+    root = Path(repository_root).resolve()
+    if type(raw) is not bytes or len(raw) > MAX_GIT_CONFIG_LIST_BYTES:
+        raise InventoryError("inventory Git config scope is invalid")
+    try:
+        result = subprocess.run(
+            _git_command_argv(
+                root, "config", "--file", "-", "--no-includes", *arguments
+            ),
+            cwd=root,
+            input=raw,
+            capture_output=True,
+            check=False,
+            shell=False,
+            env=_git_environment(),
+        )
+    except OSError as error:
+        raise InventoryError("inventory Git config scope is invalid") from error
     return result
 
 
@@ -808,9 +850,88 @@ def _validate_git_directory_path(path):
             raise InventoryError("inventory Git object database is invalid")
 
 
+def _decode_git_directory_pointer(raw, prefix, base):
+    if type(raw) is not bytes or len(raw) > 4096 or b"\0" in raw:
+        raise InventoryError("inventory Git object database is invalid")
+    line = raw.rstrip(b"\r\n")
+    if raw not in (line, line + b"\n", line + b"\r\n") or not line.startswith(prefix):
+        raise InventoryError("inventory Git object database is invalid")
+    try:
+        value = line[len(prefix) :].decode("utf-8", errors="strict")
+    except UnicodeDecodeError as error:
+        raise InventoryError("inventory Git object database is invalid") from error
+    if not value:
+        raise InventoryError("inventory Git object database is invalid")
+    candidate = Path(value)
+    if not candidate.is_absolute():
+        candidate = Path(base) / candidate
+    candidate = Path(os.path.abspath(os.fspath(candidate)))
+    _validate_git_directory_path(candidate)
+    return candidate
+
+
+def _discover_git_directories(repository_root):
+    """Locate Git directories without first asking Git to load repository config."""
+    root = Path(os.path.abspath(os.fspath(repository_root)))
+    _validate_git_directory_path(root)
+    dot_git = root / ".git"
+    try:
+        status = dot_git.lstat()
+    except OSError as error:
+        raise InventoryError("inventory Git object database is invalid") from error
+    if stat.S_ISDIR(status.st_mode) and not stat.S_ISLNK(status.st_mode) and not _is_reparse(status):
+        git_directory = dot_git
+        _validate_git_directory_path(git_directory)
+    elif stat.S_ISREG(status.st_mode) and not stat.S_ISLNK(status.st_mode) and not _is_reparse(status):
+        raw = _read_bounded_reviewed_file(root, ".git", 4096)
+        git_directory = _decode_git_directory_pointer(raw, b"gitdir: ", root)
+    else:
+        raise InventoryError("inventory Git object database is invalid")
+
+    common_pointer = git_directory / "commondir"
+    try:
+        common_status = common_pointer.lstat()
+    except FileNotFoundError:
+        common_directory = git_directory
+    except OSError as error:
+        raise InventoryError("inventory Git object database is invalid") from error
+    else:
+        if (
+            not stat.S_ISREG(common_status.st_mode)
+            or stat.S_ISLNK(common_status.st_mode)
+            or _is_reparse(common_status)
+        ):
+            raise InventoryError("inventory Git object database is invalid")
+        raw = _read_bounded_reviewed_file(git_directory, "commondir", 4096)
+        common_directory = _decode_git_directory_pointer(raw, b"", git_directory)
+    return git_directory, common_directory
+
+
+def _read_repository_config(repository_root, scope):
+    git_directory, common_directory = _discover_git_directories(repository_root)
+    if scope == "local":
+        path = common_directory / "config"
+    elif scope == "worktree":
+        path = git_directory / "config.worktree"
+    else:
+        raise InventoryError("inventory Git config scope is invalid")
+    try:
+        raw = _read_bounded_reviewed_file(
+            path.parent, path.name, MAX_GIT_CONFIG_LIST_BYTES
+        )
+    except InventoryError as error:
+        raise InventoryError("inventory Git config scope is invalid") from error
+    if _CONFIG_INCLUDE_PATTERN.search(raw) is not None:
+        raise InventoryError("inventory Git object database is not self-contained")
+    return raw
+
+
 def _validate_primary_object_database(repository_root):
     """Reject alternates and partial-clone stores outside the primary object DB."""
     root = Path(repository_root).resolve()
+    # Inspect only repository-owned config without following include directives
+    # before any object command can cause Git to load an external include.
+    _validate_promisor_configuration(root)
     common_directory = _absolute_git_path(root, "--git-common-dir")
     object_directory = _absolute_git_path(root, "--git-path", "objects")
     try:
@@ -840,9 +961,6 @@ def _validate_primary_object_database(repository_root):
     except OSError as error:
         raise InventoryError("inventory Git object database is invalid") from error
 
-    _validate_promisor_configuration(root)
-
-
 def _validate_promisor_configuration(repository_root):
     scopes = ["local"]
     if _worktree_config_enabled(repository_root):
@@ -850,7 +968,11 @@ def _validate_promisor_configuration(repository_root):
     for scope in scopes:
         for key in _git_config_scope_keys(repository_root, scope):
             folded = key.casefold()
-            if folded == "extensions.partialclone" or (
+            if (
+                folded == "include.path"
+                or (folded.startswith("includeif.") and folded.endswith(".path"))
+                or folded == "extensions.partialclone"
+            ) or (
                 folded.startswith("remote.") and folded.endswith(".promisor")
             ):
                 raise InventoryError(
@@ -859,14 +981,13 @@ def _validate_promisor_configuration(repository_root):
 
 
 def _worktree_config_enabled(repository_root):
-    result = _run_git(
+    raw = _read_repository_config(repository_root, "local")
+    result = _run_git_config_bytes(
         repository_root,
-        "config",
-        "--local",
+        raw,
         "--type=bool",
         "--get",
         "extensions.worktreeConfig",
-        allowed_returncodes=None,
     )
     if result.returncode == 1 and result.stdout == b"":
         return False
@@ -880,13 +1001,12 @@ def _worktree_config_enabled(repository_root):
 
 
 def _git_config_scope_keys(repository_root, scope):
-    result = _run_git(
+    raw = _read_repository_config(repository_root, scope)
+    result = _run_git_config_bytes(
         repository_root,
-        "config",
-        f"--{scope}",
+        raw,
         "--name-only",
         "--list",
-        allowed_returncodes=None,
     )
     if result.returncode != 0 or result.stderr:
         raise InventoryError("inventory Git config scope is invalid")
