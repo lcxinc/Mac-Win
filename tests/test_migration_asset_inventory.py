@@ -2416,5 +2416,52 @@ class InventoryTransactionalWriteTests(unittest.TestCase):
             self.assert_documents(root, old)
 
 
+class InventoryRendererBoundaryTests(unittest.TestCase):
+    def assert_renderer_error(self, value):
+        with self.assertRaisesRegex(
+            InventoryError, "^inventory output document is invalid$"
+        ):
+            generator.canonical_json_bytes(value)
+
+    def test_iterative_depth_gate_rejects_deep_and_cyclic_values_stably(self):
+        deep = 0
+        for _ in range(MAX_JSON_DEPTH + 1):
+            deep = [deep]
+        self.assert_renderer_error(deep)
+
+        very_deep = 0
+        for _ in range(2000):
+            very_deep = [very_deep]
+        self.assert_renderer_error(very_deep)
+
+        cyclic = []
+        cyclic.append(cyclic)
+        self.assert_renderer_error(cyclic)
+
+    def test_renderer_accepts_only_closed_json_v1_scalars_and_string_keys(self):
+        accepted = {
+            "null": None,
+            "boolean": True,
+            "integer": 1,
+            "string": "value",
+            "array": [False, 0, "x"],
+            "object": {"nested": None},
+        }
+        self.assertTrue(generator.canonical_json_bytes(accepted).endswith(b"\n"))
+
+        for value in (
+            1.5,
+            float("nan"),
+            float("inf"),
+            b"bytes",
+            ("tuple",),
+            {"set"},
+            {1: "non-string-key"},
+            10 ** (generator.MAX_JSON_INTEGER_DIGITS + 1),
+        ):
+            with self.subTest(value_type=type(value).__name__):
+                self.assert_renderer_error(value)
+
+
 if __name__ == "__main__":
     unittest.main()

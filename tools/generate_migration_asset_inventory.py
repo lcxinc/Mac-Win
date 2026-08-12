@@ -1070,8 +1070,42 @@ def _bind_governed_assets(repository_root, policy, source_commit, source_tag):
     return records
 
 
+def _validate_output_value(value):
+    """Iteratively enforce the closed JSON v1 value and depth contract."""
+    active = set()
+    stack = [(value, 0, False)]
+    while stack:
+        current, depth, exiting = stack.pop()
+        if exiting:
+            active.remove(id(current))
+            continue
+        if current is None or type(current) in (str, bool):
+            continue
+        if type(current) is int:
+            digits = str(current).removeprefix("-")
+            if len(digits) > MAX_JSON_INTEGER_DIGITS:
+                raise InventoryError("inventory output document is invalid")
+            continue
+        if type(current) not in (dict, list):
+            raise InventoryError("inventory output document is invalid")
+        container_depth = depth + 1
+        if container_depth > MAX_JSON_DEPTH or id(current) in active:
+            raise InventoryError("inventory output document is invalid")
+        active.add(id(current))
+        stack.append((current, depth, True))
+        if type(current) is dict:
+            if any(type(key) is not str for key in current):
+                raise InventoryError("inventory output document is invalid")
+            children = tuple(current.values())
+        else:
+            children = tuple(current)
+        for child in reversed(children):
+            stack.append((child, container_depth, False))
+
+
 def canonical_json_bytes(value):
     """Render one canonical, bounded ASCII JSON document."""
+    _validate_output_value(value)
     try:
         raw = (
             json.dumps(
@@ -1084,7 +1118,7 @@ def canonical_json_bytes(value):
             ).encode("ascii")
             + b"\n"
         )
-    except (TypeError, ValueError, UnicodeError) as error:
+    except (TypeError, ValueError, UnicodeError, RecursionError) as error:
         raise InventoryError("inventory output document is invalid") from error
     if len(raw) > MAX_DOCUMENT_BYTES:
         raise InventoryError("inventory output document exceeds the byte limit")
