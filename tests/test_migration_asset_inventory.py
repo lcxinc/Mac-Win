@@ -2067,7 +2067,7 @@ class AssetCanonicalOutputTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="inventory write ") as directory:
             destination = Path(directory).resolve()
             calls = []
-            real_replace = generator._replace_output_file
+            real_replace = os.replace
 
             def recording_replace(source, target, *args, **kwargs):
                 calls.append((Path(source), Path(target), dict(kwargs)))
