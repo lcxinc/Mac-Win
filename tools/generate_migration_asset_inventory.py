@@ -613,6 +613,8 @@ def _git_environment(source=None):
             del environment[key]
     environment.update(
         {
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_NO_LAZY_FETCH": "1",
             "GIT_NO_REPLACE_OBJECTS": "1",
             "GIT_TERMINAL_PROMPT": "0",
@@ -648,9 +650,40 @@ def _absolute_git_path(repository_root, *arguments):
     if not raw or len(raw) > 4096 or b"\0" in raw:
         raise InventoryError("inventory Git object database is invalid")
     try:
-        return Path(raw.rstrip(b"\r\n").decode("utf-8", errors="strict")).resolve()
-    except (OSError, UnicodeError, ValueError) as error:
+        text = raw.rstrip(b"\r\n").decode("utf-8", errors="strict")
+        if not text or "\0" in text:
+            raise ValueError("invalid Git path")
+        path = Path(os.path.abspath(text))
+        if not path.is_absolute():
+            raise ValueError("non-absolute Git path")
+        _validate_git_directory_path(path)
+        return path
+    except (OSError, UnicodeError, ValueError, InventoryError) as error:
         raise InventoryError("inventory Git object database is invalid") from error
+
+
+def _validate_git_directory_path(path):
+    """Reject linked/reparse Git directory components without resolving them."""
+    candidate = Path(path)
+    parts = candidate.parts
+    if not parts:
+        raise InventoryError("inventory Git object database is invalid")
+    current = Path(parts[0])
+    components = (current,)
+    for part in parts[1:]:
+        current = current / part
+        components += (current,)
+    for component in components:
+        try:
+            status = component.lstat()
+        except OSError as error:
+            raise InventoryError("inventory Git object database is invalid") from error
+        reparse = bool(
+            getattr(status, "st_file_attributes", 0)
+            & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        )
+        if not stat.S_ISDIR(status.st_mode) or stat.S_ISLNK(status.st_mode) or reparse:
+            raise InventoryError("inventory Git object database is invalid")
 
 
 def _validate_primary_object_database(repository_root):
@@ -659,7 +692,7 @@ def _validate_primary_object_database(repository_root):
     common_directory = _absolute_git_path(root, "--git-common-dir")
     object_directory = _absolute_git_path(root, "--git-path", "objects")
     try:
-        if object_directory != (common_directory / "objects").resolve():
+        if object_directory != common_directory / "objects":
             raise InventoryError("inventory Git object database is not self-contained")
         for sentinel in (
             object_directory / "info" / "alternates",

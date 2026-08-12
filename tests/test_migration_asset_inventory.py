@@ -1306,14 +1306,54 @@ class AssetGitBindingTests(unittest.TestCase):
         self.assertEqual(cleaned["KEEP_ME"], "yes")
         self.assertEqual(
             {key: cleaned[key] for key in (
-                "GIT_NO_LAZY_FETCH", "GIT_NO_REPLACE_OBJECTS", "GIT_TERMINAL_PROMPT"
+                "GIT_CONFIG_GLOBAL",
+                "GIT_CONFIG_NOSYSTEM",
+                "GIT_NO_LAZY_FETCH",
+                "GIT_NO_REPLACE_OBJECTS",
+                "GIT_TERMINAL_PROMPT",
             )},
-            {"GIT_NO_LAZY_FETCH": "1", "GIT_NO_REPLACE_OBJECTS": "1", "GIT_TERMINAL_PROMPT": "0"},
+            {
+                "GIT_CONFIG_GLOBAL": os.devnull,
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_NO_LAZY_FETCH": "1",
+                "GIT_NO_REPLACE_OBJECTS": "1",
+                "GIT_TERMINAL_PROMPT": "0",
+            },
         )
-        self.assertFalse(any(key.startswith("GIT_CONFIG_") for key in cleaned))
         for key in hostile:
-            if key.startswith("GIT_"):
+            if key.startswith("GIT_") and key not in (
+                "GIT_CONFIG_GLOBAL",
+                "GIT_CONFIG_NOSYSTEM",
+            ):
                 self.assertNotIn(key, cleaned)
+
+    def test_cli_ignores_malformed_home_global_and_system_git_configuration(self):
+        with tempfile.TemporaryDirectory(prefix="inventory hostile git config ") as directory:
+            hostile_home = Path(directory) / "home"
+            hostile_home.mkdir()
+            (hostile_home / ".gitconfig").write_text(
+                "[malformed\n", encoding="utf-8"
+            )
+            hostile_system = Path(directory) / "system.gitconfig"
+            hostile_system.write_text("[also-malformed\n", encoding="utf-8")
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "HOME": str(hostile_home),
+                    "USERPROFILE": str(hostile_home),
+                    "GIT_CONFIG_SYSTEM": str(hostile_system),
+                }
+            )
+            result = subprocess.run(
+                [sys.executable, "-B", str(GENERATOR_PATH), "--list"],
+                cwd=ROOT,
+                env=environment,
+                capture_output=True,
+                check=False,
+            )
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stderr, b"")
+        self.assertTrue(result.stdout.startswith(b"Mac-Win migration assets: 90 "))
 
     def test_git_wrapper_uses_fixed_argv_shell_false_and_exact_repository_root(self):
         completed = subprocess.CompletedProcess([], 0, b"ok", b"")
@@ -1373,6 +1413,19 @@ class AssetGitBindingTests(unittest.TestCase):
                     "inventory Git object database is not self-contained"
                 )
                 path.unlink()
+
+    def test_rejects_symlinked_primary_object_database_before_path_resolution(self):
+        objects = self.repository / ".git" / "objects"
+        real_objects = self.repository / ".git" / "objects-real"
+        objects.rename(real_objects)
+        try:
+            objects.symlink_to(real_objects, target_is_directory=True)
+        except OSError as error:
+            real_objects.rename(objects)
+            self.skipTest(f"directory symlink creation is unavailable: {error}")
+        self.assert_binding_error(
+            "inventory Git object database is not self-contained"
+        )
 
     def test_rejects_promisor_pack_and_partial_clone_configuration(self):
         pack_directory = self.repository / ".git" / "objects" / "pack"
