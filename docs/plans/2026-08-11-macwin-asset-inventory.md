@@ -331,7 +331,7 @@ Cover:
 - every expanded asset independently contains all required fields;
 - changing a blob digest, OID, size, mode, count, shard path, or metadata fails;
 - default generator/check mode writes nothing;
-- explicit `--write` writes only the eight approved JSON outputs atomically;
+- explicit `--write` writes only the seven approved JSON outputs atomically;
 - validator regenerates in memory and compares committed bytes exactly.
 
 **Step 2: Run RED**
@@ -409,7 +409,7 @@ read/write path; if already green, introduce a controlled mutant that calls
 
 Keep all asset reads content-addressed through Git. Ensure explicit `--write`
 uses a validated output-root allowlist, writes temporary sibling files, and
-atomically replaces only the eight generated JSON targets. Validation remains
+atomically replaces only the seven generated JSON targets. Validation remains
 strictly read-only.
 
 **Step 4: Run GREEN and the complete focused suite**
