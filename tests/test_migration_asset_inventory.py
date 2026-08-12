@@ -2441,6 +2441,51 @@ class InventoryTransactionalWriteTests(unittest.TestCase):
                 displaced.rename(assets)
             self.assert_documents(root, old)
 
+    def test_full_write_parent_swap_before_first_temp_create_leaves_no_external_files(self):
+        old = self.documents("old")
+        new = self.documents("new")
+        with tempfile.TemporaryDirectory(prefix="inventory write parent swap ") as directory:
+            root = Path(directory).resolve()
+            assets = self.prepare(root, old)
+            external = root / "external"
+            external.mkdir()
+            displaced = root / "assets-displaced"
+            real_create = generator._create_output_temp
+            swapped = False
+
+            def swap_before_first_create(*args, **kwargs):
+                nonlocal swapped
+                if not swapped:
+                    assets.rename(displaced)
+                    try:
+                        assets.symlink_to(external, target_is_directory=True)
+                    except OSError as error:
+                        displaced.rename(assets)
+                        self.skipTest(
+                            f"directory symlink creation is unavailable: {error}"
+                        )
+                    swapped = True
+                return real_create(*args, **kwargs)
+
+            try:
+                with mock.patch.object(
+                    generator,
+                    "_create_output_temp",
+                    side_effect=swap_before_first_create,
+                ):
+                    with self.assertRaisesRegex(
+                        InventoryError, "^inventory output transaction failed$"
+                    ):
+                        generator._write_inventory_documents(root, new)
+            finally:
+                if swapped:
+                    assets.unlink()
+                    displaced.rename(assets)
+
+            self.assertEqual(list(external.iterdir()), [])
+            self.assert_documents(root, old)
+            self.assertEqual(list(assets.glob("*.tmp")), [])
+
 
 class InventoryRendererBoundaryTests(unittest.TestCase):
     def assert_renderer_error(self, value):

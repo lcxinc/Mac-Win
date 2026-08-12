@@ -2,11 +2,13 @@
 """Build the deterministic Mac-Win migration asset inventory."""
 
 import argparse
+from contextlib import contextmanager
 import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
+import secrets
 import stat
 import subprocess
 import sys
@@ -1444,24 +1446,179 @@ def _verify_output_directory_identity(repository_root, snapshot):
         raise InventoryError("inventory output path changed")
 
 
-def _stage_output_file(root, assets, destination, raw, purpose, snapshot):
+@contextmanager
+def _hold_output_directory_chain(repository_root, snapshot):
+    """Hold verified directory capabilities for the complete transaction."""
+    if os.name != "nt":
+        root = Path(repository_root)
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        descriptors = []
+        try:
+            root_descriptor = os.open(root, flags)
+            descriptors.append(root_descriptor)
+            migration_descriptor = os.open(
+                "migration", flags, dir_fd=root_descriptor
+            )
+            descriptors.append(migration_descriptor)
+            assets_descriptor = os.open(
+                "assets", flags, dir_fd=migration_descriptor
+            )
+            descriptors.append(assets_descriptor)
+            opened = tuple(
+                _component_identity(os.fstat(descriptor))
+                for descriptor in descriptors
+            )
+            if opened != snapshot:
+                raise InventoryError("inventory output path changed")
+            _verify_output_directory_identity(root, snapshot)
+            yield assets_descriptor
+            _verify_output_directory_identity(root, snapshot)
+        except OSError as error:
+            raise InventoryError("inventory output path changed") from error
+        finally:
+            for descriptor in reversed(descriptors):
+                os.close(descriptor)
+        return
+
+    import ctypes
+    from ctypes import wintypes
+
+    create_file = ctypes.WinDLL("kernel32", use_last_error=True).CreateFileW
+    create_file.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    )
+    create_file.restype = wintypes.HANDLE
+    close_handle = ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle
+    close_handle.argtypes = (wintypes.HANDLE,)
+    close_handle.restype = wintypes.BOOL
+
+    file_share_read = 0x00000001
+    file_share_write = 0x00000002
+    delete_access = 0x00010000
+    file_read_attributes = 0x00000080
+    open_existing = 3
+    file_flag_backup_semantics = 0x02000000
+    file_flag_open_reparse_point = 0x00200000
+    invalid_handle = ctypes.c_void_p(-1).value
+    root = Path(repository_root)
+    components = (root, root / "migration", root / "migration" / "assets")
+    handles = []
+    try:
+        for component in components:
+            handle = create_file(
+                os.fspath(component),
+                delete_access | file_read_attributes,
+                file_share_read | file_share_write,
+                None,
+                open_existing,
+                file_flag_backup_semantics | file_flag_open_reparse_point,
+                None,
+            )
+            if handle == invalid_handle:
+                raise InventoryError("inventory output path changed")
+            handles.append(handle)
+        _verify_output_directory_identity(root, snapshot)
+        yield None
+        _verify_output_directory_identity(root, snapshot)
+    finally:
+        for handle in reversed(handles):
+            close_handle(handle)
+
+
+def _create_output_temp(assets, destination, purpose, directory_fd):
+    if directory_fd is None:
+        descriptor, name = tempfile.mkstemp(
+            prefix=f".{destination.name}.{purpose}.", suffix=".tmp", dir=assets
+        )
+        return descriptor, Path(name)
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    for _attempt in range(128):
+        name = f".{destination.name}.{purpose}.{secrets.token_hex(8)}.tmp"
+        try:
+            return os.open(name, flags, 0o600, dir_fd=directory_fd), name
+        except FileExistsError:
+            continue
+    raise OSError("could not allocate inventory transaction file")
+
+
+def _read_output_file(token, maximum_bytes, directory_fd):
+    if directory_fd is None:
+        with Path(token).open("rb") as stream:
+            raw = stream.read(maximum_bytes + 1)
+    else:
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | os.O_NOFOLLOW
+        descriptor = os.open(token, flags, dir_fd=directory_fd)
+        with os.fdopen(descriptor, "rb") as stream:
+            status = os.fstat(stream.fileno())
+            if not stat.S_ISREG(status.st_mode):
+                raise InventoryError("inventory output transaction failed")
+            raw = stream.read(maximum_bytes + 1)
+    if len(raw) > maximum_bytes:
+        raise InventoryError("inventory output transaction failed")
+    return raw
+
+
+def _unlink_output_file(token, directory_fd):
+    if directory_fd is None:
+        Path(token).unlink(missing_ok=True)
+    else:
+        try:
+            os.unlink(token, dir_fd=directory_fd)
+        except FileNotFoundError:
+            pass
+
+
+def _replace_output_file(source, destination, directory_fd):
+    if directory_fd is None:
+        os.replace(source, destination)
+    else:
+        os.replace(
+            source,
+            destination.name,
+            src_dir_fd=directory_fd,
+            dst_dir_fd=directory_fd,
+        )
+
+
+def _destination_status(destination, directory_fd):
+    if directory_fd is None:
+        return destination.lstat()
+    return os.stat(destination.name, dir_fd=directory_fd, follow_symlinks=False)
+
+
+def _stage_output_file(
+    root, assets, destination, raw, purpose, snapshot, directory_fd
+):
     _verify_output_directory_identity(root, snapshot)
     descriptor = None
     temporary = None
     try:
-        descriptor, name = tempfile.mkstemp(
-            prefix=f".{destination.name}.{purpose}.", suffix=".tmp", dir=assets
+        descriptor, temporary = _create_output_temp(
+            assets, destination, purpose, directory_fd
         )
-        temporary = Path(name)
         with os.fdopen(descriptor, "wb") as stream:
             descriptor = None
             stream.write(raw)
             stream.flush()
             os.fsync(stream.fileno())
-        os.chmod(temporary, 0o644)
+            if hasattr(os, "fchmod"):
+                os.fchmod(stream.fileno(), 0o644)
+        if not hasattr(os, "fchmod"):
+            os.chmod(temporary, 0o644)
         _verify_output_directory_identity(root, snapshot)
-        relative = temporary.relative_to(root).as_posix()
-        if _read_bounded_reviewed_file(root, relative, MAX_DOCUMENT_BYTES) != raw:
+        if _read_output_file(temporary, MAX_DOCUMENT_BYTES, directory_fd) != raw:
             raise InventoryError("inventory output transaction failed")
         return temporary
     except (OSError, ValueError, InventoryError) as error:
@@ -1469,22 +1626,21 @@ def _stage_output_file(root, assets, destination, raw, purpose, snapshot):
             os.close(descriptor)
         if temporary is not None:
             try:
-                _verify_output_directory_identity(root, snapshot)
-                temporary.unlink(missing_ok=True)
-            except (OSError, InventoryError):
+                _unlink_output_file(temporary, directory_fd)
+            except OSError:
                 pass
         if isinstance(error, InventoryError) and str(error) == "inventory output path changed":
             raise
         raise InventoryError("inventory output transaction failed") from error
 
 
-def _cleanup_transaction_files(root, paths, snapshot):
-    _verify_output_directory_identity(root, snapshot)
+def _cleanup_transaction_files(root, paths, snapshot, directory_fd):
     for path in tuple(paths):
         try:
-            path.unlink(missing_ok=True)
+            _unlink_output_file(path, directory_fd)
         except OSError as error:
             raise InventoryError("inventory output transaction failed") from error
+    _verify_output_directory_identity(root, snapshot)
 
 
 def _write_inventory_documents(repository_root, documents):
@@ -1497,69 +1653,97 @@ def _write_inventory_documents(repository_root, documents):
     backups = {}
     temporary_paths = set()
     replaced = []
-    try:
-        for relative_path, raw in documents.items():
-            destination = root / PurePosixPath(relative_path)
-            if destination.parent != assets:
-                raise InventoryError("inventory output path is invalid")
-            temporary = _stage_output_file(
-                root, assets, destination, raw, "new", snapshot
-            )
-            staged[relative_path] = temporary
-            temporary_paths.add(temporary)
-
-        for relative_path in documents:
-            destination = root / PurePosixPath(relative_path)
-            _verify_output_directory_identity(root, snapshot)
-            try:
-                destination.lstat()
-            except FileNotFoundError:
-                backups[relative_path] = None
-            except OSError as error:
-                raise InventoryError("inventory output transaction failed") from error
-            else:
-                old = _read_bounded_reviewed_file(
-                    root, relative_path, MAX_DOCUMENT_BYTES
-                )
-                backup = _stage_output_file(
-                    root, assets, destination, old, "backup", snapshot
-                )
-                backups[relative_path] = backup
-                temporary_paths.add(backup)
-
-        for relative_path in documents:
-            destination = root / PurePosixPath(relative_path)
-            _verify_output_directory_identity(root, snapshot)
-            os.replace(staged[relative_path], destination)
-            temporary_paths.remove(staged[relative_path])
-            replaced.append(relative_path)
-            _verify_output_directory_identity(root, snapshot)
-    except (OSError, InventoryError) as error:
+    with _hold_output_directory_chain(root, snapshot) as directory_fd:
         try:
-            _verify_output_directory_identity(root, snapshot)
-            for relative_path in reversed(replaced):
+            for relative_path, raw in documents.items():
                 destination = root / PurePosixPath(relative_path)
-                backup = backups.get(relative_path)
-                if backup is None:
-                    destination.unlink(missing_ok=True)
-                else:
-                    os.replace(backup, destination)
-                    temporary_paths.discard(backup)
+                if destination.parent != assets:
+                    raise InventoryError("inventory output path is invalid")
+                temporary = _stage_output_file(
+                    root,
+                    assets,
+                    destination,
+                    raw,
+                    "new",
+                    snapshot,
+                    directory_fd,
+                )
+                staged[relative_path] = temporary
+                temporary_paths.add(temporary)
+
+            for relative_path in documents:
+                destination = root / PurePosixPath(relative_path)
                 _verify_output_directory_identity(root, snapshot)
-            _cleanup_transaction_files(root, temporary_paths, snapshot)
-            temporary_paths.clear()
-        except (OSError, InventoryError) as rollback_error:
-            raise InventoryError("inventory output transaction failed") from rollback_error
-        raise InventoryError("inventory output transaction failed") from error
-    else:
-        _cleanup_transaction_files(root, temporary_paths, snapshot)
-        temporary_paths.clear()
-    finally:
-        if temporary_paths:
+                try:
+                    _destination_status(destination, directory_fd)
+                except FileNotFoundError:
+                    backups[relative_path] = None
+                except OSError as error:
+                    raise InventoryError("inventory output transaction failed") from error
+                else:
+                    old = _read_output_file(
+                        destination if directory_fd is None else destination.name,
+                        MAX_DOCUMENT_BYTES,
+                        directory_fd,
+                    )
+                    backup = _stage_output_file(
+                        root,
+                        assets,
+                        destination,
+                        old,
+                        "backup",
+                        snapshot,
+                        directory_fd,
+                    )
+                    backups[relative_path] = backup
+                    temporary_paths.add(backup)
+
+            for relative_path in documents:
+                destination = root / PurePosixPath(relative_path)
+                _verify_output_directory_identity(root, snapshot)
+                _replace_output_file(
+                    staged[relative_path], destination, directory_fd
+                )
+                temporary_paths.remove(staged[relative_path])
+                replaced.append(relative_path)
+                _verify_output_directory_identity(root, snapshot)
+        except (OSError, InventoryError) as error:
             try:
-                _cleanup_transaction_files(root, temporary_paths, snapshot)
-            except InventoryError:
-                pass
+                _verify_output_directory_identity(root, snapshot)
+                for relative_path in reversed(replaced):
+                    destination = root / PurePosixPath(relative_path)
+                    backup = backups.get(relative_path)
+                    if backup is None:
+                        _unlink_output_file(
+                            destination
+                            if directory_fd is None
+                            else destination.name,
+                            directory_fd,
+                        )
+                    else:
+                        _replace_output_file(backup, destination, directory_fd)
+                        temporary_paths.discard(backup)
+                    _verify_output_directory_identity(root, snapshot)
+                _cleanup_transaction_files(
+                    root, temporary_paths, snapshot, directory_fd
+                )
+                temporary_paths.clear()
+            except (OSError, InventoryError) as rollback_error:
+                raise InventoryError("inventory output transaction failed") from rollback_error
+            raise InventoryError("inventory output transaction failed") from error
+        else:
+            _cleanup_transaction_files(
+                root, temporary_paths, snapshot, directory_fd
+            )
+            temporary_paths.clear()
+        finally:
+            if temporary_paths:
+                try:
+                    _cleanup_transaction_files(
+                        root, temporary_paths, snapshot, directory_fd
+                    )
+                except InventoryError:
+                    pass
 
 
 class _StableArgumentParser(argparse.ArgumentParser):
