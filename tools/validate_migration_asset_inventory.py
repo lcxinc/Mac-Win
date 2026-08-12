@@ -129,10 +129,22 @@ def _validate_asset(asset, category, previous_path):
             "migration asset inventory document is invalid"
         )
     for field in ("externalRefs", "developmentDependencies"):
-        if any(type(entry) is not str for entry in asset[field]):
-            raise InventoryValidationError(
-                "migration asset inventory document is invalid"
-            )
+        previous_reference = None
+        for locator in asset[field]:
+            try:
+                locator = generator._require_string(
+                    locator, "inventory dependency document is invalid"
+                )
+            except generator.InventoryError as error:
+                raise InventoryValidationError(
+                    "migration asset inventory document is invalid"
+                ) from error
+            reference_key = locator.encode("utf-8")
+            if previous_reference is not None and reference_key <= previous_reference:
+                raise InventoryValidationError(
+                    "migration asset inventory document is invalid"
+                )
+            previous_reference = reference_key
     return encoded_path
 
 
@@ -225,6 +237,7 @@ def validate_inventory_documents(documents, expected_documents=None):
             )
 
     all_paths = []
+    asset_locators = {"externalRefs": {}, "developmentDependencies": {}}
     for category, relative_path, expected_count in zip(
         expected_categories[:-1], OUTPUT_RELATIVE_PATHS[1:-1], expected_record_counts[:-1]
     ):
@@ -255,6 +268,8 @@ def validate_inventory_documents(documents, expected_documents=None):
         for asset in shard["assets"]:
             previous = _validate_asset(asset, category, previous)
             all_paths.append(asset["sourcePath"])
+            for field in asset_locators:
+                asset_locators[field][asset["sourcePath"]] = asset[field]
     if len(all_paths) != 90 or len(set(all_paths)) != 90:
         raise InventoryValidationError(
             "migration asset inventory document is invalid"
@@ -281,6 +296,16 @@ def validate_inventory_documents(documents, expected_documents=None):
         raise InventoryValidationError(
             "migration asset inventory document is invalid"
         )
+    for field in asset_locators:
+        expected_locators = {path: [] for path in all_paths}
+        for entry in expanded[field]:
+            expected_locators[entry["sourcePath"]].append(entry["locator"])
+        for locators in expected_locators.values():
+            locators.sort(key=lambda value: value.encode("utf-8"))
+        if asset_locators[field] != expected_locators:
+            raise InventoryValidationError(
+                "migration asset inventory document is invalid"
+            )
 
     if expected_documents is not None:
         if type(expected_documents) is not dict or tuple(expected_documents) != OUTPUT_RELATIVE_PATHS:

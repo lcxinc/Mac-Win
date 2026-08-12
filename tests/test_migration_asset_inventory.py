@@ -1766,6 +1766,63 @@ class AssetCanonicalOutputTests(unittest.TestCase):
             MAX_DOCUMENT_BYTES,
         )
 
+    def test_asset_dependency_locators_are_sorted_and_exactly_match_dependency_shard(self):
+        documents = self.documents()
+        dependency = self.decoded(documents, "migration/assets/dependencies.json")
+        expected = generator.expand_dependency_groups(dependency)
+        actual = {"externalRefs": {}, "developmentDependencies": {}}
+        for relative_path in OUTPUT_RELATIVE_PATHS[1:-1]:
+            shard = self.decoded(documents, relative_path)
+            for asset in shard["assets"]:
+                for field in actual:
+                    previous = None
+                    for locator in asset[field]:
+                        self.assertIs(type(locator), str)
+                        key = locator.encode("utf-8")
+                        if previous is not None:
+                            self.assertLess(previous, key)
+                        previous = key
+                    actual[field][asset["sourcePath"]] = asset[field]
+        for field in actual:
+            expected_locators = {
+                path: []
+                for path in {
+                    asset["sourcePath"]
+                    for relative_path in OUTPUT_RELATIVE_PATHS[1:-1]
+                    for asset in self.decoded(documents, relative_path)["assets"]
+                }
+            }
+            for entry in expected[field]:
+                expected_locators[entry["sourcePath"]].append(entry["locator"])
+            for locators in expected_locators.values():
+                locators.sort(key=lambda value: value.encode("utf-8"))
+            self.assertEqual(actual[field], expected_locators)
+
+    def test_asset_dependency_forgery_fails_even_with_updated_shard_digest(self):
+        validator = load_inventory_validator()
+        documents = self.documents()
+        candidate = dict(documents)
+        probes_path = "migration/assets/probes.json"
+        probes = self.decoded(documents, probes_path)
+        asset = next(
+            entry
+            for entry in probes["assets"]
+            if entry["sourcePath"] == "scripts/download-software-samples.sh"
+        )
+        self.assertEqual(len(asset["externalRefs"]), 234)
+        asset["externalRefs"].pop()
+        candidate[probes_path] = generator.canonical_json_bytes(probes)
+        root = self.decoded(documents, "migration/assets/index.json")
+        next(entry for entry in root["shards"] if entry["path"] == probes_path)[
+            "sha256"
+        ] = hashlib.sha256(candidate[probes_path]).hexdigest()
+        candidate["migration/assets/index.json"] = generator.canonical_json_bytes(root)
+        with self.assertRaisesRegex(
+            validator.InventoryValidationError,
+            "^migration asset inventory document is invalid$",
+        ):
+            validator.validate_inventory_documents(candidate)
+
     def test_dependency_group_validation_rejects_loss_duplicates_and_extensions(self):
         validator = load_inventory_validator()
         documents = self.documents()

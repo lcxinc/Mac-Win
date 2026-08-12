@@ -237,7 +237,9 @@
         "status":"unresolved"
       },
       "intendedOwner":"compatforge/probes",
-      "externalRefs":[],
+      "externalRefs":[
+        "http://www.w3.org/2000/svg"
+      ],
       "developmentDependencies":[]
     },
     {
@@ -327,7 +329,11 @@
         "status":"unresolved"
       },
       "intendedOwner":"compatforge/probes",
-      "externalRefs":[],
+      "externalRefs":[
+        "http://www.plcopen.org/xml/tc6_0201",
+        "http://www.w3.org/1999/xhtml",
+        "http://www.w3.org/2001/XMLSchema-instance"
+      ],
       "developmentDependencies":[]
     },
     {

@@ -57,7 +57,9 @@
         "status":"unresolved"
       },
       "intendedOwner":"compatforge/catalog",
-      "externalRefs":[],
+      "externalRefs":[
+        "https://www.7-zip.org/a/7z2601-x64.exe"
+      ],
       "developmentDependencies":[]
     },
     {
@@ -75,7 +77,9 @@
         "status":"unresolved"
       },
       "intendedOwner":"compatforge/catalog",
-      "externalRefs":[],
+      "externalRefs":[
+        "https://download.mozilla.org/?product=firefox-msi-latest-ssl&os=win64&lang=zh-CN"
+      ],
       "developmentDependencies":[]
     },
     {
@@ -94,7 +98,9 @@
       },
       "intendedOwner":"compatforge/catalog",
       "externalRefs":[],
-      "developmentDependencies":[]
+      "developmentDependencies":[
+        "/Users/a1-6/project/Mac-Win/refs/prefixes/hoyoplay-x86_64/drive_c/Program Files/miHoYo Launcher/1.16.1.364/HYP.exe"
+      ]
     },
     {
       "sourcePath":"MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/jasp-stats.json",
@@ -111,7 +117,9 @@
         "status":"unresolved"
       },
       "intendedOwner":"compatforge/catalog",
-      "externalRefs":[],
+      "externalRefs":[
+        "https://github.com/jasp-stats/jasp-desktop/releases/download/v0.97.1/JASP-0.97.1-Windows-Community.msi"
+      ],
       "developmentDependencies":[]
     },
     {
@@ -147,7 +155,9 @@
         "status":"unresolved"
       },
       "intendedOwner":"compatforge/catalog",
-      "externalRefs":[],
+      "externalRefs":[
+        "https://download.documentfoundation.org/libreoffice/stable/26.2.4/win/x86_64/LibreOffice_26.2.4_Win_x86-64.msi"
+      ],
       "developmentDependencies":[]
     },
     {
@@ -165,7 +175,9 @@
         "status":"unresolved"
       },
       "intendedOwner":"compatforge/catalog",
-      "externalRefs":[],
+      "externalRefs":[
+        "https://ltspice.analog.com/software/LTspice64.msi"
+      ],
       "developmentDependencies":[]
     },
     {
@@ -184,7 +196,20 @@
       },
       "intendedOwner":"compatforge/catalog",
       "externalRefs":[],
-      "developmentDependencies":[]
+      "developmentDependencies":[
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/00_console_probe.exe",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/10_tls_winhttp_probe.exe",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/15_iphlpapi_probe.exe",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/20_vulkan_probe.exe",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/30_d3d11_probe.exe",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/35_d3d12_device_probe.exe",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/40_xaudio2_probe.exe",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/45_d3d9_legacy_probe.exe",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/50_game_loop_probe.exe",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/60_game_shader_probe.exe",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin32/10_tls_winhttp_probe.exe",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin32/15_iphlpapi_probe.exe"
+      ]
     },
     {
       "sourcePath":"MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/macwin-game-tests.json",
@@ -202,7 +227,14 @@
       },
       "intendedOwner":"compatforge/catalog",
       "externalRefs":[],
-      "developmentDependencies":[]
+      "developmentDependencies":[
+        "/Users/a1-6/Library/Application Support/MacWin/Engines/wine-11.11-x86_64-game/runtime/lib64/apple_gptk/external",
+        "/Users/a1-6/Library/Application Support/MacWin/Engines/wine-11.11-x86_64-game/runtime/lib64/apple_gptk/wine",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/35_d3d12_device_probe.exe",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/40_xaudio2_probe.exe",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/50_game_loop_probe.exe",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/60_game_shader_probe.exe"
+      ]
     },
     {
       "sourcePath":"MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/macwin-probes.json",
@@ -220,7 +252,11 @@
       },
       "intendedOwner":"compatforge/catalog",
       "externalRefs":[],
-      "developmentDependencies":[]
+      "developmentDependencies":[
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/20_vulkan_probe.exe",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/60_game_shader_probe.exe",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/90_ipc_file_mapping_probe.exe"
+      ]
     },
     {
       "sourcePath":"MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/notepad-plus-plus.json",
@@ -237,7 +273,9 @@
         "status":"unresolved"
       },
       "intendedOwner":"compatforge/catalog",
-      "externalRefs":[],
+      "externalRefs":[
+        "https://github.com/notepad-plus-plus/notepad-plus-plus/releases/download/v8.9.6.2/npp.8.9.6.2.Installer.x64.msi"
+      ],
       "developmentDependencies":[]
     },
     {
@@ -273,7 +311,9 @@
         "status":"unresolved"
       },
       "intendedOwner":"compatforge/catalog",
-      "externalRefs":[],
+      "externalRefs":[
+        "https://github.com/pawelsalawa/sqlitestudio/releases/download/3.4.17/SQLiteStudio-3.4.17-windows-x64-installer.exe"
+      ],
       "developmentDependencies":[]
     },
     {
@@ -291,7 +331,9 @@
         "status":"unresolved"
       },
       "intendedOwner":"compatforge/catalog",
-      "externalRefs":[],
+      "externalRefs":[
+        "https://cdn.fastly.steamstatic.com/client/installer/SteamSetup.exe"
+      ],
       "developmentDependencies":[]
     },
     {
@@ -309,7 +351,9 @@
         "status":"unresolved"
       },
       "intendedOwner":"compatforge/catalog",
-      "externalRefs":[],
+      "externalRefs":[
+        "https://www.sumatrapdfreader.org/dl/rel/3.6.1/SumatraPDF-3.6.1-64-install.exe"
+      ],
       "developmentDependencies":[]
     },
     {
@@ -327,7 +371,9 @@
         "status":"unresolved"
       },
       "intendedOwner":"compatforge/catalog",
-      "externalRefs":[],
+      "externalRefs":[
+        "https://github.com/texstudio-org/texstudio/releases/download/4.9.5/Texstudio-4.9.5-win-qt6-signed.exe"
+      ],
       "developmentDependencies":[]
     },
     {
@@ -345,7 +391,9 @@
         "status":"unresolved"
       },
       "intendedOwner":"compatforge/catalog",
-      "externalRefs":[],
+      "externalRefs":[
+        "https://get.videolan.org/vlc/3.0.23/win64/vlc-3.0.23-win64.exe"
+      ],
       "developmentDependencies":[]
     }
   ]

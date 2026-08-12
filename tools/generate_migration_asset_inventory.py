@@ -1078,6 +1078,22 @@ def _dependency_counts(evidence):
     }
 
 
+def _asset_dependency_evidence(evidence):
+    """Index reviewed dependency locators by governed asset path."""
+    result = {}
+    for field, entries in evidence.items():
+        for entry in entries:
+            by_field = result.setdefault(
+                entry["sourcePath"],
+                {"externalRefs": [], "developmentDependencies": []},
+            )
+            by_field[field].append(entry["locator"])
+    for by_field in result.values():
+        for locators in by_field.values():
+            locators.sort(key=_dependency_sort_key)
+    return result
+
+
 def generate_inventory_documents(repository_root=ROOT, policy=None):
     """Generate all reviewed output bytes only from policy and frozen Git blobs."""
     root = Path(repository_root).resolve()
@@ -1088,13 +1104,23 @@ def generate_inventory_documents(repository_root=ROOT, policy=None):
     records = _bind_governed_assets(root, policy, SOURCE_COMMIT, SOURCE_TAG)
     evidence = _extract_dependency_evidence(root, records)
     _require_dependency_policy_match(policy, evidence)
+    evidence_by_asset = _asset_dependency_evidence(evidence)
 
     documents = {}
     for category, relative_path in CATEGORY_OUTPUT_PATHS.items():
         assets = []
         for record in records:
             if record["category"] == category:
-                assets.append({field: record[field] for field in ASSET_OUTPUT_FIELDS})
+                asset = {field: record[field] for field in ASSET_OUTPUT_FIELDS}
+                dependencies = evidence_by_asset.get(
+                    record["sourcePath"],
+                    {"externalRefs": [], "developmentDependencies": []},
+                )
+                asset["externalRefs"] = dependencies["externalRefs"]
+                asset["developmentDependencies"] = dependencies[
+                    "developmentDependencies"
+                ]
+                assets.append(asset)
         shard = _identity_header()
         shard.update(
             {

@@ -75,8 +75,13 @@
         "status":"unresolved"
       },
       "intendedOwner":"compatforge/patches",
-      "externalRefs":[],
-      "developmentDependencies":[]
+      "externalRefs":[
+        "https://packagemanager.posit.co/cran/latest"
+      ],
+      "developmentDependencies":[
+        "MACWIN_JASP_LIBARCHIVE_PREFIX",
+        "MACWIN_JASP_RENV_PACKAGE"
+      ]
     },
     {
       "sourcePath":"patches/wine-dcomp-winui-host-composition.patch",
