@@ -2779,6 +2779,74 @@ class InventoryTransactionalWriteTests(unittest.TestCase):
             self.assert_documents(root, old)
             self.assert_no_transaction_temps(assets)
 
+    @unittest.skipUnless(os.name == "posix", "POSIX exchange support only")
+    def test_posix_missing_atomic_exchange_fails_closed_and_rolls_back(self):
+        old = self.documents("old")
+        new = self.documents("new")
+        with tempfile.TemporaryDirectory(prefix="inventory posix no exchange ") as directory:
+            root = Path(directory).resolve()
+            assets = self.prepare(root, old)
+            with mock.patch.object(
+                generator,
+                "_renameat2_exchange",
+                side_effect=OSError("unavailable"),
+            ):
+                with self.assertRaisesRegex(
+                    InventoryError, "^inventory output transaction failed$"
+                ):
+                    generator._write_inventory_documents(root, new)
+
+            self.assert_documents(root, old)
+            self.assert_no_transaction_temps(assets)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX leaf identity only")
+    def test_posix_fourth_destination_regular_substitution_is_rejected_and_rolled_back(
+        self,
+    ):
+        old = self.documents("old")
+        new = self.documents("new")
+        with tempfile.TemporaryDirectory(prefix="inventory posix substitution ") as directory:
+            root = Path(directory).resolve()
+            assets = self.prepare(root, old)
+            relative_path = OUTPUT_RELATIVE_PATHS[3]
+            destination = root / PurePosixPath(relative_path)
+            displaced = root / "fourth-original.json"
+            substitute = root / "fourth-substitute.json"
+            substitute_raw = b"unrelated regular substitute\n"
+            substitute.write_bytes(substitute_raw)
+            real_replace = generator._replace_output_file
+            replace_calls = 0
+            substituted = False
+
+            def substitute_at_fourth_replace(source, target, *args, **kwargs):
+                nonlocal replace_calls, substituted
+                replace_calls += 1
+                if replace_calls == 4:
+                    destination.rename(displaced)
+                    os.link(substitute, destination)
+                    substituted = True
+                return real_replace(source, target, *args, **kwargs)
+
+            try:
+                with mock.patch.object(
+                    generator,
+                    "_replace_output_file",
+                    side_effect=substitute_at_fourth_replace,
+                ):
+                    with self.assertRaisesRegex(
+                        InventoryError, "^inventory output transaction failed$"
+                    ):
+                        generator._write_inventory_documents(root, new)
+            finally:
+                if substituted:
+                    destination.unlink(missing_ok=True)
+                    displaced.rename(destination)
+
+            self.assertTrue(substituted)
+            self.assertEqual(substitute.read_bytes(), substitute_raw)
+            self.assert_documents(root, old)
+            self.assert_no_transaction_temps(assets)
+
     @unittest.skipUnless(os.name == "nt", "Windows leaf sharing only")
     def test_leaf_swap_immediately_before_replace_is_rejected(self):
         old = self.documents("old")
