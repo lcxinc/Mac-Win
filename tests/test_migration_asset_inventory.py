@@ -4,7 +4,7 @@ import copy
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import shutil
 import subprocess
 import sys
@@ -2315,6 +2315,105 @@ class ReviewedInventoryFileTests(unittest.TestCase):
         read.assert_called_once_with(
             ROOT, "migration/assets/index.json", MAX_DOCUMENT_BYTES
         )
+
+
+class InventoryTransactionalWriteTests(unittest.TestCase):
+    def documents(self, marker):
+        return {
+            path: f"{marker}:{path}\n".encode("utf-8")
+            for path in OUTPUT_RELATIVE_PATHS
+        }
+
+    def prepare(self, root, documents):
+        assets = root / "migration" / "assets"
+        assets.mkdir(parents=True)
+        for relative_path, raw in documents.items():
+            (root / PurePosixPath(relative_path)).write_bytes(raw)
+        return assets
+
+    def assert_documents(self, root, documents):
+        for relative_path, raw in documents.items():
+            self.assertEqual((root / PurePosixPath(relative_path)).read_bytes(), raw)
+
+    def test_all_new_and_backup_files_are_staged_before_first_replace(self):
+        old = self.documents("old")
+        new = self.documents("new")
+        with tempfile.TemporaryDirectory(prefix="inventory staged write ") as directory:
+            root = Path(directory).resolve()
+            assets = self.prepare(root, old)
+            real_replace = os.replace
+            observed = []
+
+            def inspect_first_replace(source, target):
+                if not observed:
+                    observed.append(len(list(assets.glob("*.tmp"))))
+                return real_replace(source, target)
+
+            with mock.patch.object(
+                generator.os, "replace", side_effect=inspect_first_replace
+            ):
+                generator._write_inventory_documents(root, new)
+            self.assertEqual(observed, [14])
+            self.assert_documents(root, new)
+            self.assertEqual(list(assets.glob("*.tmp")), [])
+
+    def test_each_replace_failure_rolls_back_all_seven_documents(self):
+        old = self.documents("old")
+        new = self.documents("new")
+        for failure_position in range(1, 8):
+            with self.subTest(failure_position=failure_position), tempfile.TemporaryDirectory(
+                prefix="inventory rollback write "
+            ) as directory:
+                root = Path(directory).resolve()
+                assets = self.prepare(root, old)
+                real_replace = os.replace
+                replacements = 0
+
+                def fail_selected_replace(source, target):
+                    nonlocal replacements
+                    if Path(target).name in {
+                        Path(path).name for path in OUTPUT_RELATIVE_PATHS
+                    } and Path(source).suffix == ".tmp":
+                        replacements += 1
+                        if replacements == failure_position:
+                            raise OSError("injected destination replace failure")
+                    return real_replace(source, target)
+
+                with mock.patch.object(
+                    generator.os, "replace", side_effect=fail_selected_replace
+                ):
+                    with self.assertRaisesRegex(
+                        InventoryError, "^inventory output transaction failed$"
+                    ):
+                        generator._write_inventory_documents(root, new)
+                self.assert_documents(root, old)
+                self.assertEqual(list(assets.glob("*.tmp")), [])
+
+    def test_parent_replacement_is_detected_without_external_writes(self):
+        old = self.documents("old")
+        with tempfile.TemporaryDirectory(prefix="inventory parent swap ") as directory:
+            root = Path(directory).resolve()
+            assets = self.prepare(root, old)
+            external = root / "external"
+            external.mkdir()
+            snapshot = generator._snapshot_output_directory(root)
+            displaced = root / "assets-displaced"
+            assets.rename(displaced)
+            try:
+                assets.symlink_to(external, target_is_directory=True)
+            except OSError as error:
+                displaced.rename(assets)
+                self.skipTest(f"directory symlink creation is unavailable: {error}")
+            try:
+                with self.assertRaisesRegex(
+                    InventoryError, "^inventory output path changed$"
+                ):
+                    generator._verify_output_directory_identity(root, snapshot)
+                self.assertEqual(list(external.iterdir()), [])
+            finally:
+                assets.unlink()
+                displaced.rename(assets)
+            self.assert_documents(root, old)
 
 
 if __name__ == "__main__":
