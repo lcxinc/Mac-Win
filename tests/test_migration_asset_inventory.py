@@ -2533,6 +2533,20 @@ class InventoryRendererBoundaryTests(unittest.TestCase):
             with self.subTest(value_type=type(value).__name__):
                 self.assert_renderer_error(value)
 
+    def test_integer_digit_limit_is_checked_before_decimal_rendering(self):
+        boundary = (10 ** generator.MAX_JSON_INTEGER_DIGITS) - 1
+        for accepted in (boundary, -boundary):
+            self.assertIn(
+                str(accepted).encode("ascii"),
+                generator.canonical_json_bytes(accepted),
+            )
+
+        for digits in (generator.MAX_JSON_INTEGER_DIGITS + 1, 5001):
+            with self.subTest(digits=digits):
+                value = 10 ** (digits - 1)
+                self.assert_renderer_error(value)
+                self.assert_renderer_error(-value)
+
 
 if __name__ == "__main__":
     unittest.main()

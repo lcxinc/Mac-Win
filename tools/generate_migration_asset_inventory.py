@@ -26,6 +26,7 @@ SOURCE_TAG = "mw-migration-baseline-db12d5e"
 MAX_DOCUMENT_BYTES = 64 * 1024
 MAX_JSON_DEPTH = 128
 MAX_JSON_INTEGER_DIGITS = 128
+MAX_JSON_INTEGER_MAGNITUDE = (10 ** MAX_JSON_INTEGER_DIGITS) - 1
 MAX_ASSET_BYTES = 1024 * 1024
 MAX_GIT_CONFIG_LIST_BYTES = 64 * 1024
 
@@ -1091,8 +1092,10 @@ def _validate_output_value(value):
         if current is None or type(current) in (str, bool):
             continue
         if type(current) is int:
-            digits = str(current).removeprefix("-")
-            if len(digits) > MAX_JSON_INTEGER_DIGITS:
+            if (
+                current > MAX_JSON_INTEGER_MAGNITUDE
+                or current < -MAX_JSON_INTEGER_MAGNITUDE
+            ):
                 raise InventoryError("inventory output document is invalid")
             continue
         if type(current) not in (dict, list):
