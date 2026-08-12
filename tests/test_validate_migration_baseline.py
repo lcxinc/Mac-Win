@@ -354,6 +354,7 @@ GIT_CHECK_ATTR_BLOCKED_VARIABLES = frozenset(
 GITATTRIBUTES_CANONICAL = b"""/patches/*.patch whitespace=-blank-at-eol
 migration/*.json text eol=lf
 migration/**/*.json text eol=lf
+/docs/migration-asset-inventory.md text eol=lf
 """
 
 
@@ -503,6 +504,7 @@ def assert_migration_attribute_contract(test_case, root):
         for relative_path in (
             "migration/baseline.json",
             "migration/assets/recipes.json",
+            "docs/migration-asset-inventory.md",
         ):
             with test_case.subTest(relative_path=relative_path):
                 result = run_git_check_attr(relative_path, root=isolated)

@@ -154,6 +154,7 @@ Use `--write` only for an intentional reviewed regeneration. The final diff
 commands prove formatting is valid and regenerated inventory outputs have no
 unreviewed drift.
 """
+DOCUMENTATION_CANONICAL_BYTES = DOCUMENTATION_CANONICAL.encode("utf-8")
 OUTPUT_RELATIVE_PATHS = (
     "migration/assets/index.json",
     "migration/assets/bottle-schema.json",
@@ -2404,7 +2405,21 @@ class AssetDocumentationTests(unittest.TestCase):
         self.assertTrue(
             DOCUMENTATION_PATH.is_file(), "migration asset inventory documentation is missing"
         )
-        text = DOCUMENTATION_PATH.read_text(encoding="utf-8")
+        raw = DOCUMENTATION_PATH.read_bytes()
+        self.assertLessEqual(
+            len(raw),
+            MAX_DOCUMENT_BYTES,
+            "migration asset inventory documentation exceeds the byte limit",
+        )
+        try:
+            text = raw.decode("utf-8", errors="strict")
+        except UnicodeDecodeError:
+            self.fail("migration asset inventory documentation is not strict UTF-8")
+        self.assertEqual(
+            raw,
+            DOCUMENTATION_CANONICAL_BYTES,
+            "migration asset inventory documentation does not match the whole-document byte seal",
+        )
         while "<!--" in text:
             start = text.index("<!--")
             end = text.find("-->", start + 4)
@@ -2432,7 +2447,41 @@ class AssetDocumentationTests(unittest.TestCase):
             self.assertNotIn(statement, normalized)
 
     def test_reviewed_documentation_matches_the_whole_document_seal(self):
+        self.assertEqual(DOCUMENTATION_PATH.read_bytes(), DOCUMENTATION_CANONICAL_BYTES)
         self.assertEqual(self.visibleDocumentation(), DOCUMENTATION_CANONICAL)
+
+    def test_whole_document_seal_rejects_line_endings_comments_and_byte_drift(self):
+        raw = DOCUMENTATION_CANONICAL_BYTES
+        first_newline_end = raw.index(b"\n") + 1
+        mutants = {
+            "uniform CRLF": raw.replace(b"\n", b"\r\n"),
+            "mixed LF and CRLF": raw[:first_newline_end]
+            + raw[first_newline_end:].replace(b"\n", b"\r\n"),
+            "lone CR": raw.replace(b"\n", b"\r", 1),
+            "CRCRLF": raw.replace(b"\n", b"\r\r\n", 1),
+            "prefix comment": b"<!-- prefix drift -->\n" + raw,
+            "end comment": raw + b"<!-- end drift -->\n",
+            "inline comment": raw.replace(
+                b"This inventory is evidence",
+                b"<!-- inline drift -->This inventory is evidence",
+                1,
+            ),
+            "oversized": raw + b"x" * (MAX_DOCUMENT_BYTES - len(raw) + 1),
+            "non-UTF-8": raw[:-1] + b"\xff\n",
+        }
+        for name, mutant in mutants.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "migration-asset-inventory.md"
+                path.write_bytes(mutant)
+                caught = None
+                try:
+                    with mock.patch.dict(
+                        globals(), {"DOCUMENTATION_PATH": path}, clear=False
+                    ):
+                        self.visibleDocumentation()
+                except Exception as error:
+                    caught = error
+                self.assertIs(type(caught), AssertionError)
 
     def test_documents_distinct_policy_check_and_validator_boundaries(self):
         self.assertVerificationBoundaries(self.visibleDocumentation())
