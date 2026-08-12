@@ -27,15 +27,29 @@ evidence. Worktree contents do not supply asset bytes.
 
 `migration/assets/index.json` binds five category shards and
 `migration/assets/dependencies.json`, for seven generated JSON documents in
-total. `migration/assets/metadata-policy.json` is the reviewed input policy,
-not an eighth generated output. Every policy or generated JSON document is
-bounded to 64 KiB, uses strict UTF-8 and LF, has a closed schema, and is
-serialized canonically.
+total.
+
+`migration/assets/metadata-policy.json` is a bounded, closed, manually reviewed
+input, not an eighth generated output. It is limited to 64 KiB and parsed as
+strict UTF-8 JSON with duplicate-key rejection and a closed schema. No canonical
+serialization claim is made for the manual policy.
+
+Canonical LF serialization and exact-output comparison apply only to the seven
+generated JSON documents. Each generated document is limited to 64 KiB,
+serialized in the approved schema order, encoded as ASCII-compatible UTF-8
+JSON, and terminated with one LF newline.
 
 Generation is deterministic from the frozen local Git objects and the reviewed
-policy. `--check` regenerates in memory and compares exact committed bytes.
-`--write` is the only write mode and atomically replaces only the seven
-generated JSON documents after all validation succeeds.
+policy. `--check` compares the seven current worktree output files with
+in-memory expected bytes; it does not bind the stage-0 index. `--write` is the
+only write mode and atomically replaces only the seven generated JSON documents
+after all validation succeeds.
+
+`validate_migration_asset_inventory.py` binds the manual policy's current
+worktree bytes to its stage-0 index blob and validates the closed policy. It
+then requires the worktree bytes and stage-0 index blob for each of the seven
+generated documents to equal the in-memory expected bytes before validating the
+inventory schema, counts, and digests.
 
 ## Dependency evidence
 
