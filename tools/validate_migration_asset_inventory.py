@@ -16,6 +16,21 @@ try:
 except ModuleNotFoundError:
     import generate_migration_asset_inventory as generator
 
+try:
+    from tools.migration_git_metadata import (
+        GitMetadataError,
+        bind_index,
+        bind_tag_refs,
+        verify_binding,
+    )
+except ModuleNotFoundError:
+    from migration_git_metadata import (
+        GitMetadataError,
+        bind_index,
+        bind_tag_refs,
+        verify_binding,
+    )
+
 
 ROOT = Path(__file__).resolve().parents[1]
 MAX_DOCUMENT_BYTES = generator.MAX_DOCUMENT_BYTES
@@ -41,9 +56,11 @@ def _index_entry(repository_root, relative_path):
     """Read one exact stage-0 blob identity through the hardened Git runner."""
     path = _reviewed_relative_path(relative_path)
     try:
+        metadata_binding = bind_index(repository_root)
         listed = generator._run_git(
             repository_root, "ls-files", "--stage", "-z", "--", path
         )
+        verify_binding(metadata_binding)
         raw = listed.stdout
         if not raw or not raw.endswith(b"\0") or len(raw[:-1].split(b"\0")) != 1:
             raise InventoryValidationError(
@@ -64,6 +81,7 @@ def _index_entry(repository_root, relative_path):
         debug = generator._run_git(
             repository_root, "ls-files", "--debug", "-z", "--", path
         )
+        verify_binding(metadata_binding)
         flags = re.findall(
             rb"(?:^|[\t ])flags: ([0-9a-fA-F]+)(?:\r?\n|$)", debug.stdout
         )
@@ -78,7 +96,12 @@ def _index_entry(repository_root, relative_path):
         return object_id.decode("ascii")
     except InventoryValidationError:
         raise
-    except (generator.InventoryError, UnicodeError, ValueError) as error:
+    except (
+        generator.InventoryError,
+        GitMetadataError,
+        UnicodeError,
+        ValueError,
+    ) as error:
         raise InventoryValidationError(
             "migration asset inventory reviewed file is invalid"
         ) from error
@@ -457,8 +480,12 @@ def _read_reviewed_policy(repository_root):
 def validate_inventory(repository_root=ROOT):
     """Regenerate in memory and verify exact reviewed worktree/index bytes."""
     try:
+        index_metadata = bind_index(repository_root)
+        tag_metadata = bind_tag_refs(repository_root, generator.SOURCE_TAG)
         generator._validate_primary_object_database(repository_root)
-    except generator.InventoryError as error:
+        verify_binding(index_metadata)
+        verify_binding(tag_metadata)
+    except (generator.InventoryError, GitMetadataError) as error:
         raise InventoryValidationError(
             "migration asset inventory repository is unsafe"
         ) from error

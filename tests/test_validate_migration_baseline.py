@@ -18,6 +18,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 VALIDATOR_PATH = ROOT / "tools" / "validate_migration_baseline.py"
+GIT_METADATA_PATH = ROOT / "tools" / "migration_git_metadata.py"
 MANIFEST_PATH = ROOT / "migration" / "baseline.json"
 README_PATH = ROOT / "README.md"
 MIGRATION_DOCUMENT_PATH = ROOT / "docs" / "migration-baseline.md"
@@ -552,6 +553,7 @@ class MigrationBaselineManifestTests(unittest.TestCase):
             migration.mkdir()
             validator_path = tools / VALIDATOR_PATH.name
             shutil.copyfile(VALIDATOR_PATH, validator_path)
+            shutil.copyfile(GIT_METADATA_PATH, tools / GIT_METADATA_PATH.name)
             (migration / "baseline.json").write_bytes(raw)
 
             environment = os.environ.copy()
@@ -2517,6 +2519,10 @@ class MigrationBaselineTagTests(unittest.TestCase):
             repository / "tools" / "validate_migration_baseline.py",
         )
         shutil.copyfile(
+            GIT_METADATA_PATH,
+            repository / "tools" / "migration_git_metadata.py",
+        )
+        shutil.copyfile(
             README_PATH,
             repository / README_PATH.relative_to(ROOT),
         )
@@ -2798,6 +2804,246 @@ class MigrationBaselineTagTests(unittest.TestCase):
         )
         self.validateTag(repository, source_commit)
 
+    def test_rejects_linked_and_nonregular_tag_ref_metadata(self):
+        repository, source_commit, _ = self.createRepository("linked-tag-ref")
+        self.runGit(
+            repository,
+            "tag",
+            "-a",
+            BASELINE_TAG,
+            source_commit,
+            "-m",
+            TAG_MESSAGE,
+        )
+        loose_ref = repository / ".git" / "refs" / "tags" / BASELINE_TAG
+        external = self.test_root / "external-tag-ref"
+        loose_ref.rename(external)
+        try:
+            try:
+                loose_ref.symlink_to(external)
+            except OSError as error:
+                external.rename(loose_ref)
+                self.skipTest(f"file symlink creation is unavailable: {error}")
+            self.assertTagInvalid(
+                repository,
+                source_commit,
+                "baseline tag ref metadata is unsafe",
+            )
+        finally:
+            if loose_ref.is_symlink():
+                loose_ref.unlink()
+            if external.exists():
+                external.rename(loose_ref)
+
+        loose_ref.rename(external)
+        loose_ref.mkdir()
+        try:
+            self.assertTagInvalid(
+                repository,
+                source_commit,
+                "baseline tag ref metadata is unsafe",
+            )
+        finally:
+            loose_ref.rmdir()
+            external.rename(loose_ref)
+
+    def test_rejects_linked_packed_refs_metadata(self):
+        repository, source_commit, _ = self.createRepository("linked-packed-refs")
+        self.runGit(
+            repository,
+            "tag",
+            "-a",
+            BASELINE_TAG,
+            source_commit,
+            "-m",
+            TAG_MESSAGE,
+        )
+        self.runGit(repository, "pack-refs", "--all")
+        packed_refs = repository / ".git" / "packed-refs"
+        external = self.test_root / "external-packed-refs"
+        packed_refs.rename(external)
+        try:
+            try:
+                packed_refs.symlink_to(external)
+            except OSError as error:
+                external.rename(packed_refs)
+                self.skipTest(f"file symlink creation is unavailable: {error}")
+            self.assertTagInvalid(
+                repository,
+                source_commit,
+                "baseline tag ref metadata is unsafe",
+            )
+        finally:
+            if packed_refs.is_symlink():
+                packed_refs.unlink()
+            if external.exists():
+                external.rename(packed_refs)
+
+        packed_refs.rename(external)
+        packed_refs.mkdir()
+        try:
+            self.assertTagInvalid(
+                repository,
+                source_commit,
+                "baseline tag ref metadata is unsafe",
+            )
+        finally:
+            packed_refs.rmdir()
+            external.rename(packed_refs)
+
+    def test_accepts_hardlinked_loose_and_packed_tag_metadata(self):
+        repository, source_commit, _ = self.createRepository("hardlinked-tag-ref")
+        self.runGit(
+            repository,
+            "tag",
+            "-a",
+            BASELINE_TAG,
+            source_commit,
+            "-m",
+            TAG_MESSAGE,
+        )
+        loose_ref = repository / ".git" / "refs" / "tags" / BASELINE_TAG
+        external_loose = self.test_root / "hardlinked-tag-source"
+        loose_ref.rename(external_loose)
+        os.link(external_loose, loose_ref)
+        try:
+            self.validateTag(repository, source_commit)
+        finally:
+            loose_ref.chmod(0o600)
+            loose_ref.unlink()
+            external_loose.rename(loose_ref)
+
+        self.runGit(repository, "pack-refs", "--all")
+        packed_refs = repository / ".git" / "packed-refs"
+        external_packed = self.test_root / "hardlinked-packed-refs-source"
+        packed_refs.rename(external_packed)
+        os.link(external_packed, packed_refs)
+        try:
+            self.validateTag(repository, source_commit)
+        finally:
+            packed_refs.chmod(0o600)
+            packed_refs.unlink()
+            external_packed.rename(packed_refs)
+
+    def test_accepts_tag_metadata_from_linked_worktree_common_directory(self):
+        repository, source_commit, _ = self.createRepository("linked-tag-common")
+        self.runGit(
+            repository,
+            "tag",
+            "-a",
+            BASELINE_TAG,
+            source_commit,
+            "-m",
+            TAG_MESSAGE,
+        )
+        linked = self.test_root / "linked-tag-worktree"
+        self.runGit(
+            repository,
+            "worktree",
+            "add",
+            "-b",
+            "linked-tag-worktree",
+            str(linked),
+            source_commit,
+        )
+        try:
+            self.validateTag(linked, source_commit)
+        finally:
+            self.runGit(
+                repository,
+                "worktree",
+                "remove",
+                "--force",
+                str(linked),
+                check=False,
+            )
+
+    def test_rejects_reparse_tag_ref_metadata_before_git_reads(self):
+        repository, source_commit, _ = self.createRepository("reparse-tag-ref")
+        self.runGit(
+            repository,
+            "tag",
+            "-a",
+            BASELINE_TAG,
+            source_commit,
+            "-m",
+            TAG_MESSAGE,
+        )
+        loose_ref = repository / ".git" / "refs" / "tags" / BASELINE_TAG
+        real_status = loose_ref.lstat()
+        reparse_status = SimpleNamespace(
+            st_mode=real_status.st_mode,
+            st_file_attributes=getattr(
+                stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400
+            ),
+        )
+        real_lstat = Path.lstat
+
+        def reparse_lstat(path):
+            if path == loose_ref:
+                return reparse_status
+            return real_lstat(path)
+
+        validator = load_validator()
+        with mock.patch.object(
+            Path, "lstat", autospec=True, side_effect=reparse_lstat
+        ), mock.patch.object(validator, "_run_git") as run_git:
+            with self.assertRaises(validator.BaselineValidationError) as caught:
+                validator.validate_baseline_tag(
+                    repository, BASELINE_TAG, source_commit
+                )
+        self.assertEqual(
+            str(caught.exception), "baseline tag ref metadata is unsafe"
+        )
+        run_git.assert_not_called()
+
+    def test_rejects_invalid_tag_metadata_path_without_reflection(self):
+        validator = load_validator()
+        for tag_name in ("../escape", "bad\\path", "lone-\ud800"):
+            with self.subTest(tag_name=repr(tag_name)):
+                with self.assertRaises(
+                    validator.BaselineValidationError
+                ) as caught:
+                    validator.validate_baseline_tag(
+                        Path("repository"), tag_name, SOURCE_COMMIT
+                    )
+                self.assertEqual(
+                    str(caught.exception), "baseline tag ref metadata is unsafe"
+                )
+                self.assertNotIn("escape", str(caught.exception))
+                self.assertNotIn("surrogate", str(caught.exception))
+
+    def test_tag_lookup_is_scoped_to_the_exact_casefold_identity(self):
+        repository, source_commit, _ = self.createRepository("scoped-tag-lookup")
+        self.runGit(
+            repository,
+            "tag",
+            "-a",
+            BASELINE_TAG,
+            source_commit,
+            "-m",
+            TAG_MESSAGE,
+        )
+        validator = load_validator()
+        real_run_git = validator._run_git
+        calls = []
+
+        def recording_run_git(repository_root, arguments, check=False):
+            calls.append(tuple(arguments))
+            return real_run_git(repository_root, arguments, check=check)
+
+        with mock.patch.object(
+            validator, "_run_git", side_effect=recording_run_git
+        ):
+            validator.validate_baseline_tag(
+                repository, BASELINE_TAG, source_commit
+            )
+
+        for arguments in calls:
+            if arguments and arguments[0] == "for-each-ref":
+                self.assertNotEqual(arguments[-1], "refs/tags")
+                self.assertEqual(arguments[-1], f"refs/tags/{BASELINE_TAG}")
+
     def test_git_fixture_ignores_ambient_commit_and_tag_signing(self):
         with mock.patch.dict(os.environ, GIT_SIGNING_POLLUTION, clear=False):
             repository, source_commit, _ = self.createRepository(
@@ -2839,7 +3085,13 @@ class MigrationBaselineTagTests(unittest.TestCase):
             stdout=f"{expected_ref}\n{expected_ref.upper()}\n".encode("ascii"),
             stderr=b"",
         )
-        with mock.patch.object(validator, "_run_git", return_value=enumerated):
+        with mock.patch.object(
+            validator, "bind_tag_refs", return_value=object()
+        ), mock.patch.object(
+            validator, "verify_binding"
+        ), mock.patch.object(
+            validator, "_run_git", return_value=enumerated
+        ):
             with self.assertRaises(validator.BaselineValidationError) as caught:
                 validator.validate_baseline_tag(
                     Path("repository"), BASELINE_TAG, SOURCE_COMMIT
@@ -3196,7 +3448,13 @@ class MigrationBaselineTagTests(unittest.TestCase):
         self.assertEqual(
             calls,
             [
-                ["for-each-ref", "--format=%(refname)", "refs/tags"],
+                [
+                    "for-each-ref",
+                    "--count=3",
+                    "--ignore-case",
+                    "--format=%(refname)",
+                    tag_ref,
+                ],
                 ["symbolic-ref", "-q", tag_ref],
                 ["cat-file", "-t", tag_ref],
                 ["rev-parse", f"{tag_ref}^{{}}"],
@@ -3297,7 +3555,13 @@ class MigrationBaselineTagTests(unittest.TestCase):
         validator = load_validator()
         hostile = b"hostile\n\x1b[31mspoof"
         failed = SimpleNamespace(returncode=17, stdout=hostile, stderr=hostile)
-        with mock.patch.object(validator, "_run_git", return_value=failed):
+        with mock.patch.object(
+            validator, "bind_tag_refs", return_value=object()
+        ), mock.patch.object(
+            validator, "verify_binding"
+        ), mock.patch.object(
+            validator, "_run_git", return_value=failed
+        ):
             with self.assertRaises(validator.BaselineValidationError) as caught:
                 validator.validate_baseline_tag(Path("repository"), BASELINE_TAG, SOURCE_COMMIT)
         self.assertEqual(
@@ -3559,6 +3823,79 @@ class MigrationBaselineReviewedFileTests(unittest.TestCase):
         os.link(hardlink_source, reviewed)
 
         self.assertEqual(self.readReviewed(repository), self.APPROVED_TEXT)
+
+    def test_rejects_linked_and_nonregular_index_metadata(self):
+        repository, _, _ = self.createRepository("linked-index")
+        index = repository / ".git" / "index"
+        external = self.test_root / "external-index"
+        index.rename(external)
+        try:
+            try:
+                index.symlink_to(external)
+            except OSError as error:
+                external.rename(index)
+                self.skipTest(f"file symlink creation is unavailable: {error}")
+            self.assertReviewedInvalid(
+                repository,
+                "reviewed file index metadata is unsafe",
+            )
+        finally:
+            if index.is_symlink():
+                index.unlink()
+            if external.exists():
+                external.rename(index)
+
+        index.rename(external)
+        index.mkdir()
+        try:
+            self.assertReviewedInvalid(
+                repository,
+                "reviewed file index metadata is unsafe",
+            )
+        finally:
+            index.rmdir()
+            external.rename(index)
+
+    def test_accepts_hardlinked_index_metadata(self):
+        repository, _, _ = self.createRepository("hardlinked-index")
+        index = repository / ".git" / "index"
+        external = self.test_root / "hardlinked-index-source"
+        index.rename(external)
+        os.link(external, index)
+        try:
+            self.assertEqual(self.readReviewed(repository), self.APPROVED_TEXT)
+        finally:
+            index.chmod(0o600)
+            index.unlink()
+            external.rename(index)
+
+    def test_rejects_reparse_index_metadata_before_git_reads(self):
+        repository, _, _ = self.createRepository("reparse-index")
+        index = repository / ".git" / "index"
+        real_status = index.lstat()
+        reparse_status = SimpleNamespace(
+            st_mode=real_status.st_mode,
+            st_file_attributes=getattr(
+                stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400
+            ),
+        )
+        real_lstat = Path.lstat
+
+        def reparse_lstat(path):
+            if path == index:
+                return reparse_status
+            return real_lstat(path)
+
+        validator = load_validator()
+        with mock.patch.object(
+            Path, "lstat", autospec=True, side_effect=reparse_lstat
+        ), mock.patch.object(validator, "_run_git") as run_git:
+            with self.assertRaises(validator.BaselineValidationError) as caught:
+                self.readReviewed(repository, validator=validator)
+        self.assertEqual(
+            str(caught.exception), "reviewed file index metadata is unsafe"
+        )
+        run_git.assert_not_called()
 
     def test_rejects_symlink_and_non_regular_worktree_inputs(self):
         repository, reviewed, _ = self.createRepository("symlink")

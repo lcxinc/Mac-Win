@@ -15,6 +15,19 @@ import sys
 import tempfile
 import unicodedata
 
+try:
+    from tools.migration_git_metadata import (
+        GitMetadataError,
+        bind_tag_refs,
+        verify_binding,
+    )
+except ModuleNotFoundError:
+    from migration_git_metadata import (
+        GitMetadataError,
+        bind_tag_refs,
+        verify_binding,
+    )
+
 
 ROOT = Path(__file__).resolve().parents[1]
 POLICY_PATH = ROOT / "migration" / "assets" / "metadata-policy.json"
@@ -1212,7 +1225,15 @@ def _policy_assets(policy):
 def _bind_governed_assets(repository_root, policy, source_commit, source_tag):
     """Bind reviewed policy paths to raw objects from one immutable Git tree."""
     root = Path(repository_root).resolve()
+    try:
+        tag_metadata = bind_tag_refs(root, source_tag)
+    except GitMetadataError as error:
+        raise InventoryError("inventory source Git identity is invalid") from error
     _validate_primary_object_database(root)
+    try:
+        verify_binding(tag_metadata)
+    except GitMetadataError as error:
+        raise InventoryError("inventory source Git identity is invalid") from error
     _verify_source_identity(root, source_commit, source_tag)
     expected = _policy_assets(policy)
     entries = _list_governed_tree(root, source_commit)

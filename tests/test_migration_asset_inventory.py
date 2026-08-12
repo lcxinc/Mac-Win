@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
+import secrets
 import shutil
 import socket
 import subprocess
@@ -40,6 +41,7 @@ SOURCE_TAG_MESSAGE = "Mac-Win migration source baseline db12d5e"
 INVENTORY_DIRECTORY = ROOT / "migration" / "assets"
 GENERATOR_PATH = ROOT / "tools" / "generate_migration_asset_inventory.py"
 VALIDATOR_PATH = ROOT / "tools" / "validate_migration_asset_inventory.py"
+GIT_METADATA_PATH = ROOT / "tools" / "migration_git_metadata.py"
 README_PATH = ROOT / "README.md"
 DOCUMENTATION_PATH = ROOT / "docs" / "migration-asset-inventory.md"
 NATIVE_LINE_ENDING = os.linesep.encode("ascii")
@@ -404,6 +406,7 @@ class AssetPolicyTests(unittest.TestCase):
             script.parent.mkdir(parents=True)
             policy.parent.mkdir(parents=True)
             shutil.copyfile(GENERATOR_PATH, script)
+            shutil.copyfile(GIT_METADATA_PATH, script.parent / GIT_METADATA_PATH.name)
             policy.write_bytes(self.policy_with_schema_integer(b"9" * 129))
 
             result = subprocess.run(
@@ -1855,6 +1858,80 @@ class AssetGitBindingTests(unittest.TestCase):
                 leaf.unlink()
                 external.rename(leaf)
 
+    def test_inventory_index_reader_rejects_external_index_symlink(self):
+        validator = load_inventory_validator()
+        index = self.repository / ".git" / "index"
+        external = (
+            self.repository.parent / f"external-index-{self.repository.name}"
+        )
+        index.rename(external)
+        try:
+            try:
+                index.symlink_to(external)
+            except OSError as error:
+                external.rename(index)
+                self.skipTest(f"file symlink creation is unavailable: {error}")
+            with self.assertRaisesRegex(
+                validator.InventoryValidationError,
+                "^migration asset inventory reviewed file is invalid$",
+            ):
+                validator._index_entry(self.repository, self.asset_path)
+        finally:
+            if index.is_symlink():
+                index.unlink()
+            if external.exists():
+                external.rename(index)
+
+    def test_inventory_index_reader_uses_linked_worktree_index_metadata(self):
+        validator = load_inventory_validator()
+        linked = Path(self.temporary_directory.name).parent / (
+            f"linked-index-{self.repository.name}"
+        )
+        self._fixture_git(
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            f"linked-index-{secrets.token_hex(4)}",
+            str(linked),
+            self.source_commit,
+        )
+        try:
+            index = Path(
+                self._fixture_git(
+                    "-C", str(linked), "rev-parse", "--git-path", "index"
+                ).stdout.strip()
+            )
+            if not index.is_absolute():
+                index = linked / index
+            object_id = validator._index_entry(linked, self.asset_path)
+            self.assertRegex(object_id, r"\A[0-9a-f]{40}\Z")
+
+            external = linked.parent / f"external-linked-index-{linked.name}"
+            index.rename(external)
+            try:
+                try:
+                    index.symlink_to(external)
+                except OSError as error:
+                    external.rename(index)
+                    self.skipTest(
+                        f"file symlink creation is unavailable: {error}"
+                    )
+                with self.assertRaisesRegex(
+                    validator.InventoryValidationError,
+                    "^migration asset inventory reviewed file is invalid$",
+                ):
+                    validator._index_entry(linked, self.asset_path)
+            finally:
+                if index.is_symlink():
+                    index.unlink()
+                if external.exists():
+                    external.rename(index)
+        finally:
+            self._fixture_git(
+                "worktree", "remove", "--force", str(linked), check=False
+            )
+
     def test_rejects_promisor_pack_and_partial_clone_configuration(self):
         pack_directory = self.repository / ".git" / "objects" / "pack"
         for filename in ("hostile.promisor", "hostile.PROMISOR"):
@@ -3056,7 +3133,9 @@ class AssetSideEffectTests(unittest.TestCase):
                 ),
                 observed_git,
             )
-            self.assertTrue(observed_reads)
+            self.assertTrue(
+                all(not path.is_relative_to(external) for path in observed_reads)
+            )
 
     def assert_validator_cli_rejects(self, hazard):
         with self.unsafe_repository(hazard) as (repository, _external):
@@ -3064,6 +3143,7 @@ class AssetSideEffectTests(unittest.TestCase):
             tools.mkdir()
             shutil.copy2(GENERATOR_PATH, tools / GENERATOR_PATH.name)
             shutil.copy2(VALIDATOR_PATH, tools / VALIDATOR_PATH.name)
+            shutil.copy2(GIT_METADATA_PATH, tools / GIT_METADATA_PATH.name)
             environment = _fixture_git_environment()
             environment["PYTHONDONTWRITEBYTECODE"] = "1"
             result = subprocess.run(
@@ -3104,10 +3184,20 @@ class AssetSideEffectTests(unittest.TestCase):
             "MACWIN_",
             str(external),
         )
+        allowed_refs = self.git_paths()["refs"]
 
         def reject_dependency_path(path):
             text = os.fspath(path).replace("\\", "/")
-            if any(literal in text for literal in forbidden_literals):
+            literals = forbidden_literals
+            try:
+                Path(path).relative_to(allowed_refs)
+            except (TypeError, ValueError):
+                pass
+            else:
+                literals = tuple(
+                    literal for literal in forbidden_literals if literal != "refs/"
+                )
+            if any(literal in text for literal in literals):
                 raise AssertionError("dependency locator was probed")
 
         def guarded_popen(arguments, *args, **kwargs):
