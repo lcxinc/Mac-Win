@@ -2372,6 +2372,23 @@ class InventoryTransactionalWriteTests(unittest.TestCase):
     def assert_no_transaction_temps(self, assets):
         self.assertEqual(list(assets.glob("*.tmp")), [])
 
+    def overwrite_in_place_preserving_metadata(self, path, raw):
+        before = path.stat()
+        self.assertEqual(len(raw), before.st_size)
+        with path.open("r+b", buffering=0) as stream:
+            stream.seek(0)
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+        after = path.stat()
+        self.assertEqual(
+            generator._destination_identity(after),
+            generator._destination_identity(before),
+        )
+        self.assertEqual(after.st_size, before.st_size)
+        self.assertEqual(after.st_mtime_ns, before.st_mtime_ns)
+
     def test_all_new_and_backup_files_are_staged_before_first_replace(self):
         old = self.documents("old")
         new = self.documents("new")
@@ -2435,6 +2452,84 @@ class InventoryTransactionalWriteTests(unittest.TestCase):
 
             self.assertTrue(attacked)
             self.assertEqual(substitute.read_bytes(), substitute_raw)
+            self.assert_documents(root, old)
+            self.assert_no_transaction_temps(assets)
+
+    def test_first_staged_content_mutation_with_same_identity_is_rejected(self):
+        old = self.documents("old")
+        new = self.documents("new")
+        with tempfile.TemporaryDirectory(prefix="inventory staged content ") as directory:
+            root = Path(directory).resolve()
+            assets = self.prepare(root, old)
+            real_hold = generator._hold_staged_leaf
+            attacked = False
+
+            @contextmanager
+            def mutate_before_first_staged_hold(source, *args, **kwargs):
+                nonlocal attacked
+                source_path = Path(source)
+                if not source_path.is_absolute():
+                    source_path = assets / source_path
+                if not attacked and ".new." in source_path.name:
+                    expected = source_path.read_bytes()
+                    poisoned = bytes([expected[0] ^ 1]) + expected[1:]
+                    self.overwrite_in_place_preserving_metadata(source_path, poisoned)
+                    attacked = True
+                with real_hold(source, *args, **kwargs) as verify:
+                    yield verify
+
+            with mock.patch.object(
+                generator,
+                "_hold_staged_leaf",
+                side_effect=mutate_before_first_staged_hold,
+            ):
+                with self.assertRaisesRegex(
+                    InventoryError, "^inventory output transaction failed$"
+                ):
+                    generator._write_inventory_documents(root, new)
+
+            self.assertTrue(attacked)
+            self.assert_documents(root, old)
+            self.assert_no_transaction_temps(assets)
+
+    def test_mutated_backup_is_not_used_for_rollback(self):
+        old = self.documents("old")
+        new = self.documents("new")
+        with tempfile.TemporaryDirectory(prefix="inventory backup content ") as directory:
+            root = Path(directory).resolve()
+            assets = self.prepare(root, old)
+            real_replace = generator._replace_output_file
+            forward_replacements = 0
+            attacked = False
+
+            def mutate_backup_then_fail_next_replace(source, target, *args, **kwargs):
+                nonlocal attacked, forward_replacements
+                source_path = Path(source)
+                if not source_path.is_absolute():
+                    source_path = assets / source_path
+                if ".new." in source_path.name:
+                    forward_replacements += 1
+                    if forward_replacements == 1:
+                        backup = next(assets.glob(".index.json.backup.*.tmp"))
+                        expected = backup.read_bytes()
+                        poisoned = bytes([expected[0] ^ 1]) + expected[1:]
+                        self.overwrite_in_place_preserving_metadata(backup, poisoned)
+                        attacked = True
+                    elif forward_replacements == 2:
+                        raise OSError("injected later destination replace failure")
+                return real_replace(source, target, *args, **kwargs)
+
+            with mock.patch.object(
+                generator,
+                "_replace_output_file",
+                side_effect=mutate_backup_then_fail_next_replace,
+            ):
+                with self.assertRaisesRegex(
+                    InventoryError, "^inventory output transaction failed$"
+                ):
+                    generator._write_inventory_documents(root, new)
+
+            self.assertTrue(attacked)
             self.assert_documents(root, old)
             self.assert_no_transaction_temps(assets)
 
@@ -2825,10 +2920,20 @@ class InventoryTransactionalWriteTests(unittest.TestCase):
             real_read = generator._read_output_file
             swapped = False
 
-            def swap_after_read(token, maximum_bytes, directory_fd, repository_root):
+            def swap_after_read(
+                token,
+                maximum_bytes,
+                directory_fd,
+                repository_root,
+                expected_identity=None,
+            ):
                 nonlocal swapped
                 raw = real_read(
-                    token, maximum_bytes, directory_fd, repository_root
+                    token,
+                    maximum_bytes,
+                    directory_fd,
+                    repository_root,
+                    expected_identity,
                 )
                 token_path = Path(token)
                 is_destination = token_path == destination or (

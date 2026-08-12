@@ -1571,7 +1571,21 @@ def _create_output_temp(assets, destination, purpose, directory_fd):
     raise OSError("could not allocate inventory transaction file")
 
 
-def _read_output_file(token, maximum_bytes, directory_fd, repository_root):
+def _read_output_file(
+    token,
+    maximum_bytes,
+    directory_fd,
+    repository_root,
+    expected_identity=None,
+):
+    if expected_identity is not None:
+        with _hold_staged_leaf(
+            token,
+            expected_identity,
+            directory_fd,
+            maximum_bytes=maximum_bytes,
+        ) as read_held_leaf:
+            return read_held_leaf()
     if directory_fd is None:
         root = Path(repository_root)
         try:
@@ -1610,8 +1624,14 @@ def _replace_output_file(
     expected_identity=None,
     expected_source_identity=None,
     verify_source_identity=None,
+    expected_source_raw=None,
+    expected_destination_raw=None,
 ):
-    if expected_source_identity is None or verify_source_identity is None:
+    if (
+        expected_source_identity is None
+        or verify_source_identity is None
+        or expected_source_raw is None
+    ):
         raise InventoryError("inventory output transaction failed")
     verify_source_identity()
     _validate_output_leaf_token(
@@ -1653,6 +1673,8 @@ def _replace_output_file(
             expected_identity,
             expected_source_identity,
             verify_source_identity,
+            expected_source_raw,
+            expected_destination_raw,
         )
         return
     if directory_fd is None:
@@ -1701,6 +1723,8 @@ def _exchange_posix_output_files(
     expected_identity,
     expected_source_identity,
     verify_source_identity,
+    expected_source_raw,
+    expected_destination_raw,
 ):
     """Exchange two reviewed identities, restoring both names on mismatch."""
     exchanged = False
@@ -1719,6 +1743,8 @@ def _exchange_posix_output_files(
             expected_identity,
             expected_source_identity,
             verify_source_identity,
+            expected_source_raw,
+            expected_destination_raw,
         )
     except (OSError, InventoryError) as error:
         if exchanged:
@@ -1730,6 +1756,18 @@ def _exchange_posix_output_files(
                 )
                 _validate_output_leaf_token(
                     destination, directory_fd, expected_identity
+                )
+                _validate_output_leaf_bytes(
+                    source,
+                    directory_fd,
+                    expected_source_identity,
+                    expected_source_raw,
+                )
+                _validate_output_leaf_bytes(
+                    destination,
+                    directory_fd,
+                    expected_identity,
+                    expected_destination_raw,
                 )
             except OSError as rollback_error:
                 raise InventoryError(
@@ -1764,6 +1802,20 @@ def _validate_output_leaf_token(token, directory_fd, expected_identity):
         raise InventoryError("inventory output transaction failed")
 
 
+def _validate_output_leaf_bytes(
+    token, directory_fd, expected_identity, expected_raw
+):
+    if expected_identity is None or expected_raw is None:
+        raise InventoryError("inventory output transaction failed")
+    with _hold_staged_leaf(
+        token,
+        expected_identity,
+        directory_fd,
+        expected_raw=expected_raw,
+    ) as read_and_verify:
+        read_and_verify()
+
+
 def _verify_replaced_output(
     source,
     destination,
@@ -1772,6 +1824,8 @@ def _verify_replaced_output(
     expected_destination_identity,
     expected_source_identity,
     verify_source_identity,
+    expected_source_raw,
+    expected_destination_raw,
 ):
     """Confirm the committed name still denotes the held staged object."""
     verify_source_identity()
@@ -1782,9 +1836,21 @@ def _verify_replaced_output(
     _validate_output_leaf_token(
         destination_token, directory_fd, expected_source_identity
     )
+    _validate_output_leaf_bytes(
+        destination_token,
+        directory_fd,
+        expected_source_identity,
+        expected_source_raw,
+    )
     if os.name == "posix" and destination_existed:
         _validate_output_leaf_token(
             source, directory_fd, expected_destination_identity
+        )
+        _validate_output_leaf_bytes(
+            source,
+            directory_fd,
+            expected_destination_identity,
+            expected_destination_raw,
         )
         return
     try:
@@ -1828,8 +1894,15 @@ def _validate_destination_leaf(
 
 
 @contextmanager
-def _hold_windows_leaf(path, expected_identity, share_delete):
-    """Open one non-reparse disk leaf and expose repeatable handle checks."""
+def _hold_windows_leaf(
+    path,
+    expected_identity,
+    share_delete,
+    expected_raw=None,
+    maximum_bytes=MAX_DOCUMENT_BYTES,
+    read_content=True,
+):
+    """Open one non-reparse disk leaf and expose identity-bound reads."""
     import ctypes
     from ctypes import wintypes
 
@@ -1872,16 +1945,32 @@ def _hold_windows_leaf(path, expected_identity, share_delete):
     get_file_type = kernel32.GetFileType
     get_file_type.argtypes = (wintypes.HANDLE,)
     get_file_type.restype = wintypes.DWORD
+    set_file_pointer = kernel32.SetFilePointerEx
+    set_file_pointer.argtypes = (
+        wintypes.HANDLE,
+        ctypes.c_longlong,
+        ctypes.POINTER(ctypes.c_longlong),
+        wintypes.DWORD,
+    )
+    set_file_pointer.restype = wintypes.BOOL
+    read_file = kernel32.ReadFile
+    read_file.argtypes = (
+        wintypes.HANDLE,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+        wintypes.LPVOID,
+    )
+    read_file.restype = wintypes.BOOL
 
     file_share_read = 0x00000001
-    file_share_write = 0x00000002
     file_share_delete = 0x00000004
-    share = file_share_read | file_share_write
+    share = file_share_read
     if share_delete:
         share |= file_share_delete
     handle = create_file(
         os.fspath(path),
-        0x00000080,
+        0x00000080 | (0x80000000 if read_content else 0),
         share,
         None,
         3,
@@ -1891,7 +1980,7 @@ def _hold_windows_leaf(path, expected_identity, share_delete):
     if handle == ctypes.c_void_p(-1).value:
         raise InventoryError("inventory output transaction failed")
 
-    def verify_identity():
+    def read_and_verify():
         information = ByHandleFileInformation()
         if not get_file_information(handle, ctypes.byref(information)):
             raise InventoryError("inventory output transaction failed")
@@ -1906,18 +1995,43 @@ def _hold_windows_leaf(path, expected_identity, share_delete):
         )
         if expected_identity is not None and identity != expected_identity:
             raise InventoryError("inventory output transaction failed")
-        return identity
+        if not read_content:
+            return b""
+        if not set_file_pointer(handle, 0, None, 0):
+            raise InventoryError("inventory output transaction failed")
+        buffer = ctypes.create_string_buffer(maximum_bytes + 1)
+        read_count = wintypes.DWORD()
+        if not read_file(
+            handle,
+            buffer,
+            maximum_bytes + 1,
+            ctypes.byref(read_count),
+            None,
+        ):
+            raise InventoryError("inventory output transaction failed")
+        raw = buffer.raw[: read_count.value]
+        if len(raw) > maximum_bytes:
+            raise InventoryError("inventory output transaction failed")
+        if expected_raw is not None and raw != expected_raw:
+            raise InventoryError("inventory output transaction failed")
+        return raw
 
     try:
-        verify_identity()
-        yield verify_identity
+        read_and_verify()
+        yield read_and_verify
     finally:
         close_handle(handle)
 
 
 @contextmanager
-def _hold_staged_leaf(source, expected_identity, directory_fd):
-    """Bind the staged input identity across the atomic replacement primitive."""
+def _hold_staged_leaf(
+    source,
+    expected_identity,
+    directory_fd,
+    expected_raw=None,
+    maximum_bytes=MAX_DOCUMENT_BYTES,
+):
+    """Bind a regular input identity and its bounded bytes across replacement."""
     if expected_identity is None:
         raise InventoryError("inventory output transaction failed")
     if os.name == "posix":
@@ -1929,7 +2043,7 @@ def _hold_staged_leaf(source, expected_identity, directory_fd):
         except OSError as error:
             raise InventoryError("inventory output transaction failed") from error
 
-        def verify_identity():
+        def read_and_verify():
             try:
                 status = os.fstat(descriptor)
             except OSError as error:
@@ -1939,24 +2053,54 @@ def _hold_staged_leaf(source, expected_identity, directory_fd):
                 or _destination_identity(status) != expected_identity
             ):
                 raise InventoryError("inventory output transaction failed")
-            return expected_identity
+            try:
+                raw = os.pread(descriptor, maximum_bytes + 1, 0)
+            except OSError as error:
+                raise InventoryError("inventory output transaction failed") from error
+            if len(raw) > maximum_bytes:
+                raise InventoryError("inventory output transaction failed")
+            if expected_raw is not None and raw != expected_raw:
+                raise InventoryError("inventory output transaction failed")
+            return raw
 
         try:
-            verify_identity()
-            yield verify_identity
+            read_and_verify()
+            yield read_and_verify
         finally:
             os.close(descriptor)
         return
     if os.name == "nt":
-        with _hold_windows_leaf(source, expected_identity, True) as verify_identity:
-            yield verify_identity
+        with _hold_windows_leaf(
+            source,
+            expected_identity,
+            True,
+            read_content=False,
+        ) as verify_identity:
+            with _hold_windows_leaf(
+                source,
+                expected_identity,
+                True,
+                expected_raw,
+                maximum_bytes,
+            ) as read_and_verify:
+                reviewed_raw = read_and_verify()
+
+            def verify_held_content():
+                verify_identity()
+                return reviewed_raw
+
+            yield verify_held_content
         return
     raise InventoryError("inventory output transaction failed")
 
 
 @contextmanager
 def _hold_destination_leaf(
-    destination, expected_exists, expected_identity=None, directory_fd=None
+    destination,
+    expected_exists,
+    expected_identity=None,
+    directory_fd=None,
+    expected_raw=None,
 ):
     """Hold the reviewed destination identity through the replace boundary."""
     if not expected_exists:
@@ -1973,22 +2117,51 @@ def _hold_destination_leaf(
             )
         except OSError as error:
             raise InventoryError("inventory output transaction failed") from error
-        try:
+        def read_and_verify():
             status = os.fstat(descriptor)
             if (
                 not stat.S_ISREG(status.st_mode)
                 or _destination_identity(status) != expected_identity
             ):
                 raise InventoryError("inventory output transaction failed")
-            yield
+            try:
+                raw = os.pread(descriptor, MAX_DOCUMENT_BYTES + 1, 0)
+            except OSError as error:
+                raise InventoryError("inventory output transaction failed") from error
+            if len(raw) > MAX_DOCUMENT_BYTES:
+                raise InventoryError("inventory output transaction failed")
+            if expected_raw is not None and raw != expected_raw:
+                raise InventoryError("inventory output transaction failed")
+            return raw
+
+        try:
+            read_and_verify()
+            yield read_and_verify
         finally:
             os.close(descriptor)
         return
 
     if os.name != "nt":
         raise InventoryError("inventory output transaction failed")
-    with _hold_windows_leaf(destination, expected_identity, False):
-        yield
+    with _hold_windows_leaf(
+        destination,
+        expected_identity,
+        False,
+        read_content=False,
+    ) as verify_identity:
+        with _hold_windows_leaf(
+            destination,
+            expected_identity,
+            True,
+            expected_raw,
+        ) as read_and_verify:
+            reviewed_raw = read_and_verify()
+
+        def verify_held_content():
+            verify_identity()
+            return reviewed_raw
+
+        yield verify_held_content
 
 
 def _stage_output_file(
@@ -1997,6 +2170,7 @@ def _stage_output_file(
     _verify_output_directory_identity(root, snapshot)
     descriptor = None
     temporary = None
+    staged_identity = None
     try:
         descriptor, temporary = _create_output_temp(
             assets, destination, purpose, directory_fd
@@ -2008,14 +2182,19 @@ def _stage_output_file(
             os.fsync(stream.fileno())
             if hasattr(os, "fchmod"):
                 os.fchmod(stream.fileno(), 0o644)
+            staged_identity = _destination_identity(os.fstat(stream.fileno()))
         if not hasattr(os, "fchmod"):
             os.chmod(temporary, 0o644)
         _verify_output_directory_identity(root, snapshot)
         if _read_output_file(
-            temporary, MAX_DOCUMENT_BYTES, directory_fd, root
+            temporary,
+            MAX_DOCUMENT_BYTES,
+            directory_fd,
+            root,
+            expected_identity=staged_identity,
         ) != raw:
             raise InventoryError("inventory output transaction failed")
-        return temporary
+        return temporary, staged_identity
     except (OSError, ValueError, InventoryError) as error:
         if descriptor is not None:
             os.close(descriptor)
@@ -2046,9 +2225,11 @@ def _write_inventory_documents(repository_root, documents):
     snapshot = _snapshot_output_directory(root)
     staged = {}
     staged_identities = {}
+    staged_expected_bytes = {}
     backups = {}
     backup_identities = {}
     backup_staged_identities = {}
+    backup_expected_bytes = {}
     temporary_paths = set()
     replaced = []
     with _hold_output_directory_chain(root, snapshot) as directory_fd:
@@ -2057,7 +2238,7 @@ def _write_inventory_documents(repository_root, documents):
                 destination = root / PurePosixPath(relative_path)
                 if destination.parent != assets:
                     raise InventoryError("inventory output path is invalid")
-                temporary = _stage_output_file(
+                temporary, staged_identity = _stage_output_file(
                     root,
                     assets,
                     destination,
@@ -2067,15 +2248,8 @@ def _write_inventory_documents(repository_root, documents):
                     directory_fd,
                 )
                 staged[relative_path] = temporary
-                if directory_fd is not None:
-                    staged_status = os.stat(
-                        temporary, dir_fd=directory_fd, follow_symlinks=False
-                    )
-                else:
-                    staged_status = Path(temporary).lstat()
-                staged_identities[relative_path] = _destination_identity(
-                    staged_status
-                )
+                staged_identities[relative_path] = staged_identity
+                staged_expected_bytes[relative_path] = raw
                 temporary_paths.add(temporary)
 
             for relative_path in documents:
@@ -2087,12 +2261,15 @@ def _write_inventory_documents(repository_root, documents):
                     )
                 except FileNotFoundError:
                     backups[relative_path] = None
+                    backup_identities[relative_path] = None
+                    backup_expected_bytes[relative_path] = None
                 except OSError as error:
                     raise InventoryError("inventory output transaction failed") from error
                 else:
                     if status is None:
                         backups[relative_path] = None
                         backup_identities[relative_path] = None
+                        backup_expected_bytes[relative_path] = None
                         continue
                     backup_identities[relative_path] = _destination_identity(status)
                     old = _read_output_file(
@@ -2100,8 +2277,9 @@ def _write_inventory_documents(repository_root, documents):
                         MAX_DOCUMENT_BYTES,
                         directory_fd,
                         root,
+                        expected_identity=backup_identities[relative_path],
                     )
-                    backup = _stage_output_file(
+                    backup, backup_staged_identity = _stage_output_file(
                         root,
                         assets,
                         destination,
@@ -2111,15 +2289,10 @@ def _write_inventory_documents(repository_root, documents):
                         directory_fd,
                     )
                     backups[relative_path] = backup
-                    if directory_fd is not None:
-                        backup_status = os.stat(
-                            backup, dir_fd=directory_fd, follow_symlinks=False
-                        )
-                    else:
-                        backup_status = Path(backup).lstat()
                     backup_staged_identities[relative_path] = (
-                        _destination_identity(backup_status)
+                        backup_staged_identity
                     )
+                    backup_expected_bytes[relative_path] = old
                     temporary_paths.add(backup)
 
             for relative_path in documents:
@@ -2136,11 +2309,14 @@ def _write_inventory_documents(repository_root, documents):
                     backups[relative_path] is not None,
                     backup_identities[relative_path],
                     directory_fd,
+                    backup_expected_bytes[relative_path],
                 ):
+                    replaced.append(relative_path)
                     with _hold_staged_leaf(
                         staged[relative_path],
                         staged_identities[relative_path],
                         directory_fd,
+                        expected_raw=staged_expected_bytes[relative_path],
                     ) as verify_staged_identity:
                         _replace_output_file(
                             staged[relative_path],
@@ -2150,8 +2326,9 @@ def _write_inventory_documents(repository_root, documents):
                             expected_identity=backup_identities[relative_path],
                             expected_source_identity=staged_identities[relative_path],
                             verify_source_identity=verify_staged_identity,
+                            expected_source_raw=staged_expected_bytes[relative_path],
+                            expected_destination_raw=backup_expected_bytes[relative_path],
                         )
-                        replaced.append(relative_path)
                         _verify_replaced_output(
                             staged[relative_path],
                             destination,
@@ -2160,6 +2337,8 @@ def _write_inventory_documents(repository_root, documents):
                             backup_identities[relative_path],
                             staged_identities[relative_path],
                             verify_staged_identity,
+                            staged_expected_bytes[relative_path],
+                            backup_expected_bytes[relative_path],
                         )
                 _verify_output_directory_identity(root, snapshot)
         except (OSError, InventoryError) as error:
@@ -2182,36 +2361,76 @@ def _write_inventory_documents(repository_root, documents):
                         rollback_destination_identity = _destination_identity(
                             rollback_status
                         )
+                        rollback_destination_raw = _read_output_file(
+                            destination
+                            if directory_fd is None
+                            else destination.name,
+                            MAX_DOCUMENT_BYTES,
+                            directory_fd,
+                            root,
+                            expected_identity=rollback_destination_identity,
+                        )
+                        rollback_source = backup
+                        rollback_source_identity = backup_staged_identities[
+                            relative_path
+                        ]
+                        try:
+                            _validate_output_leaf_bytes(
+                                rollback_source,
+                                directory_fd,
+                                rollback_source_identity,
+                                backup_expected_bytes[relative_path],
+                            )
+                        except InventoryError:
+                            (
+                                rollback_source,
+                                rollback_source_identity,
+                            ) = _stage_output_file(
+                                root,
+                                assets,
+                                destination,
+                                backup_expected_bytes[relative_path],
+                                "rollback",
+                                snapshot,
+                                directory_fd,
+                            )
+                            temporary_paths.add(rollback_source)
                         with _hold_destination_leaf(
                             destination,
                             True,
                             rollback_destination_identity,
                             directory_fd,
+                            rollback_destination_raw,
                         ):
                             with _hold_staged_leaf(
-                                backup,
-                                backup_staged_identities[relative_path],
+                                rollback_source,
+                                rollback_source_identity,
                                 directory_fd,
+                                expected_raw=backup_expected_bytes[relative_path],
                             ) as verify_backup_identity:
                                 _replace_output_file(
-                                    backup,
+                                    rollback_source,
                                     destination,
                                     directory_fd,
                                     destination_exists=True,
                                     expected_identity=rollback_destination_identity,
-                                    expected_source_identity=(
-                                        backup_staged_identities[relative_path]
-                                    ),
+                                    expected_source_identity=rollback_source_identity,
                                     verify_source_identity=verify_backup_identity,
+                                    expected_source_raw=backup_expected_bytes[
+                                        relative_path
+                                    ],
+                                    expected_destination_raw=rollback_destination_raw,
                                 )
                                 _verify_replaced_output(
-                                    backup,
+                                    rollback_source,
                                     destination,
                                     directory_fd,
                                     True,
                                     rollback_destination_identity,
-                                    backup_staged_identities[relative_path],
+                                    rollback_source_identity,
                                     verify_backup_identity,
+                                    backup_expected_bytes[relative_path],
+                                    rollback_destination_raw,
                                 )
                     _verify_output_directory_identity(root, snapshot)
                 _cleanup_transaction_files(
