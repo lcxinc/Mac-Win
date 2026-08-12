@@ -456,6 +456,12 @@ def _read_reviewed_policy(repository_root):
 
 def validate_inventory(repository_root=ROOT):
     """Regenerate in memory and verify exact reviewed worktree/index bytes."""
+    try:
+        generator._validate_primary_object_database(repository_root)
+    except generator.InventoryError as error:
+        raise InventoryValidationError(
+            "migration asset inventory repository is unsafe"
+        ) from error
     policy = _read_reviewed_policy(repository_root)
     try:
         expected = generate_inventory_documents(repository_root, policy=policy)

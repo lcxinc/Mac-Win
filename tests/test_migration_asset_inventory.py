@@ -2390,6 +2390,134 @@ class AssetSideEffectTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout
 
+    def fixture_git(self, repository, *arguments):
+        result = subprocess.run(
+            [
+                "git",
+                "-c",
+                f"safe.directory={repository}",
+                *arguments,
+            ],
+            cwd=repository,
+            env=_fixture_git_environment(),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            check=False,
+            shell=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result
+
+    @contextmanager
+    def unsafe_repository(self, hazard):
+        with tempfile.TemporaryDirectory(prefix="inventory unsafe validator ") as directory:
+            root = Path(directory).resolve()
+            repository = root / "repository"
+            repository.mkdir()
+            self.fixture_git(repository, "init", "-q")
+            external = root / "HOSTILE-EXTERNAL-MARKER"
+            external.mkdir()
+            if hazard == "alternates":
+                object_store = external / "objects"
+                object_store.mkdir()
+                sentinel = repository / ".git" / "objects" / "info" / "alternates"
+                sentinel.write_text(
+                    object_store.as_posix() + "\n", encoding="utf-8"
+                )
+            elif hazard in ("include", "includeIf"):
+                included = external / "HOSTILE-CONFIG-MARKER.gitconfig"
+                included.write_text("[malformed\n", encoding="utf-8")
+                config = repository / ".git" / "config"
+                section = (
+                    "[include]"
+                    if hazard == "include"
+                    else '[includeIf "gitdir:**"]'
+                )
+                with config.open("a", encoding="utf-8", newline="\n") as stream:
+                    stream.write(
+                        f"\n{section}\n\tpath = {included.as_posix()}\n"
+                    )
+            else:
+                self.fail(f"unknown unsafe-repository fixture: {hazard}")
+            yield repository, external
+
+    def assert_validator_preflight_rejects(self, hazard):
+        validator = load_inventory_validator()
+        with self.unsafe_repository(hazard) as (repository, external):
+            observed_git = []
+            observed_reads = []
+            real_run_git = generator._run_git
+            real_read = generator._read_bounded_reviewed_file
+
+            def recording_git(root, *arguments, **kwargs):
+                observed_git.append(arguments)
+                return real_run_git(root, *arguments, **kwargs)
+
+            def recording_read(root, relative_path, maximum_bytes):
+                candidate = Path(root) / PurePosixPath(relative_path)
+                observed_reads.append(candidate)
+                try:
+                    candidate.resolve().relative_to(external)
+                except ValueError:
+                    pass
+                else:
+                    raise AssertionError("external repository dependency was read")
+                return real_read(root, relative_path, maximum_bytes)
+
+            with mock.patch.object(
+                generator, "_run_git", side_effect=recording_git
+            ), mock.patch.object(
+                generator,
+                "_read_bounded_reviewed_file",
+                side_effect=recording_read,
+            ), mock.patch.object(
+                validator,
+                "_read_reviewed_policy",
+                side_effect=AssertionError("reviewed policy was read before preflight"),
+            ) as read_policy:
+                with self.assertRaisesRegex(
+                    validator.InventoryValidationError,
+                    "^migration asset inventory repository is unsafe$",
+                ):
+                    validator.validate_inventory(repository)
+            read_policy.assert_not_called()
+            self.assertFalse(
+                any(
+                    arguments and arguments[0] in ("cat-file", "ls-files")
+                    for arguments in observed_git
+                ),
+                observed_git,
+            )
+            self.assertTrue(observed_reads)
+
+    def assert_validator_cli_rejects(self, hazard):
+        with self.unsafe_repository(hazard) as (repository, _external):
+            tools = repository / "tools"
+            tools.mkdir()
+            shutil.copy2(GENERATOR_PATH, tools / GENERATOR_PATH.name)
+            shutil.copy2(VALIDATOR_PATH, tools / VALIDATOR_PATH.name)
+            environment = _fixture_git_environment()
+            environment["PYTHONDONTWRITEBYTECODE"] = "1"
+            result = subprocess.run(
+                [sys.executable, str(tools / VALIDATOR_PATH.name)],
+                cwd=repository,
+                env=environment,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                check=False,
+                shell=False,
+            )
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, b"")
+        self.assertEqual(
+            result.stderr,
+            b"migration asset inventory failed: "
+            b"migration asset inventory repository is unsafe"
+            + NATIVE_LINE_ENDING,
+        )
+        self.assertNotIn(b"Traceback", result.stderr)
+        self.assertNotIn(b"HOSTILE", result.stderr)
+
     @contextmanager
     def inert_runtime(self, external):
         real_subprocess_run = subprocess.run
@@ -2626,6 +2754,32 @@ class AssetSideEffectTests(unittest.TestCase):
             ):
                 generator._validate_primary_object_database(ROOT)
         absolute_git_path.assert_not_called()
+
+    def test_validator_preflights_alternates_and_includes_before_reviewed_reads(self):
+        for hazard in ("alternates", "include", "includeIf"):
+            with self.subTest(hazard=hazard):
+                self.assert_validator_preflight_rejects(hazard)
+
+    def test_validator_cli_rejects_unsafe_repository_stably_without_reflection(self):
+        for hazard in ("alternates", "include", "includeIf"):
+            with self.subTest(hazard=hazard):
+                self.assert_validator_cli_rejects(hazard)
+
+    def test_validator_repository_preflight_maps_only_inventory_errors(self):
+        validator = load_inventory_validator()
+        for failure in (OSError("operating system failure"), RuntimeError("bug")):
+            with self.subTest(failure=type(failure).__name__), mock.patch.object(
+                validator.generator,
+                "_validate_primary_object_database",
+                side_effect=failure,
+            ), mock.patch.object(
+                validator,
+                "_read_reviewed_policy",
+                side_effect=AssertionError("reviewed policy was read"),
+            ):
+                with self.assertRaises(type(failure)) as raised:
+                    validator.validate_inventory(ROOT)
+            self.assertIs(raised.exception, failure)
 
     def test_validator_disables_bytecode_before_local_imports(self):
         with tempfile.TemporaryDirectory(prefix="inventory pycache ") as directory:
