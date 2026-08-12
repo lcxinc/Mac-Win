@@ -2237,5 +2237,85 @@ raise SystemExit(validator.main([]))
             self.assertEqual(list(cache.rglob("*.pyc")), [])
 
 
+class ReviewedInventoryFileTests(unittest.TestCase):
+    def test_policy_reader_rejects_parent_and_leaf_links_but_allows_hardlinks(self):
+        policy_raw = POLICY_PATH.read_bytes()
+        with tempfile.TemporaryDirectory(prefix="inventory reviewed policy ") as directory:
+            root = Path(directory).resolve()
+            assets = root / "migration" / "assets"
+            assets.mkdir(parents=True)
+            source = root / "policy-source.json"
+            source.write_bytes(policy_raw)
+            reviewed = assets / "metadata-policy.json"
+            os.link(source, reviewed)
+            self.assertEqual(
+                generator.load_policy(reviewed, repository_root=root)["schemaVersion"],
+                1,
+            )
+
+            reviewed.unlink()
+            try:
+                reviewed.symlink_to(source)
+            except OSError as error:
+                self.skipTest(f"file symlink creation is unavailable: {error}")
+            with self.assertRaisesRegex(
+                InventoryError, "^inventory policy could not be read$"
+            ):
+                generator.load_policy(reviewed, repository_root=root)
+
+        with tempfile.TemporaryDirectory(prefix="inventory reviewed parent ") as directory:
+            root = Path(directory).resolve()
+            external = root / "external"
+            (external / "assets").mkdir(parents=True)
+            (external / "assets" / "metadata-policy.json").write_bytes(policy_raw)
+            try:
+                (root / "migration").symlink_to(external, target_is_directory=True)
+            except OSError as error:
+                self.skipTest(f"directory symlink creation is unavailable: {error}")
+            with self.assertRaisesRegex(
+                InventoryError, "^inventory policy could not be read$"
+            ):
+                generator.load_policy(
+                    root / "migration" / "assets" / "metadata-policy.json",
+                    repository_root=root,
+                )
+
+    def test_check_reader_rejects_linked_parent_even_when_all_bytes_match(self):
+        documents = {path: b"{}\n" for path in OUTPUT_RELATIVE_PATHS}
+        with tempfile.TemporaryDirectory(prefix="inventory linked output ") as directory:
+            root = Path(directory).resolve()
+            external = root / "external"
+            assets = external / "assets"
+            assets.mkdir(parents=True)
+            for relative_path, raw in documents.items():
+                (assets / Path(relative_path).name).write_bytes(raw)
+            try:
+                (root / "migration").symlink_to(external, target_is_directory=True)
+            except OSError as error:
+                self.skipTest(f"directory symlink creation is unavailable: {error}")
+            with self.assertRaisesRegex(
+                InventoryError, "^inventory output is missing or unsafe$"
+            ):
+                generator._check_inventory_documents(root, documents)
+
+    def test_validator_worktree_read_delegates_to_shared_hardened_reader(self):
+        validator = load_inventory_validator()
+        expected = b"reviewed\n"
+        with mock.patch.object(
+            validator.generator,
+            "_read_bounded_reviewed_file",
+            return_value=expected,
+        ) as read:
+            self.assertEqual(
+                validator._read_exact_worktree_bytes(
+                    ROOT, "migration/assets/index.json"
+                ),
+                expected,
+            )
+        read.assert_called_once_with(
+            ROOT, "migration/assets/index.json", MAX_DOCUMENT_BYTES
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

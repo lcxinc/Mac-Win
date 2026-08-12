@@ -3,29 +3,21 @@
 
 import argparse
 import hashlib
-import os
 from pathlib import Path
-import stat
 import sys
 
 try:
     from tools import generate_migration_asset_inventory as generator
     from tools.validate_migration_baseline import (
         BaselineValidationError,
-        _component_identity,
         _index_entry,
-        _inspect_reviewed_path,
-        _leaf_identity,
         _reviewed_relative_path,
     )
 except ModuleNotFoundError:
     import generate_migration_asset_inventory as generator
     from validate_migration_baseline import (
         BaselineValidationError,
-        _component_identity,
         _index_entry,
-        _inspect_reviewed_path,
-        _leaf_identity,
         _reviewed_relative_path,
     )
 
@@ -320,54 +312,15 @@ def validate_inventory_documents(documents, expected_documents=None):
 
 
 def _read_exact_worktree_bytes(repository_root, relative_path):
-    """Read one regular non-reparse reviewed file with TOCTOU checks."""
+    """Read one reviewed file through the shared hardened bounded reader."""
     try:
-        path = _reviewed_relative_path(relative_path)
-        reviewed_path, initial_statuses = _inspect_reviewed_path(repository_root, path)
-    except BaselineValidationError as error:
+        return generator._read_bounded_reviewed_file(
+            repository_root, relative_path, MAX_DOCUMENT_BYTES
+        )
+    except generator.InventoryError as error:
         raise InventoryValidationError(
             "migration asset inventory reviewed file is invalid"
         ) from error
-    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = None
-    try:
-        descriptor = os.open(reviewed_path, flags)
-        with os.fdopen(descriptor, "rb") as stream:
-            descriptor = None
-            opened = os.fstat(stream.fileno())
-            if (
-                not stat.S_ISREG(opened.st_mode)
-                or _component_identity(opened) != _component_identity(initial_statuses[-1])
-            ):
-                raise InventoryValidationError(
-                    "migration asset inventory reviewed file is invalid"
-                )
-            raw = stream.read(MAX_DOCUMENT_BYTES + 1)
-            opened_after = os.fstat(stream.fileno())
-        _, final_statuses = _inspect_reviewed_path(repository_root, path)
-    except InventoryValidationError:
-        raise
-    except (OSError, BaselineValidationError) as error:
-        raise InventoryValidationError(
-            "migration asset inventory reviewed file is invalid"
-        ) from error
-    finally:
-        if descriptor is not None:
-            os.close(descriptor)
-    if (
-        len(raw) > MAX_DOCUMENT_BYTES
-        or len(initial_statuses) != len(final_statuses)
-        or any(
-            _component_identity(before) != _component_identity(after)
-            for before, after in zip(initial_statuses, final_statuses)
-        )
-        or _leaf_identity(initial_statuses[-1]) != _leaf_identity(opened_after)
-        or _leaf_identity(initial_statuses[-1]) != _leaf_identity(final_statuses[-1])
-    ):
-        raise InventoryValidationError(
-            "migration asset inventory reviewed file is invalid"
-        )
-    return raw
 
 
 def _read_reviewed_document(repository_root, relative_path, expected):

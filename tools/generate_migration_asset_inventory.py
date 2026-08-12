@@ -595,12 +595,119 @@ def _require_dependency_policy_match(policy, evidence):
         )
 
 
-def load_policy(path=POLICY_PATH):
-    """Read and validate a bounded policy file."""
+def _is_reparse(status):
+    return bool(
+        getattr(status, "st_file_attributes", 0)
+        & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    )
+
+
+def _component_identity(status):
+    return (
+        getattr(status, "st_dev", None),
+        getattr(status, "st_ino", None),
+        stat.S_IFMT(status.st_mode),
+        _is_reparse(status),
+    )
+
+
+def _leaf_identity(status):
+    return (
+        *_component_identity(status),
+        getattr(status, "st_size", None),
+        getattr(status, "st_mtime_ns", None),
+    )
+
+
+def _inspect_reviewed_file(repository_root, relative_path):
+    root = Path(os.path.abspath(os.fspath(repository_root)))
     try:
-        with Path(path).open("rb") as stream:
-            raw = stream.read(MAX_DOCUMENT_BYTES + 1)
+        relative = _validate_path(relative_path)
+    except InventoryError as error:
+        raise InventoryError("inventory reviewed file is invalid") from error
+    components = [root]
+    current = root
+    for part in relative.split("/"):
+        current = current / part
+        components.append(current)
+    statuses = []
+    for index, component in enumerate(components):
+        try:
+            status = component.lstat()
+        except OSError as error:
+            raise InventoryError("inventory reviewed file is invalid") from error
+        is_leaf = index == len(components) - 1
+        if stat.S_ISLNK(status.st_mode) or _is_reparse(status):
+            raise InventoryError("inventory reviewed file is invalid")
+        if is_leaf:
+            if not stat.S_ISREG(status.st_mode):
+                raise InventoryError("inventory reviewed file is invalid")
+        elif not stat.S_ISDIR(status.st_mode):
+            raise InventoryError("inventory reviewed file is invalid")
+        statuses.append(status)
+    return components[-1], statuses
+
+
+def _read_bounded_reviewed_file(repository_root, relative_path, maximum_bytes):
+    """Read a regular reviewed file without following linked path components."""
+    if type(maximum_bytes) is not int or maximum_bytes < 0:
+        raise InventoryError("inventory reviewed file is invalid")
+    reviewed, initial = _inspect_reviewed_file(repository_root, relative_path)
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = None
+    try:
+        descriptor = os.open(reviewed, flags)
+        with os.fdopen(descriptor, "rb") as stream:
+            descriptor = None
+            opened = os.fstat(stream.fileno())
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or _is_reparse(opened)
+                or _component_identity(opened) != _component_identity(initial[-1])
+            ):
+                raise InventoryError("inventory reviewed file is invalid")
+            raw = stream.read(maximum_bytes + 1)
+            opened_after = os.fstat(stream.fileno())
+        _, final = _inspect_reviewed_file(repository_root, relative_path)
+    except InventoryError:
+        raise
     except OSError as error:
+        raise InventoryError("inventory reviewed file is invalid") from error
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    if (
+        len(raw) > maximum_bytes
+        or len(initial) != len(final)
+        or any(
+            _component_identity(before) != _component_identity(after)
+            for before, after in zip(initial, final)
+        )
+        or _leaf_identity(initial[-1]) != _leaf_identity(opened_after)
+        or _leaf_identity(initial[-1]) != _leaf_identity(final[-1])
+    ):
+        raise InventoryError("inventory reviewed file is invalid")
+    return raw
+
+
+def load_policy(path=POLICY_PATH, repository_root=None):
+    """Read and validate a bounded policy file."""
+    candidate = Path(os.path.abspath(os.fspath(path)))
+    root = (
+        Path(os.path.abspath(os.fspath(repository_root)))
+        if repository_root is not None
+        else (
+            ROOT
+            if candidate == Path(os.path.abspath(os.fspath(POLICY_PATH)))
+            else candidate.parent
+        )
+    )
+    try:
+        relative_path = candidate.relative_to(root).as_posix()
+        raw = _read_bounded_reviewed_file(
+            root, relative_path, MAX_DOCUMENT_BYTES
+        )
+    except (InventoryError, ValueError) as error:
         raise InventoryError("inventory policy could not be read") from error
     return parse_policy_bytes(raw)
 
@@ -1131,7 +1238,9 @@ def generate_inventory_documents(repository_root=ROOT, policy=None):
     """Generate all reviewed output bytes only from policy and frozen Git blobs."""
     root = Path(repository_root).resolve()
     if policy is None:
-        policy = load_policy(root / POLICY_PATH.relative_to(ROOT))
+        policy = load_policy(
+            root / POLICY_PATH.relative_to(ROOT), repository_root=root
+        )
     else:
         validate_policy(policy)
     records = _bind_governed_assets(root, policy, SOURCE_COMMIT, SOURCE_TAG)
@@ -1225,16 +1334,12 @@ def _check_inventory_documents(repository_root, documents):
     _validate_output_path_set(documents)
     root = Path(repository_root).resolve()
     for relative_path, expected in documents.items():
-        path = root / PurePosixPath(relative_path)
         try:
-            if path.is_symlink() or not path.is_file():
-                raise InventoryError("inventory output is missing or unsafe")
-            with path.open("rb") as stream:
-                actual = stream.read(MAX_DOCUMENT_BYTES + 1)
-        except InventoryError:
-            raise
-        except OSError as error:
-            raise InventoryError("inventory output could not be read") from error
+            actual = _read_bounded_reviewed_file(
+                root, relative_path, MAX_DOCUMENT_BYTES
+            )
+        except InventoryError as error:
+            raise InventoryError("inventory output is missing or unsafe") from error
         if actual != expected:
             raise InventoryError("inventory output does not match generated bytes")
 
