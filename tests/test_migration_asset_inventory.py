@@ -1430,6 +1430,51 @@ class AssetGitBindingTests(unittest.TestCase):
                 )
                 path.unlink()
 
+    def test_rejects_linked_object_database_sentinels_without_following_them(self):
+        info = self.repository / ".git" / "objects" / "info"
+        pack = self.repository / ".git" / "objects" / "pack"
+        with tempfile.TemporaryDirectory(
+            prefix="inventory external object sentinel "
+        ) as directory:
+            external = Path(directory).resolve() / "must-not-be-read"
+            external.write_bytes(b"external object bytes\n")
+            for name, path in (
+                ("alternates", info / "alternates"),
+                ("http-alternates", info / "http-alternates"),
+                ("promisor", pack / "hostile.PrOmIsOr"),
+            ):
+                for target in (external, self.repository / "missing-object-sentinel"):
+                    with self.subTest(name=name, dangling=not target.exists()):
+                        try:
+                            path.symlink_to(target)
+                        except OSError as error:
+                            self.skipTest(
+                                f"file symlink creation is unavailable: {error}"
+                            )
+                        try:
+                            self.assert_binding_error(
+                                "inventory Git object database is not self-contained"
+                            )
+                        finally:
+                            path.unlink()
+
+    def test_rejects_nonregular_object_database_sentinels(self):
+        info = self.repository / ".git" / "objects" / "info"
+        pack = self.repository / ".git" / "objects" / "pack"
+        for name, path in (
+            ("alternates", info / "alternates"),
+            ("http-alternates", info / "http-alternates"),
+            ("promisor", pack / "hostile.promisor"),
+        ):
+            with self.subTest(name=name):
+                path.mkdir()
+                try:
+                    self.assert_binding_error(
+                        "inventory Git object database is not self-contained"
+                    )
+                finally:
+                    path.rmdir()
+
     def test_rejects_local_config_include_without_reading_its_malformed_target(self):
         included = self.repository.parent / "must-not-be-read.gitconfig"
         included.write_text("[safe]\n\tbare = false\n", encoding="utf-8")
@@ -2520,7 +2565,7 @@ class AssetSideEffectTests(unittest.TestCase):
 
     @contextmanager
     def inert_runtime(self, external):
-        real_subprocess_run = subprocess.run
+        real_subprocess_popen = subprocess.Popen
         real_path_exists = Path.exists
         real_path_stat = Path.stat
         real_path_lstat = Path.lstat
@@ -2542,22 +2587,30 @@ class AssetSideEffectTests(unittest.TestCase):
             if any(literal in text for literal in forbidden_literals):
                 raise AssertionError("dependency locator was probed")
 
-        def guarded_run(arguments, *args, **kwargs):
+        def guarded_popen(arguments, *args, **kwargs):
             self.assertIs(type(arguments), list)
-            self.assertTrue(arguments)
-            self.assertEqual(arguments[0], "git")
-            self.assertIs(kwargs.get("shell"), False)
-            command = next(
-                (item for item in arguments if item in self._APPROVED_GIT_COMMANDS),
-                None,
+            self.assertFalse(args)
+            self.assertGreaterEqual(
+                len(arguments), 8, "only approved Git subprocesses are allowed"
             )
-            self.assertIsNotNone(command)
+            self.assertEqual(
+                arguments[:7],
+                [
+                    "git",
+                    "-c",
+                    f"safe.directory={ROOT}",
+                    "-c",
+                    "core.fsmonitor=false",
+                    "-c",
+                    f"core.hooksPath={os.devnull}",
+                ],
+            )
+            self.assertIsNone(kwargs.get("executable"))
+            self.assertIs(kwargs.get("shell"), False)
+            command = arguments[7]
+            self.assertIn(command, self._APPROVED_GIT_COMMANDS)
             if command == "config" and "--file" in arguments:
-                self.assertNotIn("stdin", kwargs)
-                self.assertIs(type(kwargs.get("input")), bytes)
-                self.assertLessEqual(
-                    len(kwargs["input"]), generator.MAX_GIT_CONFIG_LIST_BYTES
-                )
+                self.assertIs(kwargs.get("stdin"), subprocess.PIPE)
             else:
                 self.assertIs(kwargs.get("stdin"), subprocess.DEVNULL)
             environment = kwargs.get("env")
@@ -2568,8 +2621,11 @@ class AssetSideEffectTests(unittest.TestCase):
             self.assertEqual(environment.get("GIT_OPTIONAL_LOCKS"), "0")
             self.assertIn("core.fsmonitor=false", arguments)
             self.assertIn(f"core.hooksPath={os.devnull}", arguments)
+            self.assertEqual(Path(kwargs.get("cwd")), ROOT)
+            self.assertIs(kwargs.get("stdout"), subprocess.PIPE)
+            self.assertIs(kwargs.get("stderr"), subprocess.PIPE)
             observed_git.append((command, tuple(arguments)))
-            return real_subprocess_run(arguments, *args, **kwargs)
+            return real_subprocess_popen(arguments, *args, **kwargs)
 
         def guarded_exists(path):
             reject_dependency_path(path)
@@ -2606,7 +2662,7 @@ class AssetSideEffectTests(unittest.TestCase):
             "MACWIN_VISUAL_OUTPUT_DIR": str(external / "Desktop"),
         }
         with mock.patch.dict(os.environ, hostile_environment, clear=False), mock.patch.object(
-            subprocess, "run", side_effect=guarded_run
+            subprocess, "Popen", side_effect=guarded_popen
         ), mock.patch.object(Path, "exists", guarded_exists), mock.patch.object(
             Path, "stat", guarded_stat
         ), mock.patch.object(Path, "lstat", guarded_lstat), mock.patch.object(
@@ -2625,6 +2681,12 @@ class AssetSideEffectTests(unittest.TestCase):
             socket, "create_connection", side_effect=AssertionError("network access")
         ), mock.patch.object(
             socket, "getaddrinfo", side_effect=AssertionError("DNS access")
+        ), mock.patch.object(
+            socket, "gethostbyname", side_effect=AssertionError("DNS access")
+        ), mock.patch.object(
+            socket, "gethostbyname_ex", side_effect=AssertionError("DNS access")
+        ), mock.patch.object(
+            socket, "gethostbyaddr", side_effect=AssertionError("DNS access")
         ), mock.patch.object(
             urllib.request, "urlopen", side_effect=AssertionError("network access")
         ):
@@ -2678,6 +2740,31 @@ class AssetSideEffectTests(unittest.TestCase):
             "MACWIN_ROOT",
             [entry["locator"] for entry in evidence["developmentDependencies"]],
         )
+
+    def test_inert_runtime_rejects_direct_process_and_all_dns_entrypoints(self):
+        probes = (
+            (
+                "popen",
+                lambda: subprocess.Popen(
+                    ["asset-probe"], shell=False, stdout=subprocess.PIPE
+                ),
+                "approved Git",
+            ),
+            ("getaddrinfo", lambda: socket.getaddrinfo("example.invalid", 443), "DNS"),
+            ("gethostbyname", lambda: socket.gethostbyname("example.invalid"), "DNS"),
+            (
+                "gethostbyname_ex",
+                lambda: socket.gethostbyname_ex("example.invalid"),
+                "DNS",
+            ),
+            ("gethostbyaddr", lambda: socket.gethostbyaddr("127.0.0.1"), "DNS"),
+        )
+        with tempfile.TemporaryDirectory(prefix="inventory runtime guard ") as directory:
+            external = Path(directory).resolve()
+            for name, probe, diagnostic in probes:
+                with self.subTest(name=name), self.inert_runtime(external):
+                    with self.assertRaisesRegex(AssertionError, diagnostic):
+                        probe()
 
     def test_write_mode_changes_only_seven_approved_documents_and_is_idempotent(self):
         outputs = tuple(ROOT / PurePosixPath(path) for path in OUTPUT_RELATIVE_PATHS)

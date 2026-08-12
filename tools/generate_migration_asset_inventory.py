@@ -945,15 +945,20 @@ def _validate_primary_object_database(repository_root):
             info_directory / "alternates",
             info_directory / "http-alternates",
         ):
-            if sentinel.exists():
+            try:
+                sentinel.lstat()
+            except FileNotFoundError:
+                pass
+            else:
                 raise InventoryError(
                     "inventory Git object database is not self-contained"
                 )
-        if any(
-            path.is_file() and path.suffix.casefold() == ".promisor"
-            for path in pack_directory.iterdir()
-        ):
-            raise InventoryError("inventory Git object database is not self-contained")
+        for path in pack_directory.iterdir():
+            if path.suffix.casefold() == ".promisor":
+                path.lstat()
+                raise InventoryError(
+                    "inventory Git object database is not self-contained"
+                )
     except InventoryError as error:
         raise InventoryError(
             "inventory Git object database is not self-contained"
