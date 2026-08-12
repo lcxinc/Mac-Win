@@ -941,6 +941,7 @@ def _validate_primary_object_database(repository_root):
         pack_directory = object_directory / "pack"
         _validate_git_directory_path(info_directory)
         _validate_git_directory_path(pack_directory)
+        _validate_object_database_leaves(object_directory, pack_directory)
         for sentinel in (
             info_directory / "alternates",
             info_directory / "http-alternates",
@@ -965,6 +966,40 @@ def _validate_primary_object_database(repository_root):
         ) from error
     except OSError as error:
         raise InventoryError("inventory Git object database is invalid") from error
+
+
+def _validate_object_database_leaves(object_directory, pack_directory):
+    """Reject linked or nonregular loose-object and pack-directory leaves."""
+    for fanout in object_directory.iterdir():
+        if re.fullmatch(r"[0-9a-f]{2}", fanout.name, re.IGNORECASE) is None:
+            continue
+        fanout_status = fanout.lstat()
+        if (
+            not stat.S_ISDIR(fanout_status.st_mode)
+            or stat.S_ISLNK(fanout_status.st_mode)
+            or _is_reparse(fanout_status)
+        ):
+            raise InventoryError("inventory Git object database is not self-contained")
+        for leaf in fanout.iterdir():
+            if (
+                re.fullmatch(r"(?:[0-9a-f]{38}|[0-9a-f]{62})", leaf.name, re.IGNORECASE)
+                is not None
+            ):
+                _validate_object_database_leaf(leaf)
+
+    for leaf in pack_directory.iterdir():
+        _validate_object_database_leaf(leaf)
+
+
+def _validate_object_database_leaf(path):
+    status = path.lstat()
+    if (
+        not stat.S_ISREG(status.st_mode)
+        or stat.S_ISLNK(status.st_mode)
+        or _is_reparse(status)
+    ):
+        raise InventoryError("inventory Git object database is not self-contained")
+
 
 def _validate_promisor_configuration(repository_root):
     scopes = ["local"]

@@ -1657,6 +1657,204 @@ class AssetGitBindingTests(unittest.TestCase):
                     external.rmdir()
                     displaced.rename(child)
 
+    def test_rejects_linked_and_nonregular_loose_object_leaves(self):
+        object_id = self._fixture_git(
+            "rev-parse", f"{self.source_commit}:{self.asset_path}"
+        ).stdout.strip()
+        loose_object = (
+            self.repository / ".git" / "objects" / object_id[:2] / object_id[2:]
+        )
+        external = (
+            self.repository.parent
+            / f"external-loose-object-{self.repository.name}"
+        )
+        loose_object.rename(external)
+        try:
+            try:
+                loose_object.symlink_to(external)
+            except OSError as error:
+                external.rename(loose_object)
+                self.skipTest(f"file symlink creation is unavailable: {error}")
+            with self.assertRaisesRegex(
+                InventoryError,
+                "^inventory Git object database is not self-contained$",
+            ):
+                generator._validate_primary_object_database(self.repository)
+        finally:
+            if loose_object.is_symlink():
+                loose_object.unlink()
+            if external.exists():
+                external.rename(loose_object)
+
+        loose_object.rename(external)
+        loose_object.mkdir()
+        try:
+            with self.assertRaisesRegex(
+                InventoryError,
+                "^inventory Git object database is not self-contained$",
+            ):
+                generator._validate_primary_object_database(self.repository)
+        finally:
+            loose_object.rmdir()
+            external.rename(loose_object)
+
+    def test_rejects_linked_pack_leaves_and_casefolded_pack_suffixes(self):
+        self._fixture_git("gc", "--prune=now")
+        pack_directory = self.repository / ".git" / "objects" / "pack"
+        pack_leaves = tuple(
+            path
+            for path in pack_directory.iterdir()
+            if path.suffix.casefold() in {".pack", ".idx", ".rev"}
+        )
+        self.assertTrue(any(path.suffix.casefold() == ".pack" for path in pack_leaves))
+        self.assertTrue(any(path.suffix.casefold() == ".idx" for path in pack_leaves))
+        for leaf in pack_leaves:
+            with self.subTest(suffix=leaf.suffix):
+                external = (
+                    self.repository.parent
+                    / f"external-{self.repository.name}-{leaf.name}"
+                )
+                leaf.rename(external)
+                try:
+                    try:
+                        leaf.symlink_to(external)
+                    except OSError as error:
+                        external.rename(leaf)
+                        self.skipTest(
+                            f"file symlink creation is unavailable: {error}"
+                        )
+                    with self.assertRaisesRegex(
+                        InventoryError,
+                        "^inventory Git object database is not self-contained$",
+                    ):
+                        generator._validate_primary_object_database(self.repository)
+                finally:
+                    if leaf.is_symlink():
+                        leaf.unlink()
+                    if external.exists():
+                        external.rename(leaf)
+
+        casefolded = pack_directory / "synthetic.PACK"
+        external = (
+            self.repository.parent
+            / f"external-casefolded-pack-{self.repository.name}"
+        )
+        external.write_bytes(b"not a pack")
+        try:
+            try:
+                casefolded.symlink_to(external)
+            except OSError as error:
+                self.skipTest(f"file symlink creation is unavailable: {error}")
+            with self.assertRaisesRegex(
+                InventoryError,
+                "^inventory Git object database is not self-contained$",
+            ):
+                generator._validate_primary_object_database(self.repository)
+        finally:
+            if casefolded.is_symlink():
+                casefolded.unlink()
+            external.unlink(missing_ok=True)
+
+    def test_rejects_sha256_loose_object_symlink(self):
+        sha256_repository = Path(self.temporary_directory.name) / "sha256-repository"
+        sha256_repository.mkdir()
+        result = subprocess.run(
+            ["git", "init", "-q", "--object-format=sha256"],
+            cwd=sha256_repository,
+            capture_output=True,
+            check=False,
+            env=_fixture_git_environment(),
+        )
+        if result.returncode:
+            self.skipTest("fixture Git does not support SHA-256 repositories")
+        object_id = subprocess.run(
+            ["git", "hash-object", "-w", "--stdin"],
+            cwd=sha256_repository,
+            input=b"sha256 loose object\n",
+            capture_output=True,
+            check=True,
+            env=_fixture_git_environment(),
+        ).stdout.strip().decode("ascii")
+        self.assertEqual(len(object_id), 64)
+        loose_object = (
+            sha256_repository
+            / ".git"
+            / "objects"
+            / object_id[:2].upper()
+            / object_id[2:].upper()
+        )
+        original = (
+            sha256_repository / ".git" / "objects" / object_id[:2] / object_id[2:]
+        )
+        if loose_object != original:
+            loose_object.parent.mkdir(exist_ok=True)
+            original.rename(loose_object)
+        external = sha256_repository.parent / "external-sha256-object"
+        loose_object.rename(external)
+        try:
+            try:
+                loose_object.symlink_to(external)
+            except OSError as error:
+                external.rename(loose_object)
+                self.skipTest(f"file symlink creation is unavailable: {error}")
+            with self.assertRaisesRegex(
+                InventoryError,
+                "^inventory Git object database is not self-contained$",
+            ):
+                generator._validate_primary_object_database(sha256_repository)
+        finally:
+            if loose_object.is_symlink():
+                loose_object.unlink()
+            if external.exists():
+                external.rename(loose_object)
+
+    def test_accepts_regular_loose_packed_and_hardlinked_object_leaves(self):
+        object_id = self._fixture_git(
+            "rev-parse", f"{self.source_commit}:{self.asset_path}"
+        ).stdout.strip()
+        loose_object = (
+            self.repository / ".git" / "objects" / object_id[:2] / object_id[2:]
+        )
+        external_loose = (
+            self.repository.parent
+            / f"hardlinked-loose-object-{self.repository.name}"
+        )
+        loose_object.rename(external_loose)
+        os.link(external_loose, loose_object)
+        try:
+            generator._validate_primary_object_database(self.repository)
+            self.assertEqual(len(self.bind()), 1)
+        finally:
+            loose_object.chmod(0o600)
+            loose_object.unlink()
+            external_loose.rename(loose_object)
+
+        self._fixture_git("gc", "--prune=now")
+        pack_directory = self.repository / ".git" / "objects" / "pack"
+        pack_leaves = tuple(
+            path
+            for path in pack_directory.iterdir()
+            if path.suffix.casefold() in {".pack", ".idx", ".rev"}
+        )
+        self.assertTrue(pack_leaves)
+        displaced = []
+        try:
+            for leaf in pack_leaves:
+                external = (
+                    self.repository.parent
+                    / f"hardlinked-{self.repository.name}-{leaf.name}"
+                )
+                leaf.rename(external)
+                os.link(external, leaf)
+                displaced.append((leaf, external))
+            generator._validate_primary_object_database(self.repository)
+            self.assertEqual(len(self.bind()), 1)
+        finally:
+            for leaf, external in displaced:
+                leaf.chmod(0o600)
+                leaf.unlink()
+                external.rename(leaf)
+
     def test_rejects_promisor_pack_and_partial_clone_configuration(self):
         pack_directory = self.repository / ".git" / "objects" / "pack"
         for filename in ("hostile.promisor", "hostile.PROMISOR"):
