@@ -1590,7 +1590,35 @@ def _unlink_output_file(token, directory_fd):
             pass
 
 
-def _replace_output_file(source, destination, directory_fd):
+def _replace_output_file(
+    source, destination, directory_fd, destination_exists=False
+):
+    if os.name == "nt" and destination_exists:
+        import ctypes
+        from ctypes import wintypes
+
+        replace_file = ctypes.WinDLL(
+            "kernel32", use_last_error=True
+        ).ReplaceFileW
+        replace_file.argtypes = (
+            wintypes.LPCWSTR,
+            wintypes.LPCWSTR,
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            wintypes.LPVOID,
+        )
+        replace_file.restype = wintypes.BOOL
+        if not replace_file(
+            os.fspath(destination),
+            os.fspath(source),
+            None,
+            0x00000001,
+            None,
+            None,
+        ):
+            raise OSError(ctypes.get_last_error(), "inventory replace failed")
+        return
     if directory_fd is None:
         os.replace(source, destination)
     else:
@@ -1624,6 +1652,91 @@ def _validate_destination_leaf(destination, directory_fd, expected_exists=None):
     ):
         raise InventoryError("inventory output transaction failed")
     return status
+
+
+@contextmanager
+def _hold_destination_leaf(destination, expected_exists):
+    """Bind a Windows destination identity and deny swaps until replacement."""
+    if os.name != "nt" or not expected_exists:
+        yield
+        return
+
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    )
+    create_file.restype = wintypes.HANDLE
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = (wintypes.HANDLE,)
+    close_handle.restype = wintypes.BOOL
+
+    class ByHandleFileInformation(ctypes.Structure):
+        _fields_ = (
+            ("file_attributes", wintypes.DWORD),
+            ("creation_time", wintypes.FILETIME),
+            ("last_access_time", wintypes.FILETIME),
+            ("last_write_time", wintypes.FILETIME),
+            ("volume_serial_number", wintypes.DWORD),
+            ("file_size_high", wintypes.DWORD),
+            ("file_size_low", wintypes.DWORD),
+            ("number_of_links", wintypes.DWORD),
+            ("file_index_high", wintypes.DWORD),
+            ("file_index_low", wintypes.DWORD),
+        )
+
+    get_file_information = kernel32.GetFileInformationByHandle
+    get_file_information.argtypes = (
+        wintypes.HANDLE,
+        ctypes.POINTER(ByHandleFileInformation),
+    )
+    get_file_information.restype = wintypes.BOOL
+    get_file_type = kernel32.GetFileType
+    get_file_type.argtypes = (wintypes.HANDLE,)
+    get_file_type.restype = wintypes.DWORD
+
+    file_read_attributes = 0x00000080
+    file_share_read = 0x00000001
+    file_share_write = 0x00000002
+    open_existing = 3
+    file_flag_open_reparse_point = 0x00200000
+    invalid_handle = ctypes.c_void_p(-1).value
+    handle = create_file(
+        os.fspath(destination),
+        file_read_attributes,
+        file_share_read | file_share_write,
+        None,
+        open_existing,
+        file_flag_open_reparse_point,
+        None,
+    )
+    if handle == invalid_handle:
+        raise InventoryError("inventory output transaction failed")
+    try:
+        information = ByHandleFileInformation()
+        if not get_file_information(handle, ctypes.byref(information)):
+            raise InventoryError("inventory output transaction failed")
+        file_attribute_directory = 0x00000010
+        file_attribute_reparse_point = 0x00000400
+        file_type_disk = 0x00000001
+        if (
+            information.file_attributes
+            & (file_attribute_directory | file_attribute_reparse_point)
+            or get_file_type(handle) != file_type_disk
+        ):
+            raise InventoryError("inventory output transaction failed")
+        yield
+    finally:
+        close_handle(handle)
 
 
 def _stage_output_file(
@@ -1742,9 +1855,15 @@ def _write_inventory_documents(repository_root, documents):
                     directory_fd,
                     expected_exists=backups[relative_path] is not None,
                 )
-                _replace_output_file(
-                    staged[relative_path], destination, directory_fd
-                )
+                with _hold_destination_leaf(
+                    destination, backups[relative_path] is not None
+                ):
+                    _replace_output_file(
+                        staged[relative_path],
+                        destination,
+                        directory_fd,
+                        destination_exists=backups[relative_path] is not None,
+                    )
                 temporary_paths.remove(staged[relative_path])
                 replaced.append(relative_path)
                 _verify_output_directory_identity(root, snapshot)
@@ -1762,7 +1881,12 @@ def _write_inventory_documents(repository_root, documents):
                             directory_fd,
                         )
                     else:
-                        _replace_output_file(backup, destination, directory_fd)
+                        _replace_output_file(
+                            backup,
+                            destination,
+                            directory_fd,
+                            destination_exists=True,
+                        )
                         temporary_paths.discard(backup)
                     _verify_output_directory_identity(root, snapshot)
                 _cleanup_transaction_files(

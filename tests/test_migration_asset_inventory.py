@@ -2067,7 +2067,7 @@ class AssetCanonicalOutputTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="inventory write ") as directory:
             destination = Path(directory).resolve()
             calls = []
-            real_replace = os.replace
+            real_replace = generator._replace_output_file
 
             def recording_replace(source, target, *args, **kwargs):
                 calls.append((Path(source), Path(target), dict(kwargs)))
@@ -2377,7 +2377,7 @@ class InventoryTransactionalWriteTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="inventory staged write ") as directory:
             root = Path(directory).resolve()
             assets = self.prepare(root, old)
-            real_replace = os.replace
+            real_replace = generator._replace_output_file
             observed = []
 
             def inspect_first_replace(source, target, *args, **kwargs):
@@ -2386,7 +2386,7 @@ class InventoryTransactionalWriteTests(unittest.TestCase):
                 return real_replace(source, target, *args, **kwargs)
 
             with mock.patch.object(
-                generator.os, "replace", side_effect=inspect_first_replace
+                generator, "_replace_output_file", side_effect=inspect_first_replace
             ):
                 generator._write_inventory_documents(root, new)
             self.assertEqual(observed, [14])
@@ -2402,7 +2402,7 @@ class InventoryTransactionalWriteTests(unittest.TestCase):
             ) as directory:
                 root = Path(directory).resolve()
                 assets = self.prepare(root, old)
-                real_replace = os.replace
+                real_replace = generator._replace_output_file
                 replacements = 0
 
                 def fail_selected_replace(source, target, *args, **kwargs):
@@ -2416,7 +2416,7 @@ class InventoryTransactionalWriteTests(unittest.TestCase):
                     return real_replace(source, target, *args, **kwargs)
 
                 with mock.patch.object(
-                    generator.os, "replace", side_effect=fail_selected_replace
+                    generator, "_replace_output_file", side_effect=fail_selected_replace
                 ):
                     with self.assertRaisesRegex(
                         InventoryError, "^inventory output transaction failed$"
@@ -2774,6 +2774,60 @@ class InventoryTransactionalWriteTests(unittest.TestCase):
                     destination.unlink(missing_ok=True)
                     displaced.rename(destination)
 
+            self.assertEqual(external.read_bytes(), external_raw)
+            self.assert_documents(root, old)
+            self.assert_no_transaction_temps(assets)
+
+    @unittest.skipUnless(os.name == "nt", "Windows leaf sharing only")
+    def test_leaf_swap_immediately_before_replace_is_rejected(self):
+        old = self.documents("old")
+        new = self.documents("new")
+        with tempfile.TemporaryDirectory(prefix="inventory leaf replace attack ") as directory:
+            root = Path(directory).resolve()
+            assets = self.prepare(root, old)
+            relative_path = OUTPUT_RELATIVE_PATHS[0]
+            destination = root / PurePosixPath(relative_path)
+            displaced = root / "index-displaced.json"
+            external = root / "external-index.json"
+            external_raw = b"external replace attack sentinel\n"
+            external.write_bytes(external_raw)
+            real_replace = generator._replace_output_file
+            attacked = False
+            external_observations = []
+
+            def attack_before_replace(source, target, directory_fd, *args, **kwargs):
+                nonlocal attacked
+                external_observations.append(external.read_bytes())
+                if not attacked and Path(target) == destination:
+                    attacked = True
+                    destination.rename(displaced)
+                    destination.symlink_to(external)
+                result = real_replace(
+                    source, target, directory_fd, *args, **kwargs
+                )
+                external_observations.append(external.read_bytes())
+                return result
+
+            try:
+                with mock.patch.object(
+                    generator,
+                    "_replace_output_file",
+                    side_effect=attack_before_replace,
+                ):
+                    with self.assertRaisesRegex(
+                        InventoryError, "^inventory output transaction failed$"
+                    ):
+                        generator._write_inventory_documents(root, new)
+            finally:
+                if displaced.exists():
+                    destination.unlink(missing_ok=True)
+                    displaced.rename(destination)
+
+            self.assertTrue(attacked)
+            self.assertTrue(external_observations)
+            self.assertTrue(
+                all(raw == external_raw for raw in external_observations)
+            )
             self.assertEqual(external.read_bytes(), external_raw)
             self.assert_documents(root, old)
             self.assert_no_transaction_temps(assets)
