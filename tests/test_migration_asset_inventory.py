@@ -2394,6 +2394,91 @@ class InventoryTransactionalWriteTests(unittest.TestCase):
             self.assert_documents(root, new)
             self.assertEqual(list(assets.glob("*.tmp")), [])
 
+    def test_first_staged_input_substitution_is_rejected_and_all_documents_roll_back(
+        self,
+    ):
+        old = self.documents("old")
+        new = self.documents("new")
+        with tempfile.TemporaryDirectory(prefix="inventory staged substitution ") as directory:
+            root = Path(directory).resolve()
+            assets = self.prepare(root, old)
+            substitute = root / "staged-substitute.json"
+            substitute_raw = b"unrelated staged substitute\n"
+            substitute.write_bytes(substitute_raw)
+            displaced = root / "staged-original.json"
+            real_replace = generator._replace_output_file
+            attacked = False
+
+            def substitute_before_first_replace(source, target, *args, **kwargs):
+                nonlocal attacked
+                if not attacked:
+                    source_path = Path(source)
+                    if not source_path.is_absolute():
+                        source_path = assets / source_path
+                    source_path.rename(displaced)
+                    os.link(substitute, source_path)
+                    attacked = True
+                return real_replace(source, target, *args, **kwargs)
+
+            try:
+                with mock.patch.object(
+                    generator,
+                    "_replace_output_file",
+                    side_effect=substitute_before_first_replace,
+                ):
+                    with self.assertRaisesRegex(
+                        InventoryError, "^inventory output transaction failed$"
+                    ):
+                        generator._write_inventory_documents(root, new)
+            finally:
+                displaced.unlink(missing_ok=True)
+
+            self.assertTrue(attacked)
+            self.assertEqual(substitute.read_bytes(), substitute_raw)
+            self.assert_documents(root, old)
+            self.assert_no_transaction_temps(assets)
+
+    @unittest.skipUnless(os.name == "nt", "Windows staged identity only")
+    def test_windows_staged_swap_after_name_check_rolls_back_all_documents(self):
+        old = self.documents("old")
+        new = self.documents("new")
+        with tempfile.TemporaryDirectory(prefix="inventory staged race ") as directory:
+            root = Path(directory).resolve()
+            assets = self.prepare(root, old)
+            substitute = root / "staged-race-substitute.json"
+            substitute_raw = b"staged race substitute\n"
+            substitute.write_bytes(substitute_raw)
+            displaced = root / "staged-race-original.json"
+            real_validate = generator._validate_output_leaf_token
+            attacked = False
+
+            def substitute_after_name_check(token, directory_fd, expected_identity):
+                nonlocal attacked
+                real_validate(token, directory_fd, expected_identity)
+                token_path = Path(token)
+                if not attacked and ".new." in token_path.name:
+                    token_path.rename(displaced)
+                    os.link(substitute, token_path)
+                    attacked = True
+
+            try:
+                with mock.patch.object(
+                    generator,
+                    "_validate_output_leaf_token",
+                    side_effect=substitute_after_name_check,
+                ):
+                    with self.assertRaisesRegex(
+                        InventoryError, "^inventory output transaction failed$"
+                    ):
+                        generator._write_inventory_documents(root, new)
+            finally:
+                displaced.unlink(missing_ok=True)
+
+            self.assertTrue(attacked)
+            self.assertEqual(substitute.read_bytes(), substitute_raw)
+            self.assert_documents(root, old)
+            self.assert_no_transaction_temps(assets)
+
     def test_each_replace_failure_rolls_back_all_seven_documents(self):
         old = self.documents("old")
         new = self.documents("new")

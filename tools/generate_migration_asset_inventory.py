@@ -1608,7 +1608,15 @@ def _replace_output_file(
     directory_fd,
     destination_exists=False,
     expected_identity=None,
+    expected_source_identity=None,
+    verify_source_identity=None,
 ):
+    if expected_source_identity is None or verify_source_identity is None:
+        raise InventoryError("inventory output transaction failed")
+    verify_source_identity()
+    _validate_output_leaf_token(
+        source, directory_fd, expected_source_identity
+    )
     if os.name == "nt" and destination_exists:
         import ctypes
         from ctypes import wintypes
@@ -1639,7 +1647,12 @@ def _replace_output_file(
         if directory_fd is None or expected_identity is None:
             raise InventoryError("inventory output transaction failed")
         _exchange_posix_output_files(
-            source, destination.name, directory_fd, expected_identity
+            source,
+            destination.name,
+            directory_fd,
+            expected_identity,
+            expected_source_identity,
+            verify_source_identity,
         )
         return
     if directory_fd is None:
@@ -1682,35 +1695,105 @@ def _renameat2_exchange(source, destination, directory_fd):
 
 
 def _exchange_posix_output_files(
-    source, destination, directory_fd, expected_identity
+    source,
+    destination,
+    directory_fd,
+    expected_identity,
+    expected_source_identity,
+    verify_source_identity,
 ):
-    """Exchange then validate the exact destination object removed atomically."""
+    """Exchange two reviewed identities, restoring both names on mismatch."""
     exchanged = False
     try:
+        verify_source_identity()
+        _validate_output_leaf_token(
+            source, directory_fd, expected_source_identity
+        )
         _renameat2_exchange(source, destination, directory_fd)
         exchanged = True
-        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | os.O_NOFOLLOW
-        descriptor = os.open(source, flags, dir_fd=directory_fd)
-        try:
-            status = os.fstat(descriptor)
-            if (
-                not stat.S_ISREG(status.st_mode)
-                or _destination_identity(status) != expected_identity
-            ):
-                raise InventoryError("inventory output transaction failed")
-        finally:
-            os.close(descriptor)
+        _verify_replaced_output(
+            source,
+            destination,
+            directory_fd,
+            True,
+            expected_identity,
+            expected_source_identity,
+            verify_source_identity,
+        )
     except (OSError, InventoryError) as error:
         if exchanged:
             try:
                 _renameat2_exchange(source, destination, directory_fd)
+                verify_source_identity()
+                _validate_output_leaf_token(
+                    source, directory_fd, expected_source_identity
+                )
+                _validate_output_leaf_token(
+                    destination, directory_fd, expected_identity
+                )
             except OSError as rollback_error:
+                raise InventoryError(
+                    "inventory output transaction failed"
+                ) from rollback_error
+            except InventoryError as rollback_error:
                 raise InventoryError(
                     "inventory output transaction failed"
                 ) from rollback_error
         if isinstance(error, InventoryError):
             raise
         raise InventoryError("inventory output transaction failed") from error
+
+
+def _output_leaf_status(token, directory_fd):
+    if directory_fd is None:
+        return Path(token).lstat()
+    return os.stat(os.fspath(token), dir_fd=directory_fd, follow_symlinks=False)
+
+
+def _validate_output_leaf_token(token, directory_fd, expected_identity):
+    try:
+        status = _output_leaf_status(token, directory_fd)
+    except OSError as error:
+        raise InventoryError("inventory output transaction failed") from error
+    if (
+        not stat.S_ISREG(status.st_mode)
+        or stat.S_ISLNK(status.st_mode)
+        or _is_reparse(status)
+        or _destination_identity(status) != expected_identity
+    ):
+        raise InventoryError("inventory output transaction failed")
+
+
+def _verify_replaced_output(
+    source,
+    destination,
+    directory_fd,
+    destination_existed,
+    expected_destination_identity,
+    expected_source_identity,
+    verify_source_identity,
+):
+    """Confirm the committed name still denotes the held staged object."""
+    verify_source_identity()
+    destination_token = (
+        destination.name if isinstance(destination, Path) and directory_fd is not None
+        else destination
+    )
+    _validate_output_leaf_token(
+        destination_token, directory_fd, expected_source_identity
+    )
+    if os.name == "posix" and destination_existed:
+        _validate_output_leaf_token(
+            source, directory_fd, expected_destination_identity
+        )
+        return
+    try:
+        _output_leaf_status(source, directory_fd)
+    except FileNotFoundError:
+        return
+    except OSError as error:
+        raise InventoryError("inventory output transaction failed") from error
+    raise InventoryError("inventory output transaction failed")
 
 
 def _destination_status(destination, directory_fd):
@@ -1745,39 +1828,8 @@ def _validate_destination_leaf(
 
 
 @contextmanager
-def _hold_destination_leaf(
-    destination, expected_exists, expected_identity=None, directory_fd=None
-):
-    """Hold the reviewed destination identity through the replace boundary."""
-    if not expected_exists:
-        yield
-        return
-
-    if os.name == "posix":
-        if expected_identity is None or directory_fd is None:
-            raise InventoryError("inventory output transaction failed")
-        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | os.O_NOFOLLOW
-        try:
-            descriptor = os.open(
-                destination.name, flags, dir_fd=directory_fd
-            )
-        except OSError as error:
-            raise InventoryError("inventory output transaction failed") from error
-        try:
-            status = os.fstat(descriptor)
-            if (
-                not stat.S_ISREG(status.st_mode)
-                or _destination_identity(status) != expected_identity
-            ):
-                raise InventoryError("inventory output transaction failed")
-            yield
-        finally:
-            os.close(descriptor)
-        return
-
-    if os.name != "nt":
-        raise InventoryError("inventory output transaction failed")
-
+def _hold_windows_leaf(path, expected_identity, share_delete):
+    """Open one non-reparse disk leaf and expose repeatable handle checks."""
     import ctypes
     from ctypes import wintypes
 
@@ -1821,45 +1873,122 @@ def _hold_destination_leaf(
     get_file_type.argtypes = (wintypes.HANDLE,)
     get_file_type.restype = wintypes.DWORD
 
-    file_read_attributes = 0x00000080
     file_share_read = 0x00000001
     file_share_write = 0x00000002
-    open_existing = 3
-    file_flag_open_reparse_point = 0x00200000
-    invalid_handle = ctypes.c_void_p(-1).value
+    file_share_delete = 0x00000004
+    share = file_share_read | file_share_write
+    if share_delete:
+        share |= file_share_delete
     handle = create_file(
-        os.fspath(destination),
-        file_read_attributes,
-        file_share_read | file_share_write,
+        os.fspath(path),
+        0x00000080,
+        share,
         None,
-        open_existing,
-        file_flag_open_reparse_point,
+        3,
+        0x00200000,
         None,
     )
-    if handle == invalid_handle:
+    if handle == ctypes.c_void_p(-1).value:
         raise InventoryError("inventory output transaction failed")
-    try:
+
+    def verify_identity():
         information = ByHandleFileInformation()
         if not get_file_information(handle, ctypes.byref(information)):
             raise InventoryError("inventory output transaction failed")
-        file_attribute_directory = 0x00000010
-        file_attribute_reparse_point = 0x00000400
-        file_type_disk = 0x00000001
         if (
-            information.file_attributes
-            & (file_attribute_directory | file_attribute_reparse_point)
-            or get_file_type(handle) != file_type_disk
+            information.file_attributes & (0x00000010 | 0x00000400)
+            or get_file_type(handle) != 0x00000001
         ):
             raise InventoryError("inventory output transaction failed")
-        handle_identity = (
+        identity = (
             information.volume_serial_number,
             (information.file_index_high << 32) | information.file_index_low,
         )
-        if expected_identity is not None and handle_identity != expected_identity:
+        if expected_identity is not None and identity != expected_identity:
             raise InventoryError("inventory output transaction failed")
-        yield
+        return identity
+
+    try:
+        verify_identity()
+        yield verify_identity
     finally:
         close_handle(handle)
+
+
+@contextmanager
+def _hold_staged_leaf(source, expected_identity, directory_fd):
+    """Bind the staged input identity across the atomic replacement primitive."""
+    if expected_identity is None:
+        raise InventoryError("inventory output transaction failed")
+    if os.name == "posix":
+        if directory_fd is None:
+            raise InventoryError("inventory output transaction failed")
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | os.O_NOFOLLOW
+        try:
+            descriptor = os.open(source, flags, dir_fd=directory_fd)
+        except OSError as error:
+            raise InventoryError("inventory output transaction failed") from error
+
+        def verify_identity():
+            try:
+                status = os.fstat(descriptor)
+            except OSError as error:
+                raise InventoryError("inventory output transaction failed") from error
+            if (
+                not stat.S_ISREG(status.st_mode)
+                or _destination_identity(status) != expected_identity
+            ):
+                raise InventoryError("inventory output transaction failed")
+            return expected_identity
+
+        try:
+            verify_identity()
+            yield verify_identity
+        finally:
+            os.close(descriptor)
+        return
+    if os.name == "nt":
+        with _hold_windows_leaf(source, expected_identity, True) as verify_identity:
+            yield verify_identity
+        return
+    raise InventoryError("inventory output transaction failed")
+
+
+@contextmanager
+def _hold_destination_leaf(
+    destination, expected_exists, expected_identity=None, directory_fd=None
+):
+    """Hold the reviewed destination identity through the replace boundary."""
+    if not expected_exists:
+        yield
+        return
+
+    if os.name == "posix":
+        if expected_identity is None or directory_fd is None:
+            raise InventoryError("inventory output transaction failed")
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | os.O_NOFOLLOW
+        try:
+            descriptor = os.open(
+                destination.name, flags, dir_fd=directory_fd
+            )
+        except OSError as error:
+            raise InventoryError("inventory output transaction failed") from error
+        try:
+            status = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(status.st_mode)
+                or _destination_identity(status) != expected_identity
+            ):
+                raise InventoryError("inventory output transaction failed")
+            yield
+        finally:
+            os.close(descriptor)
+        return
+
+    if os.name != "nt":
+        raise InventoryError("inventory output transaction failed")
+    with _hold_windows_leaf(destination, expected_identity, False):
+        yield
 
 
 def _stage_output_file(
@@ -1919,6 +2048,7 @@ def _write_inventory_documents(repository_root, documents):
     staged_identities = {}
     backups = {}
     backup_identities = {}
+    backup_staged_identities = {}
     temporary_paths = set()
     replaced = []
     with _hold_output_directory_chain(root, snapshot) as directory_fd:
@@ -1981,6 +2111,15 @@ def _write_inventory_documents(repository_root, documents):
                         directory_fd,
                     )
                     backups[relative_path] = backup
+                    if directory_fd is not None:
+                        backup_status = os.stat(
+                            backup, dir_fd=directory_fd, follow_symlinks=False
+                        )
+                    else:
+                        backup_status = Path(backup).lstat()
+                    backup_staged_identities[relative_path] = (
+                        _destination_identity(backup_status)
+                    )
                     temporary_paths.add(backup)
 
             for relative_path in documents:
@@ -1998,14 +2137,30 @@ def _write_inventory_documents(repository_root, documents):
                     backup_identities[relative_path],
                     directory_fd,
                 ):
-                    _replace_output_file(
+                    with _hold_staged_leaf(
                         staged[relative_path],
-                        destination,
+                        staged_identities[relative_path],
                         directory_fd,
-                        destination_exists=backups[relative_path] is not None,
-                        expected_identity=backup_identities[relative_path],
-                    )
-                replaced.append(relative_path)
+                    ) as verify_staged_identity:
+                        _replace_output_file(
+                            staged[relative_path],
+                            destination,
+                            directory_fd,
+                            destination_exists=backups[relative_path] is not None,
+                            expected_identity=backup_identities[relative_path],
+                            expected_source_identity=staged_identities[relative_path],
+                            verify_source_identity=verify_staged_identity,
+                        )
+                        replaced.append(relative_path)
+                        _verify_replaced_output(
+                            staged[relative_path],
+                            destination,
+                            directory_fd,
+                            backups[relative_path] is not None,
+                            backup_identities[relative_path],
+                            staged_identities[relative_path],
+                            verify_staged_identity,
+                        )
                 _verify_output_directory_identity(root, snapshot)
         except (OSError, InventoryError) as error:
             try:
@@ -2021,13 +2176,43 @@ def _write_inventory_documents(repository_root, documents):
                             directory_fd,
                         )
                     else:
-                        _replace_output_file(
-                            backup,
-                            destination,
-                            directory_fd,
-                            destination_exists=True,
-                            expected_identity=staged_identities[relative_path],
+                        rollback_status = _validate_destination_leaf(
+                            destination, directory_fd, expected_exists=True
                         )
+                        rollback_destination_identity = _destination_identity(
+                            rollback_status
+                        )
+                        with _hold_destination_leaf(
+                            destination,
+                            True,
+                            rollback_destination_identity,
+                            directory_fd,
+                        ):
+                            with _hold_staged_leaf(
+                                backup,
+                                backup_staged_identities[relative_path],
+                                directory_fd,
+                            ) as verify_backup_identity:
+                                _replace_output_file(
+                                    backup,
+                                    destination,
+                                    directory_fd,
+                                    destination_exists=True,
+                                    expected_identity=rollback_destination_identity,
+                                    expected_source_identity=(
+                                        backup_staged_identities[relative_path]
+                                    ),
+                                    verify_source_identity=verify_backup_identity,
+                                )
+                                _verify_replaced_output(
+                                    backup,
+                                    destination,
+                                    directory_fd,
+                                    True,
+                                    rollback_destination_identity,
+                                    backup_staged_identities[relative_path],
+                                    verify_backup_identity,
+                                )
                     _verify_output_directory_identity(root, snapshot)
                 _cleanup_transaction_files(
                     root, temporary_paths, snapshot, directory_fd
