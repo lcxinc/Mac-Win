@@ -2462,9 +2462,16 @@ class InventoryTransactionalWriteTests(unittest.TestCase):
             displaced = root / "assets-displaced"
             real_create = generator._create_output_temp
             swapped = False
+            external_observations = []
+
+            def observe_external():
+                contents = tuple(external.iterdir())
+                external_observations.append(contents)
+                self.assertEqual(contents, ())
 
             def swap_before_first_create(*args, **kwargs):
                 nonlocal swapped
+                observe_external()
                 if not swapped:
                     assets.rename(displaced)
                     try:
@@ -2475,7 +2482,11 @@ class InventoryTransactionalWriteTests(unittest.TestCase):
                             f"directory symlink creation is unavailable: {error}"
                         )
                     swapped = True
-                return real_create(*args, **kwargs)
+                observe_external()
+                try:
+                    return real_create(*args, **kwargs)
+                finally:
+                    observe_external()
 
             try:
                 with mock.patch.object(
@@ -2493,8 +2504,72 @@ class InventoryTransactionalWriteTests(unittest.TestCase):
                     displaced.rename(assets)
 
             self.assertEqual(list(external.iterdir()), [])
+            self.assertTrue(external_observations)
+            self.assertTrue(all(not contents for contents in external_observations))
             self.assert_documents(root, old)
             self.assertEqual(list(assets.glob("*.tmp")), [])
+
+    @unittest.skipUnless(os.name == "nt", "Windows directory sharing only")
+    def test_windows_directory_chain_requests_delete_access_only_for_assets(self):
+        import ctypes
+
+        old = self.documents("old")
+        with tempfile.TemporaryDirectory(prefix="inventory directory access ") as directory:
+            root = Path(directory).resolve()
+            self.prepare(root, old)
+            snapshot = generator._snapshot_output_directory(root)
+            create_calls = []
+
+            class FakeFunction:
+                def __init__(self, implementation):
+                    self.implementation = implementation
+
+                def __call__(self, *args):
+                    return self.implementation(*args)
+
+            class FakeKernel32:
+                def __init__(self):
+                    self.CreateFileW = FakeFunction(self.create_file)
+                    self.CloseHandle = FakeFunction(lambda _handle: True)
+
+                def create_file(self, path, access, share, *_args):
+                    create_calls.append((Path(path), access, share))
+                    return len(create_calls)
+
+            with mock.patch.object(ctypes, "WinDLL", return_value=FakeKernel32()):
+                with generator._hold_output_directory_chain(root, snapshot):
+                    pass
+
+            read_attributes = 0x00000080
+            delete_access = 0x00010000
+            self.assertEqual(
+                create_calls,
+                [
+                    (root, read_attributes, 0x00000001 | 0x00000002),
+                    (root / "migration", read_attributes, 0x00000001 | 0x00000002),
+                    (
+                        root / "migration" / "assets",
+                        read_attributes | delete_access,
+                        0x00000001 | 0x00000002,
+                    ),
+                ],
+            )
+
+    @unittest.skipUnless(os.name == "nt", "Windows directory sharing only")
+    def test_windows_asset_directory_handle_blocks_rename(self):
+        old = self.documents("old")
+        with tempfile.TemporaryDirectory(prefix="inventory locked assets ") as directory:
+            root = Path(directory).resolve()
+            assets = self.prepare(root, old)
+            displaced = root / "assets-displaced"
+            snapshot = generator._snapshot_output_directory(root)
+
+            with generator._hold_output_directory_chain(root, snapshot):
+                with self.assertRaises(OSError):
+                    assets.rename(displaced)
+
+            self.assertTrue(assets.is_dir())
+            self.assertFalse(displaced.exists())
 
     def test_existing_leaf_symlink_is_rejected_without_external_read_or_mutation(self):
         old = self.documents("old")

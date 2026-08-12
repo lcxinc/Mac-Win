@@ -1504,6 +1504,7 @@ def _hold_output_directory_chain(repository_root, snapshot):
     file_share_read = 0x00000001
     file_share_write = 0x00000002
     file_read_attributes = 0x00000080
+    delete_access = 0x00010000
     open_existing = 3
     file_flag_backup_semantics = 0x02000000
     file_flag_open_reparse_point = 0x00200000
@@ -1512,10 +1513,13 @@ def _hold_output_directory_chain(repository_root, snapshot):
     components = (root, root / "migration", root / "migration" / "assets")
     handles = []
     try:
-        for component in components:
+        for position, component in enumerate(components):
+            access = file_read_attributes
+            if position == len(components) - 1:
+                access |= delete_access
             handle = create_file(
                 os.fspath(component),
-                file_read_attributes,
+                access,
                 file_share_read | file_share_write,
                 None,
                 open_existing,
