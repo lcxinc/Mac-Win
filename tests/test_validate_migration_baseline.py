@@ -18,6 +18,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 VALIDATOR_PATH = ROOT / "tools" / "validate_migration_baseline.py"
+GIT_METADATA_PATH = ROOT / "tools" / "migration_git_metadata.py"
 MANIFEST_PATH = ROOT / "migration" / "baseline.json"
 README_PATH = ROOT / "README.md"
 MIGRATION_DOCUMENT_PATH = ROOT / "docs" / "migration-baseline.md"
@@ -42,11 +43,17 @@ README_FREEZE_STATEMENT = (
     f"Mac-Win is frozen at {SOURCE_COMMIT} for migration evidence. "
     "New SwiftUI, Bridge, and legacy launcher product features are not accepted."
 )
+README_ASSET_INVENTORY_LINK_STATEMENT = (
+    "See [Migration asset inventory and ownership boundary]"
+    "(docs/migration-asset-inventory.md)."
+)
 README_CANONICAL = f"""# Mac-Win
 
 {README_FREEZE_STATEMENT}
 
 See [Migration baseline and evidence boundary](docs/migration-baseline.md).
+
+{README_ASSET_INVENTORY_LINK_STATEMENT}
 """
 MIGRATION_DOCUMENT_CANONICAL = f"""# Mac-Win migration baseline
 
@@ -139,7 +146,9 @@ jobs:
         run: |
           set -euo pipefail
           python -B -m unittest discover -s tests -p "test_*.py" -v
-          python tools/validate_migration_baseline.py
+          python -B tools/validate_migration_baseline.py --require-tag
+          python -B tools/generate_migration_asset_inventory.py --check
+          python -B tools/validate_migration_asset_inventory.py
 
   swift-evidence:
     name: Swift evidence (${{ matrix.runner }} / ${{ matrix.architecture }})
@@ -286,6 +295,24 @@ GIT_SIGNING_POLLUTION = {
     "GIT_CONFIG_VALUE_2": "codex-no-such-gpg-program",
 }
 
+GIT_HOSTILE_REPOSITORY_POLLUTION = {
+    "git_dir": "decoy-git-dir",
+    "Git_Work_Tree": "decoy-worktree",
+    "GIT_COMMON_DIR": "decoy-common-dir",
+    "git_index_file": "decoy-index",
+    "GIT_OBJECT_DIRECTORY": "decoy-objects",
+    "git_alternate_object_directories": "decoy-alternates",
+    "GIT_NAMESPACE": "decoy-namespace",
+    "Git_Config_Count": "2",
+    "GIT_CONFIG_KEY_0": "core.hooksPath",
+    "git_config_value_0": "decoy-hooks",
+    "git_config_key_1": "core.attributesFile",
+    "GIT_CONFIG_VALUE_1": "decoy-attributes",
+    "Git_Config_Global": "decoy-global-config",
+    "GIT_CONFIG_SYSTEM": "decoy-system-config",
+    "git_config_parameters": "'core.fsmonitor'='decoy-monitor'",
+}
+
 CANONICAL = {
     "schemaVersion": 1,
     "repository": "a1112/Mac-Win",
@@ -308,6 +335,185 @@ HOSTILE_KEYS = (
     "lone-surrogate-\ud800",
     "k" * 10_000,
 )
+GIT_CHECK_ATTR_BLOCKED_VARIABLES = frozenset(
+    {
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_NAMESPACE",
+        "GIT_TEMPLATE_DIR",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_SYSTEM",
+        "GIT_CONFIG_NOSYSTEM",
+        "GIT_CONFIG_PARAMETERS",
+    }
+)
+GITATTRIBUTES_CANONICAL = b"""/patches/*.patch whitespace=-blank-at-eol
+migration/*.json text eol=lf
+migration/**/*.json text eol=lf
+/docs/migration-asset-inventory.md text eol=lf
+"""
+
+
+def assert_canonical_json_presentation(test_case, raw, expected):
+    content_without_crlf = raw.replace(b"\r\n", b"")
+    test_case.assertNotIn(
+        b"\r",
+        content_without_crlf,
+        "canonical JSON contains a lone CR or CRCRLF",
+    )
+    if b"\r\n" in raw:
+        test_case.assertNotIn(
+            b"\n",
+            content_without_crlf,
+            "canonical JSON mixes LF and CRLF line endings",
+        )
+    test_case.assertEqual(raw.replace(b"\r\n", b"\n"), expected)
+
+
+def sanitized_git_test_environment():
+    environment = os.environ.copy()
+    for key in tuple(environment):
+        upper_key = key.upper()
+        if upper_key in GIT_CHECK_ATTR_BLOCKED_VARIABLES or re.fullmatch(
+            r"GIT_CONFIG_(?:KEY|VALUE)_\d+", upper_key
+        ):
+            del environment[key]
+    environment.update(
+        {
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_NO_LAZY_FETCH": "1",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_TERMINAL_PROMPT": "0",
+        }
+    )
+    return environment
+
+
+def run_sanitized_git(root, *arguments, text=True):
+    resolved_root = Path(root).resolve(strict=True)
+    return subprocess.run(
+        [
+            "git",
+            "-c",
+            f"safe.directory={resolved_root}",
+            *arguments,
+        ],
+        cwd=resolved_root,
+        env=sanitized_git_test_environment(),
+        capture_output=True,
+        text=text,
+        shell=False,
+        check=False,
+    )
+
+
+def fixture_git_environment(source=None):
+    """Preserve process facilities without inheriting ambient Git policy."""
+    environment = dict(os.environ if source is None else source)
+    for key in tuple(environment):
+        if key.upper().startswith("GIT_"):
+            del environment[key]
+    environment.update(
+        {
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_TERMINAL_PROMPT": "0",
+        }
+    )
+    return environment
+
+
+def clone_git_test_environment(source=None, *, assume_different_owner=False):
+    """Isolate clone fixtures while optionally retaining the ownership probe."""
+    environment = fixture_git_environment(source)
+    environment.update(
+        {
+            "GIT_NO_LAZY_FETCH": "1",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+        }
+    )
+    if assume_different_owner:
+        environment["GIT_TEST_ASSUME_DIFFERENT_OWNER"] = "1"
+    return environment
+
+
+def run_fixture_git(
+    root,
+    *arguments,
+    configuration=(),
+    environment=None,
+    input_bytes=None,
+):
+    """Run one fixture Git command without ambient repositories, hooks, or signing."""
+    repository = Path(root)
+    repository.mkdir(parents=True, exist_ok=True)
+    resolved_root = repository.resolve(strict=True)
+    command = [
+        "git",
+        "-c",
+        f"safe.directory={resolved_root}",
+        "-c",
+        f"core.hooksPath={os.devnull}",
+        *configuration,
+        *arguments,
+    ]
+    return subprocess.run(
+        command,
+        cwd=resolved_root,
+        env=fixture_git_environment(environment),
+        input=input_bytes,
+        capture_output=True,
+        text=input_bytes is None,
+        shell=False,
+        check=False,
+    )
+
+
+def run_git_check_attr(relative_path, root=ROOT):
+    return run_sanitized_git(
+        root,
+        "check-attr",
+        "eol",
+        "--",
+        relative_path,
+    )
+
+
+def assert_migration_attribute_contract(test_case, root):
+    committed = run_sanitized_git(
+        root,
+        "cat-file",
+        "blob",
+        "HEAD:.gitattributes",
+        text=False,
+    )
+    test_case.assertEqual(committed.returncode, 0, committed.stderr)
+    test_case.assertEqual(committed.stdout, GITATTRIBUTES_CANONICAL)
+
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        isolated = Path(temporary_directory).resolve()
+        initialized = run_sanitized_git(isolated, "init", "-q")
+        test_case.assertEqual(initialized.returncode, 0, initialized.stderr)
+        (isolated / ".gitattributes").write_bytes(committed.stdout)
+
+        for relative_path in (
+            "migration/baseline.json",
+            "migration/assets/recipes.json",
+            "docs/migration-asset-inventory.md",
+        ):
+            with test_case.subTest(relative_path=relative_path):
+                result = run_git_check_attr(relative_path, root=isolated)
+                test_case.assertEqual(result.returncode, 0, result.stderr)
+                test_case.assertEqual(
+                    result.stdout.strip(),
+                    f"{relative_path}: eol: lf",
+                )
 
 
 def load_validator():
@@ -323,6 +529,36 @@ def load_validator():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def overwrite_hardlink_preserving_bound_identity(test_case, bound, sibling, raw):
+    """Overwrite one hardlink while preserving every currently bound stat field."""
+    before = bound.lstat()
+    test_case.assertEqual(len(raw), before.st_size)
+    with sibling.open("r+b") as stream:
+        stream.write(raw)
+        stream.truncate()
+    os.utime(
+        sibling,
+        ns=(before.st_atime_ns, before.st_mtime_ns),
+    )
+    after = bound.lstat()
+    test_case.assertEqual(
+        (
+            before.st_dev,
+            before.st_ino,
+            stat.S_IFMT(before.st_mode),
+            before.st_size,
+            before.st_mtime_ns,
+        ),
+        (
+            after.st_dev,
+            after.st_ino,
+            stat.S_IFMT(after.st_mode),
+            after.st_size,
+            after.st_mtime_ns,
+        ),
+    )
 
 
 class MigrationBaselineManifestTests(unittest.TestCase):
@@ -347,6 +583,7 @@ class MigrationBaselineManifestTests(unittest.TestCase):
             migration.mkdir()
             validator_path = tools / VALIDATOR_PATH.name
             shutil.copyfile(VALIDATOR_PATH, validator_path)
+            shutil.copyfile(GIT_METADATA_PATH, tools / GIT_METADATA_PATH.name)
             (migration / "baseline.json").write_bytes(raw)
 
             environment = os.environ.copy()
@@ -377,6 +614,18 @@ class MigrationBaselineManifestTests(unittest.TestCase):
         )
         self.assertNotIn("Traceback", result.stderr)
 
+    def assertGitAttribute(self, result, relative_path, value):
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout.strip(),
+            f"{relative_path}: eol: {value}",
+        )
+
+    def runGitFixture(self, root, *arguments):
+        result = run_sanitized_git(root, *arguments)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result
+
     def test_validator_module_exists(self):
         self.assertTrue(VALIDATOR_PATH.is_file(), "validator module is missing")
 
@@ -387,10 +636,208 @@ class MigrationBaselineManifestTests(unittest.TestCase):
     def test_manifest_file_is_exact_canonical_serialization(self):
         self.assertTrue(MANIFEST_PATH.is_file(), "canonical manifest is missing")
         expected = (json.dumps(CANONICAL, indent=2) + "\n").encode("utf-8")
-        self.assertEqual(MANIFEST_PATH.read_bytes(), expected)
+        raw = MANIFEST_PATH.read_bytes()
+        assert_canonical_json_presentation(self, raw, expected)
 
         validator = load_validator()
         self.assertEqual(validator.load_manifest(MANIFEST_PATH), CANONICAL)
+
+    def test_canonical_serialization_accepts_only_uniform_lf_or_crlf(self):
+        expected = (json.dumps(CANONICAL, indent=2) + "\n").encode("utf-8")
+        for raw in (expected, expected.replace(b"\n", b"\r\n")):
+            with self.subTest(raw=raw):
+                assert_canonical_json_presentation(self, raw, expected)
+
+    def test_canonical_serialization_rejects_invalid_newline_presentations(self):
+        expected = (json.dumps(CANONICAL, indent=2) + "\n").encode("utf-8")
+        first_newline_end = expected.index(b"\n") + 1
+        mutants = {
+            "first newline CRLF, remainder LF": expected.replace(
+                b"\n", b"\r\n", 1
+            ),
+            "first newline LF, remainder CRLF": (
+                expected[:first_newline_end]
+                + expected[first_newline_end:].replace(b"\n", b"\r\n")
+            ),
+            "lone CR": expected.replace(b"\n", b"\r", 1),
+            "CRCRLF": expected.replace(b"\n", b"\r\r\n", 1),
+        }
+        for name, raw in mutants.items():
+            with self.subTest(name=name):
+                with self.assertRaises(AssertionError):
+                    assert_canonical_json_presentation(self, raw, expected)
+
+    def test_migration_json_attributes_have_lf_semantics(self):
+        assert_migration_attribute_contract(self, ROOT)
+
+    def test_migration_attribute_contract_ignores_info_override(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository = Path(temporary_directory).resolve()
+            self.runGitFixture(repository, "init", "-q")
+            (repository / ".gitattributes").write_bytes(GITATTRIBUTES_CANONICAL)
+            self.runGitFixture(repository, "add", ".gitattributes")
+            self.runGitFixture(
+                repository,
+                "-c",
+                "user.name=Mac-Win Attribute Tests",
+                "-c",
+                "user.email=attribute-tests@example.invalid",
+                "-c",
+                "commit.gpgSign=false",
+                "commit",
+                "-q",
+                "-m",
+                "fixture",
+            )
+            (repository / ".git" / "info" / "attributes").write_text(
+                "migration/*.json eol=crlf\n"
+                "migration/**/*.json eol=crlf\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+
+            overridden = run_git_check_attr(
+                "migration/baseline.json",
+                root=repository,
+            )
+            self.assertGitAttribute(
+                overridden,
+                "migration/baseline.json",
+                "crlf",
+            )
+            assert_migration_attribute_contract(self, repository)
+
+    def test_git_check_attr_ignores_ambient_repository_redirection(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            decoy = Path(temporary_directory).resolve()
+            init = run_sanitized_git(decoy, "init", "-q")
+            self.assertEqual(init.returncode, 0, init.stderr)
+            (decoy / ".gitattributes").write_text(
+                "migration/*.json text eol=crlf\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            pollution = {
+                "GIT_DIR": str(decoy / ".git"),
+                "GIT_WORK_TREE": str(decoy),
+            }
+            with mock.patch.dict(os.environ, pollution, clear=False):
+                result = run_git_check_attr("migration/baseline.json")
+
+        self.assertGitAttribute(result, "migration/baseline.json", "lf")
+
+    def test_git_check_attr_handles_dubious_ownership_locally(self):
+        with mock.patch.dict(
+            os.environ,
+            {"GIT_TEST_ASSUME_DIFFERENT_OWNER": "1"},
+            clear=False,
+        ):
+            result = run_git_check_attr("migration/baseline.json")
+
+        self.assertGitAttribute(result, "migration/baseline.json", "lf")
+
+    def test_git_check_attr_ignores_hostile_home_attributes_config(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            hostile_home = Path(temporary_directory).resolve()
+            attributes_file = hostile_home / "hostile-attributes"
+            attributes_file.write_text(
+                "README.md eol=crlf\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            (hostile_home / ".gitconfig").write_text(
+                "[core]\n"
+                f"    attributesFile = {attributes_file.as_posix()}\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "HOME": str(hostile_home),
+                    "USERPROFILE": str(hostile_home),
+                },
+                clear=False,
+            ):
+                result = run_git_check_attr("README.md")
+
+        self.assertGitAttribute(result, "README.md", "unspecified")
+
+    def test_git_check_attr_disables_global_and_system_config(self):
+        completed = SimpleNamespace(returncode=0, stdout="", stderr="")
+        with mock.patch.object(
+            subprocess,
+            "run",
+            return_value=completed,
+        ) as run:
+            run_git_check_attr("migration/baseline.json")
+
+        environment = run.call_args.kwargs["env"]
+        self.assertEqual(environment.get("GIT_CONFIG_GLOBAL"), os.devnull)
+        self.assertEqual(environment.get("GIT_CONFIG_NOSYSTEM"), "1")
+
+    def test_git_check_attr_uses_exact_sanitized_process_contract(self):
+        pollution = {
+            key: f"redirected-{key.lower()}"
+            for key in GIT_CHECK_ATTR_BLOCKED_VARIABLES
+        }
+        pollution.update(
+            {
+                "PATH": os.environ.get("PATH", os.defpath),
+                "HOME": "preserved-home",
+                "GIT_CONFIG_COUNT": "2",
+                "GIT_CONFIG_KEY_0": "core.attributesFile",
+                "GIT_CONFIG_VALUE_0": "redirected-attributes",
+                "GIT_CONFIG_KEY_1": "safe.directory",
+                "GIT_CONFIG_VALUE_1": "*",
+            }
+        )
+        completed = SimpleNamespace(returncode=0, stdout="", stderr="")
+        with mock.patch.dict(os.environ, pollution, clear=True):
+            with mock.patch.object(
+                subprocess,
+                "run",
+                return_value=completed,
+            ) as run:
+                self.assertIs(
+                    run_git_check_attr("migration/baseline.json"),
+                    completed,
+                )
+
+        run.assert_called_once()
+        command = run.call_args.args[0]
+        options = run.call_args.kwargs
+        self.assertEqual(
+            command,
+            [
+                "git",
+                "-c",
+                f"safe.directory={ROOT}",
+                "check-attr",
+                "eol",
+                "--",
+                "migration/baseline.json",
+            ],
+        )
+        self.assertEqual(options["cwd"], ROOT)
+        self.assertFalse(options["shell"])
+        environment = options["env"]
+        self.assertEqual(environment["PATH"], pollution["PATH"])
+        self.assertEqual(environment["HOME"], pollution["HOME"])
+        preserved_or_forced = {
+            "PATH",
+            "HOME",
+            "GIT_CONFIG_GLOBAL",
+            "GIT_CONFIG_NOSYSTEM",
+        }
+        for key in pollution:
+            if key not in preserved_or_forced:
+                self.assertNotIn(key, environment)
+        self.assertEqual(environment["GIT_CONFIG_GLOBAL"], os.devnull)
+        self.assertEqual(environment["GIT_CONFIG_NOSYSTEM"], "1")
+        self.assertEqual(environment["GIT_NO_LAZY_FETCH"], "1")
+        self.assertEqual(environment["GIT_NO_REPLACE_OBJECTS"], "1")
+        self.assertEqual(environment["GIT_TERMINAL_PROMPT"], "0")
 
     def test_rejects_non_object_top_level_value(self):
         self.assertInvalid([], "manifest must be a JSON object")
@@ -778,6 +1225,20 @@ class MigrationBaselineDocumentTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertReadmeInvalid(text, diagnostic)
 
+    def test_readme_requires_visible_asset_inventory_document_link(self):
+        diagnostic = "README is missing the standalone asset inventory document link"
+        missing = README_CANONICAL.replace(
+            README_ASSET_INVENTORY_LINK_STATEMENT,
+            "See the migration asset inventory documentation.",
+        )
+        commented = README_CANONICAL.replace(
+            README_ASSET_INVENTORY_LINK_STATEMENT,
+            f"<!-- {README_ASSET_INVENTORY_LINK_STATEMENT} -->",
+        )
+        for text in (missing, commented):
+            with self.subTest(text=text):
+                self.assertReadmeInvalid(text, diagnostic)
+
     def test_document_requires_full_sha_both_architectures_and_known_failures(self):
         diagnostic = (
             "migration document is missing a required standalone evidence statement"
@@ -1123,6 +1584,69 @@ class MigrationBaselineWorkflowTests(unittest.TestCase):
                 self.assertNotEqual(text, WORKFLOW_CANONICAL)
                 self.assertWorkflowInvalid(text)
 
+    def test_repository_contract_runs_the_complete_inventory_gate_in_order(self):
+        validator = load_validator()
+        repository_job = WORKFLOW_CANONICAL.split(
+            "  repository-contract:\n", 1
+        )[1].split("\n  swift-evidence:\n", 1)[0]
+        required_lines = (
+            "          fetch-depth: 0",
+            '          python -B -m unittest discover -s tests -p "test_*.py" -v',
+            "          python -B tools/validate_migration_baseline.py --require-tag",
+            "          python -B tools/generate_migration_asset_inventory.py --check",
+            "          python -B tools/validate_migration_asset_inventory.py",
+        )
+        positions = []
+        for line in required_lines:
+            self.assertEqual(repository_job.count(line), 1)
+            positions.append(repository_job.index(line))
+        self.assertEqual(positions, sorted(positions))
+        self.assertIn("    runs-on: ubuntu-24.04\n", repository_job)
+
+        mutations = {
+            "baseline tag requirement deleted": WORKFLOW_CANONICAL.replace(
+                " --require-tag\n", "\n", 1
+            ),
+            "inventory check changed to write": WORKFLOW_CANONICAL.replace(
+                "generate_migration_asset_inventory.py --check",
+                "generate_migration_asset_inventory.py --write",
+                1,
+            ),
+            "inventory validator deleted": WORKFLOW_CANONICAL.replace(
+                "          python -B tools/validate_migration_asset_inventory.py\n",
+                "",
+                1,
+            ),
+            "inventory validator is only a comment": WORKFLOW_CANONICAL.replace(
+                "          python -B tools/validate_migration_asset_inventory.py\n",
+                "          # python -B tools/validate_migration_asset_inventory.py\n",
+                1,
+            ),
+            "generator and validator reordered": WORKFLOW_CANONICAL.replace(
+                "          python -B tools/generate_migration_asset_inventory.py --check\n"
+                "          python -B tools/validate_migration_asset_inventory.py\n",
+                "          python -B tools/validate_migration_asset_inventory.py\n"
+                "          python -B tools/generate_migration_asset_inventory.py --check\n",
+                1,
+            ),
+            "full tests moved after validation": WORKFLOW_CANONICAL.replace(
+                '          python -B -m unittest discover -s tests -p "test_*.py" -v\n'
+                "          python -B tools/validate_migration_baseline.py --require-tag\n",
+                "          python -B tools/validate_migration_baseline.py --require-tag\n"
+                '          python -B -m unittest discover -s tests -p "test_*.py" -v\n',
+                1,
+            ),
+        }
+        for name, text in mutations.items():
+            with self.subTest(name=name):
+                self.assertNotEqual(text, WORKFLOW_CANONICAL)
+                self.assertWorkflowInvalid(text)
+                with self.assertRaises(
+                    validator.BaselineValidationError
+                ) as caught:
+                    validator._validate_workflow_semantics(text)
+                self.assertEqual(str(caught.exception), self.SEMANTIC_DIAGNOSTIC)
+
     def test_rejects_forbidden_capability_and_failure_masking_mutations(self):
         insert_at_job = "  repository-contract:\n"
         mutations = {
@@ -1404,6 +1928,8 @@ class MigrationBaselineGitSourceTests(unittest.TestCase):
         "GIT_NAMESPACE",
     )
     GIT_SAFETY_VARIABLES = {
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_NO_LAZY_FETCH": "1",
         "GIT_TERMINAL_PROMPT": "0",
         "GIT_NO_REPLACE_OBJECTS": "1",
@@ -1415,22 +1941,16 @@ class MigrationBaselineGitSourceTests(unittest.TestCase):
         self.test_root = Path(self.temporary_directory.name)
 
     def runGit(self, repository, *arguments, environment=None, check=True):
-        repository = Path(repository)
-        repository.mkdir(parents=True, exist_ok=True)
-        command = ["git", *self.GIT_IDENTITY, *arguments]
-        result = subprocess.run(
-            command,
-            cwd=repository,
-            env=environment,
-            capture_output=True,
-            text=True,
-            shell=False,
-            check=False,
+        result = run_fixture_git(
+            repository,
+            *arguments,
+            configuration=self.GIT_IDENTITY,
+            environment=environment,
         )
         if check and result.returncode != 0:
             self.fail(
                 f"Git fixture command failed ({result.returncode}): "
-                f"{command!r}\nstdout: {result.stdout}\nstderr: {result.stderr}"
+                f"{arguments!r}\nstdout: {result.stdout}\nstderr: {result.stderr}"
             )
         return result
 
@@ -1472,7 +1992,12 @@ class MigrationBaselineGitSourceTests(unittest.TestCase):
         validator.validate_source_commit(repository, source_commit)
 
     def test_git_fixture_ignores_ambient_commit_signing(self):
-        with mock.patch.dict(os.environ, GIT_SIGNING_POLLUTION, clear=False):
+        pollution = {
+            **GIT_SIGNING_POLLUTION,
+            **GIT_HOSTILE_REPOSITORY_POLLUTION,
+            "GIT_TEST_ASSUME_DIFFERENT_OWNER": "1",
+        }
+        with mock.patch.dict(os.environ, pollution, clear=False):
             repository, source_commit, _ = self.createRepository(
                 "signing-pollution"
             )
@@ -1589,6 +2114,13 @@ class MigrationBaselineGitSourceTests(unittest.TestCase):
             "GIT_OBJECT_DIRECTORY": str(alternate_git / "objects"),
             "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(alternate_git / "objects"),
             "GIT_NAMESPACE": "redirected",
+            "GIT_CONFIG_COUNT": "2",
+            "GIT_CONFIG_KEY_0": "core.hooksPath",
+            "GIT_CONFIG_VALUE_0": str(alternate / "hooks"),
+            "GIT_CONFIG_KEY_1": "core.attributesFile",
+            "GIT_CONFIG_VALUE_1": str(alternate / "attributes"),
+            "GIT_CONFIG_GLOBAL": str(alternate / "global-config"),
+            "GIT_CONFIG_SYSTEM": str(alternate / "system-config"),
         }
         validator = load_validator()
         real_run = subprocess.run
@@ -1608,9 +2140,18 @@ class MigrationBaselineGitSourceTests(unittest.TestCase):
         self.assertEqual(
             [call[0][0] for call in recorded_calls],
             [
-                ["git", "cat-file", "-t", source_commit],
                 [
                     "git",
+                    "-c",
+                    f"safe.directory={repository.resolve()}",
+                    "cat-file",
+                    "-t",
+                    source_commit,
+                ],
+                [
+                    "git",
+                    "-c",
+                    f"safe.directory={repository.resolve()}",
                     "merge-base",
                     "--is-ancestor",
                     source_commit,
@@ -1626,11 +2167,121 @@ class MigrationBaselineGitSourceTests(unittest.TestCase):
                 self.assertIs(keywords["capture_output"], True)
                 self.assertIs(keywords["text"], False)
                 self.assertIs(keywords["check"], False)
+                self.assertIs(keywords["stdin"], subprocess.DEVNULL)
                 child_environment = keywords["env"]
-                for variable in self.GIT_OVERRIDE_VARIABLES:
-                    self.assertNotIn(variable, child_environment)
+                self.assertFalse(
+                    any(
+                        key.upper() in self.GIT_OVERRIDE_VARIABLES
+                        for key in child_environment
+                    )
+                )
+                self.assertFalse(
+                    any(
+                        key.upper().startswith("GIT_CONFIG")
+                        and key.upper() not in self.GIT_SAFETY_VARIABLES
+                        for key in child_environment
+                    )
+                )
                 for variable, value in self.GIT_SAFETY_VARIABLES.items():
                     self.assertEqual(child_environment.get(variable), value)
+
+    def test_git_environment_scrubs_casefolded_repository_and_config_injection(self):
+        hostile = {
+            "PATH": os.environ.get("PATH", ""),
+            "KEEP_ME": "yes",
+            "git_dir": "decoy",
+            "Git_Work_Tree": "decoy",
+            "gIt_CoMmOn_DiR": "decoy",
+            "git_index_file": "decoy",
+            "Git_Object_Directory": "decoy",
+            "git_alternate_object_directories": "decoy",
+            "Git_Namespace": "decoy",
+            "git_shallow_file": "decoy",
+            "Git_Config_Count": "1",
+            "git_config_key_0": "core.bare",
+            "GIT_CONFIG_VALUE_0": "true",
+            "Git_Config_Global": "decoy",
+            "git_config_system": "decoy",
+            "GIT_CONFIG_PARAMETERS": "'core.worktree'='decoy'",
+            "GIT_TEST_ASSUME_DIFFERENT_OWNER": "1",
+        }
+        validator = load_validator()
+
+        cleaned = validator._git_environment(hostile)
+
+        self.assertEqual(cleaned["PATH"], hostile["PATH"])
+        self.assertEqual(cleaned["KEEP_ME"], "yes")
+        self.assertEqual(cleaned["GIT_TEST_ASSUME_DIFFERENT_OWNER"], "1")
+        self.assertFalse(
+            any(
+                key.upper() in {*self.GIT_OVERRIDE_VARIABLES, "GIT_SHALLOW_FILE"}
+                or (
+                    key.upper().startswith("GIT_CONFIG")
+                    and key.upper() not in self.GIT_SAFETY_VARIABLES
+                )
+                for key in cleaned
+            )
+        )
+        for variable, value in self.GIT_SAFETY_VARIABLES.items():
+            self.assertEqual(cleaned.get(variable), value)
+        self.assertEqual(hostile["git_dir"], "decoy")
+
+    def test_fixture_git_environment_scrubs_all_ambient_git_state(self):
+        hostile = {
+            "PATH": os.environ.get("PATH", ""),
+            "KEEP_ME": "yes",
+            "git_dir": "decoy",
+            "Git_Config_Count": "1",
+            "git_config_key_0": "core.hooksPath",
+            "GIT_CONFIG_VALUE_0": "decoy-hooks",
+            "GIT_TEST_ASSUME_DIFFERENT_OWNER": "1",
+        }
+
+        cleaned = fixture_git_environment(hostile)
+
+        self.assertEqual(cleaned["PATH"], hostile["PATH"])
+        self.assertEqual(cleaned["KEEP_ME"], "yes")
+        self.assertEqual(
+            {key for key in cleaned if key.upper().startswith("GIT_")},
+            {"GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "GIT_TERMINAL_PROMPT"},
+        )
+        self.assertEqual(cleaned["GIT_CONFIG_GLOBAL"], os.devnull)
+        self.assertEqual(cleaned["GIT_CONFIG_NOSYSTEM"], "1")
+        self.assertEqual(cleaned["GIT_TERMINAL_PROMPT"], "0")
+        self.assertEqual(hostile["git_dir"], "decoy")
+
+    def test_git_runner_handles_forced_dubious_ownership_with_exact_safe_root(self):
+        repository, source_commit, _ = self.createRepository("forced-owner")
+        validator = load_validator()
+
+        with mock.patch.dict(
+            os.environ,
+            {"GIT_TEST_ASSUME_DIFFERENT_OWNER": "1"},
+            clear=False,
+        ):
+            validator.validate_source_commit(repository, source_commit)
+
+    def test_default_and_require_tag_cli_handle_forced_dubious_ownership(self):
+        environment = os.environ.copy()
+        environment["GIT_TEST_ASSUME_DIFFERENT_OWNER"] = "1"
+
+        for arguments in ((), ("--require-tag",)):
+            with self.subTest(arguments=arguments):
+                result = subprocess.run(
+                    [sys.executable, "-B", str(VALIDATOR_PATH), *arguments],
+                    cwd=ROOT,
+                    env=environment,
+                    capture_output=True,
+                    text=True,
+                    shell=False,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(
+                    result.stdout,
+                    "Mac-Win migration baseline is valid.\n",
+                )
+                self.assertEqual(result.stderr, "")
 
     def test_main_binds_reviewed_bytes_before_semantic_validation(self):
         validator = load_validator()
@@ -1773,17 +2424,12 @@ class MigrationBaselineTagTests(unittest.TestCase):
         input_bytes=None,
         check=True,
     ):
-        repository = Path(repository)
-        repository.mkdir(parents=True, exist_ok=True)
-        result = subprocess.run(
-            ["git", *self.GIT_IDENTITY, *arguments],
-            cwd=repository,
-            env=environment,
-            input=input_bytes,
-            capture_output=True,
-            text=input_bytes is None,
-            shell=False,
-            check=False,
+        result = run_fixture_git(
+            repository,
+            *arguments,
+            configuration=self.GIT_IDENTITY,
+            environment=environment,
+            input_bytes=input_bytes,
         )
         if check and result.returncode != 0:
             self.fail(
@@ -1808,12 +2454,32 @@ class MigrationBaselineTagTests(unittest.TestCase):
         ).stdout.strip()
         return repository, source_commit, descendant_commit
 
+    def createHostileCloneTemplate(self, name):
+        template = self.test_root / name
+        hooks = template / "hooks"
+        hooks.mkdir(parents=True)
+        post_checkout = hooks / "post-checkout"
+        post_checkout.write_text(
+            "#!/bin/sh\nexit 93\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        post_checkout.chmod(0o755)
+        return template
+
     def cloneCurrentRepository(self, name):
         repository = self.test_root / name
         safe_root = f"safe.directory={ROOT}"
+        clone_environment = clone_git_test_environment(
+            assume_different_owner=(
+                os.environ.get("GIT_TEST_ASSUME_DIFFERENT_OWNER") == "1"
+            )
+        )
         git_directory_result = subprocess.run(
             ["git", "-c", safe_root, "rev-parse", "--absolute-git-dir"],
             cwd=ROOT,
+            env=clone_environment,
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             shell=False,
@@ -1836,6 +2502,8 @@ class MigrationBaselineTagTests(unittest.TestCase):
                 "HEAD",
             ],
             cwd=ROOT,
+            env=clone_environment,
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             shell=False,
@@ -1851,12 +2519,20 @@ class MigrationBaselineTagTests(unittest.TestCase):
                 safe_root,
                 "-c",
                 safe_git_directory,
+                "-c",
+                f"core.hooksPath={os.devnull}",
+                "-c",
+                "commit.gpgSign=false",
+                "-c",
+                "tag.gpgSign=false",
                 "clone",
                 "--no-hardlinks",
                 str(ROOT),
                 str(repository),
             ],
             cwd=self.test_root,
+            env=clone_environment,
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             shell=False,
@@ -1873,10 +2549,23 @@ class MigrationBaselineTagTests(unittest.TestCase):
             repository / "tools" / "validate_migration_baseline.py",
         )
         shutil.copyfile(
+            GIT_METADATA_PATH,
+            repository / "tools" / "migration_git_metadata.py",
+        )
+        shutil.copyfile(
+            README_PATH,
+            repository / README_PATH.relative_to(ROOT),
+        )
+        shutil.copyfile(
             WORKFLOW_PATH,
             repository / WORKFLOW_PATH.relative_to(ROOT),
         )
-        self.runGit(repository, "add", WORKFLOW_RELATIVE_PATH)
+        self.runGit(
+            repository,
+            "add",
+            README_PATH.relative_to(ROOT).as_posix(),
+            WORKFLOW_RELATIVE_PATH,
+        )
         return repository
 
     def createRawTagObject(
@@ -1886,12 +2575,14 @@ class MigrationBaselineTagTests(unittest.TestCase):
         *,
         internal_name=BASELINE_TAG,
         message=TAG_MESSAGE,
+        timestamp=0,
     ):
         raw = (
             f"object {source_commit}\n"
             "type commit\n"
             f"tag {internal_name}\n"
-            "tagger Baseline Tests <baseline-tests@example.invalid> 0 +0000\n"
+            "tagger Baseline Tests <baseline-tests@example.invalid> "
+            f"{timestamp} +0000\n"
             "\n"
             f"{message}\n"
         ).encode("utf-8")
@@ -1957,15 +2648,38 @@ class MigrationBaselineTagTests(unittest.TestCase):
         printed.assert_called_once_with("Mac-Win migration baseline is valid.")
 
     def test_cli_fixture_clone_handles_dubious_worktree_ownership_locally(self):
+        admin_result = run_sanitized_git(
+            ROOT,
+            "rev-parse",
+            "--absolute-git-dir",
+        )
+        self.assertEqual(admin_result.returncode, 0, admin_result.stderr)
+        expected_admin = admin_result.stdout.strip()
+        template = self.createHostileCloneTemplate("dubious-owner-template")
+        real_run = subprocess.run
+        recorded_calls = []
+
+        def recording_run(*args, **kwargs):
+            recorded_calls.append((args, kwargs))
+            return real_run(*args, **kwargs)
+
         with mock.patch.object(self, "runGit") as git_commands:
-            with mock.patch.dict(
-                os.environ,
-                {"GIT_TEST_ASSUME_DIFFERENT_OWNER": "1"},
-            ):
-                repository = self.cloneCurrentRepository("dubious-owner")
+            with mock.patch.object(subprocess, "run", side_effect=recording_run):
+                with mock.patch.dict(
+                    os.environ,
+                    {
+                        "GIT_TEMPLATE_DIR": str(template),
+                        "GIT_TEST_ASSUME_DIFFERENT_OWNER": "1",
+                    },
+                ):
+                    repository = self.cloneCurrentRepository("dubious-owner")
 
         self.assertTrue(
             (repository / "tools" / "validate_migration_baseline.py").is_file()
+        )
+        self.assertEqual(
+            (repository / README_PATH.relative_to(ROOT)).read_bytes(),
+            README_PATH.read_bytes(),
         )
         self.assertTrue((repository / WORKFLOW_PATH.relative_to(ROOT)).is_file())
         self.assertEqual(git_commands.call_count, 2)
@@ -1977,8 +2691,72 @@ class MigrationBaselineTagTests(unittest.TestCase):
         self.assertRegex(current_head, r"\A[0-9a-f]{40}(?:[0-9a-f]{24})?\Z")
         self.assertEqual(
             git_commands.call_args_list[1].args,
-            (repository, "add", WORKFLOW_RELATIVE_PATH),
+            (
+                repository,
+                "add",
+                README_PATH.relative_to(ROOT).as_posix(),
+                WORKFLOW_RELATIVE_PATH,
+            ),
         )
+        clone_calls = [
+            call for call in recorded_calls if "clone" in call[0][0]
+        ]
+        self.assertEqual(len(clone_calls), 1)
+        clone_argv = clone_calls[0][0][0]
+        self.assertEqual(
+            clone_argv[:11],
+            [
+                "git",
+                "-c",
+                f"safe.directory={ROOT}",
+                "-c",
+                f"safe.directory={expected_admin}",
+                "-c",
+                f"core.hooksPath={os.devnull}",
+                "-c",
+                "commit.gpgSign=false",
+                "-c",
+                "tag.gpgSign=false",
+            ],
+        )
+        clone_environment = clone_calls[0][1]["env"]
+        self.assertEqual(clone_environment["GIT_TEST_ASSUME_DIFFERENT_OWNER"], "1")
+        self.assertNotIn("GIT_TEMPLATE_DIR", clone_environment)
+
+    def test_clone_environment_scrubs_every_ambient_git_clone_override(self):
+        hostile = {
+            "PATH": os.environ.get("PATH", ""),
+            "KEEP_ME": "yes",
+            "GIT_TEMPLATE_DIR": "decoy-template",
+            "GIT_CLONE_PROTECTION_ACTIVE": "false",
+            "GIT_PROTOCOL_FROM_USER": "1",
+            "git_dir": "decoy-dir",
+            "Git_Config_Count": "1",
+            "git_config_key_0": "core.hooksPath",
+            "GIT_CONFIG_VALUE_0": "decoy-hooks",
+            "GIT_TEST_ASSUME_DIFFERENT_OWNER": "1",
+        }
+
+        cleaned = clone_git_test_environment(
+            hostile,
+            assume_different_owner=True,
+        )
+
+        self.assertEqual(cleaned["PATH"], hostile["PATH"])
+        self.assertEqual(cleaned["KEEP_ME"], "yes")
+        self.assertEqual(cleaned["GIT_TEST_ASSUME_DIFFERENT_OWNER"], "1")
+        self.assertEqual(
+            {key for key in cleaned if key.upper().startswith("GIT_")},
+            {
+                "GIT_CONFIG_GLOBAL",
+                "GIT_CONFIG_NOSYSTEM",
+                "GIT_NO_LAZY_FETCH",
+                "GIT_NO_REPLACE_OBJECTS",
+                "GIT_TERMINAL_PROMPT",
+                "GIT_TEST_ASSUME_DIFFERENT_OWNER",
+            },
+        )
+        self.assertEqual(hostile["GIT_TEMPLATE_DIR"], "decoy-template")
 
     def test_require_tag_main_adds_tag_verification_after_repository_contract(self):
         validator = load_validator()
@@ -2058,6 +2836,367 @@ class MigrationBaselineTagTests(unittest.TestCase):
         )
         self.validateTag(repository, source_commit)
 
+    def test_rejects_linked_and_nonregular_tag_ref_metadata(self):
+        repository, source_commit, _ = self.createRepository("linked-tag-ref")
+        self.runGit(
+            repository,
+            "tag",
+            "-a",
+            BASELINE_TAG,
+            source_commit,
+            "-m",
+            TAG_MESSAGE,
+        )
+        loose_ref = repository / ".git" / "refs" / "tags" / BASELINE_TAG
+        external = self.test_root / "external-tag-ref"
+        loose_ref.rename(external)
+        try:
+            try:
+                loose_ref.symlink_to(external)
+            except OSError as error:
+                external.rename(loose_ref)
+                self.skipTest(f"file symlink creation is unavailable: {error}")
+            self.assertTagInvalid(
+                repository,
+                source_commit,
+                "baseline tag ref metadata is unsafe",
+            )
+        finally:
+            if loose_ref.is_symlink():
+                loose_ref.unlink()
+            if external.exists():
+                external.rename(loose_ref)
+
+        loose_ref.rename(external)
+        loose_ref.mkdir()
+        try:
+            self.assertTagInvalid(
+                repository,
+                source_commit,
+                "baseline tag ref metadata is unsafe",
+            )
+        finally:
+            loose_ref.rmdir()
+            external.rename(loose_ref)
+
+    def test_rejects_linked_packed_refs_metadata(self):
+        repository, source_commit, _ = self.createRepository("linked-packed-refs")
+        self.runGit(
+            repository,
+            "tag",
+            "-a",
+            BASELINE_TAG,
+            source_commit,
+            "-m",
+            TAG_MESSAGE,
+        )
+        self.runGit(repository, "pack-refs", "--all")
+        packed_refs = repository / ".git" / "packed-refs"
+        external = self.test_root / "external-packed-refs"
+        packed_refs.rename(external)
+        try:
+            try:
+                packed_refs.symlink_to(external)
+            except OSError as error:
+                external.rename(packed_refs)
+                self.skipTest(f"file symlink creation is unavailable: {error}")
+            self.assertTagInvalid(
+                repository,
+                source_commit,
+                "baseline tag ref metadata is unsafe",
+            )
+        finally:
+            if packed_refs.is_symlink():
+                packed_refs.unlink()
+            if external.exists():
+                external.rename(packed_refs)
+
+        packed_refs.rename(external)
+        packed_refs.mkdir()
+        try:
+            self.assertTagInvalid(
+                repository,
+                source_commit,
+                "baseline tag ref metadata is unsafe",
+            )
+        finally:
+            packed_refs.rmdir()
+            external.rename(packed_refs)
+
+    def test_accepts_hardlinked_loose_and_packed_tag_metadata(self):
+        repository, source_commit, _ = self.createRepository("hardlinked-tag-ref")
+        self.runGit(
+            repository,
+            "tag",
+            "-a",
+            BASELINE_TAG,
+            source_commit,
+            "-m",
+            TAG_MESSAGE,
+        )
+        loose_ref = repository / ".git" / "refs" / "tags" / BASELINE_TAG
+        external_loose = self.test_root / "hardlinked-tag-source"
+        loose_ref.rename(external_loose)
+        os.link(external_loose, loose_ref)
+        try:
+            self.validateTag(repository, source_commit)
+        finally:
+            loose_ref.chmod(0o600)
+            loose_ref.unlink()
+            external_loose.rename(loose_ref)
+
+        self.runGit(repository, "pack-refs", "--all")
+        packed_refs = repository / ".git" / "packed-refs"
+        external_packed = self.test_root / "hardlinked-packed-refs-source"
+        packed_refs.rename(external_packed)
+        os.link(external_packed, packed_refs)
+        try:
+            self.validateTag(repository, source_commit)
+        finally:
+            packed_refs.chmod(0o600)
+            packed_refs.unlink()
+            external_packed.rename(packed_refs)
+
+    def test_rejects_same_identity_loose_tag_content_replaced_during_read(self):
+        repository, source_commit, _ = self.createRepository(
+            "same-identity-loose-tag"
+        )
+        self.runGit(
+            repository,
+            "tag",
+            "-a",
+            BASELINE_TAG,
+            source_commit,
+            "-m",
+            TAG_MESSAGE,
+        )
+        replacement_oid = self.createRawTagObject(
+            repository,
+            source_commit,
+            timestamp=1,
+        )
+        loose_ref = repository / ".git" / "refs" / "tags" / BASELINE_TAG
+        sibling = self.test_root / "same-identity-loose-tag-sibling"
+        os.link(loose_ref, sibling)
+        validator = load_validator()
+        real_run_git = validator._run_git
+        mutated = False
+
+        def mutate_then_read(root, arguments, check=False):
+            nonlocal mutated
+            if not mutated:
+                overwrite_hardlink_preserving_bound_identity(
+                    self,
+                    loose_ref,
+                    sibling,
+                    replacement_oid.encode("ascii") + b"\n",
+                )
+                mutated = True
+            return real_run_git(root, arguments, check=check)
+
+        try:
+            with mock.patch.object(
+                validator, "_run_git", side_effect=mutate_then_read
+            ), self.assertRaises(validator.BaselineValidationError) as caught:
+                validator.validate_baseline_tag(
+                    repository,
+                    BASELINE_TAG,
+                    source_commit,
+                )
+        finally:
+            sibling.unlink()
+        self.assertTrue(mutated)
+        self.assertEqual(
+            str(caught.exception),
+            "baseline tag ref metadata is unsafe",
+        )
+
+    def test_rejects_same_identity_packed_refs_content_replaced_during_read(self):
+        repository, source_commit, _ = self.createRepository(
+            "same-identity-packed-refs"
+        )
+        self.runGit(
+            repository,
+            "tag",
+            "-a",
+            BASELINE_TAG,
+            source_commit,
+            "-m",
+            TAG_MESSAGE,
+        )
+        original_oid = self.runGit(
+            repository,
+            "rev-parse",
+            f"refs/tags/{BASELINE_TAG}",
+        ).stdout.strip()
+        replacement_oid = self.createRawTagObject(
+            repository,
+            source_commit,
+            timestamp=1,
+        ).encode("ascii")
+        self.runGit(repository, "pack-refs", "--all")
+        packed_refs = repository / ".git" / "packed-refs"
+        original_raw = packed_refs.read_bytes()
+        replacement_raw = original_raw.replace(
+            original_oid.encode("ascii"),
+            replacement_oid,
+            1,
+        )
+        self.assertNotEqual(replacement_raw, original_raw)
+        sibling = self.test_root / "same-identity-packed-refs-sibling"
+        os.link(packed_refs, sibling)
+        validator = load_validator()
+        real_run_git = validator._run_git
+        mutated = False
+
+        def mutate_then_read(root, arguments, check=False):
+            nonlocal mutated
+            if not mutated:
+                overwrite_hardlink_preserving_bound_identity(
+                    self,
+                    packed_refs,
+                    sibling,
+                    replacement_raw,
+                )
+                mutated = True
+            return real_run_git(root, arguments, check=check)
+
+        try:
+            with mock.patch.object(
+                validator, "_run_git", side_effect=mutate_then_read
+            ), self.assertRaises(validator.BaselineValidationError) as caught:
+                validator.validate_baseline_tag(
+                    repository,
+                    BASELINE_TAG,
+                    source_commit,
+                )
+        finally:
+            sibling.unlink()
+        self.assertTrue(mutated)
+        self.assertEqual(
+            str(caught.exception),
+            "baseline tag ref metadata is unsafe",
+        )
+
+    def test_accepts_tag_metadata_from_linked_worktree_common_directory(self):
+        repository, source_commit, _ = self.createRepository("linked-tag-common")
+        self.runGit(
+            repository,
+            "tag",
+            "-a",
+            BASELINE_TAG,
+            source_commit,
+            "-m",
+            TAG_MESSAGE,
+        )
+        linked = self.test_root / "linked-tag-worktree"
+        self.runGit(
+            repository,
+            "worktree",
+            "add",
+            "-b",
+            "linked-tag-worktree",
+            str(linked),
+            source_commit,
+        )
+        try:
+            self.validateTag(linked, source_commit)
+        finally:
+            self.runGit(
+                repository,
+                "worktree",
+                "remove",
+                "--force",
+                str(linked),
+                check=False,
+            )
+
+    def test_rejects_reparse_tag_ref_metadata_before_git_reads(self):
+        repository, source_commit, _ = self.createRepository("reparse-tag-ref")
+        self.runGit(
+            repository,
+            "tag",
+            "-a",
+            BASELINE_TAG,
+            source_commit,
+            "-m",
+            TAG_MESSAGE,
+        )
+        loose_ref = repository / ".git" / "refs" / "tags" / BASELINE_TAG
+        real_status = loose_ref.lstat()
+        reparse_status = SimpleNamespace(
+            st_mode=real_status.st_mode,
+            st_file_attributes=getattr(
+                stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400
+            ),
+        )
+        real_lstat = Path.lstat
+
+        def reparse_lstat(path):
+            if path == loose_ref:
+                return reparse_status
+            return real_lstat(path)
+
+        validator = load_validator()
+        with mock.patch.object(
+            Path, "lstat", autospec=True, side_effect=reparse_lstat
+        ), mock.patch.object(validator, "_run_git") as run_git:
+            with self.assertRaises(validator.BaselineValidationError) as caught:
+                validator.validate_baseline_tag(
+                    repository, BASELINE_TAG, source_commit
+                )
+        self.assertEqual(
+            str(caught.exception), "baseline tag ref metadata is unsafe"
+        )
+        run_git.assert_not_called()
+
+    def test_rejects_invalid_tag_metadata_path_without_reflection(self):
+        validator = load_validator()
+        for tag_name in ("../escape", "bad\\path", "lone-\ud800"):
+            with self.subTest(tag_name=repr(tag_name)):
+                with self.assertRaises(
+                    validator.BaselineValidationError
+                ) as caught:
+                    validator.validate_baseline_tag(
+                        Path("repository"), tag_name, SOURCE_COMMIT
+                    )
+                self.assertEqual(
+                    str(caught.exception), "baseline tag ref metadata is unsafe"
+                )
+                self.assertNotIn("escape", str(caught.exception))
+                self.assertNotIn("surrogate", str(caught.exception))
+
+    def test_tag_lookup_is_scoped_to_the_exact_casefold_identity(self):
+        repository, source_commit, _ = self.createRepository("scoped-tag-lookup")
+        self.runGit(
+            repository,
+            "tag",
+            "-a",
+            BASELINE_TAG,
+            source_commit,
+            "-m",
+            TAG_MESSAGE,
+        )
+        validator = load_validator()
+        real_run_git = validator._run_git
+        calls = []
+
+        def recording_run_git(repository_root, arguments, check=False):
+            calls.append(tuple(arguments))
+            return real_run_git(repository_root, arguments, check=check)
+
+        with mock.patch.object(
+            validator, "_run_git", side_effect=recording_run_git
+        ):
+            validator.validate_baseline_tag(
+                repository, BASELINE_TAG, source_commit
+            )
+
+        for arguments in calls:
+            if arguments and arguments[0] == "for-each-ref":
+                self.assertNotEqual(arguments[-1], "refs/tags")
+                self.assertEqual(arguments[-1], f"refs/tags/{BASELINE_TAG}")
+
     def test_git_fixture_ignores_ambient_commit_and_tag_signing(self):
         with mock.patch.dict(os.environ, GIT_SIGNING_POLLUTION, clear=False):
             repository, source_commit, _ = self.createRepository(
@@ -2099,7 +3238,13 @@ class MigrationBaselineTagTests(unittest.TestCase):
             stdout=f"{expected_ref}\n{expected_ref.upper()}\n".encode("ascii"),
             stderr=b"",
         )
-        with mock.patch.object(validator, "_run_git", return_value=enumerated):
+        with mock.patch.object(
+            validator, "bind_tag_refs", return_value=object()
+        ), mock.patch.object(
+            validator, "verify_binding"
+        ), mock.patch.object(
+            validator, "_run_git", return_value=enumerated
+        ):
             with self.assertRaises(validator.BaselineValidationError) as caught:
                 validator.validate_baseline_tag(
                     Path("repository"), BASELINE_TAG, SOURCE_COMMIT
@@ -2262,7 +3407,13 @@ class MigrationBaselineTagTests(unittest.TestCase):
                 validator._validate_tag_tagger_line(line.encode("utf-8"))
 
     def test_require_tag_cli_rejects_zero_padded_timestamps(self):
-        repository = self.cloneCurrentRepository("zero-padded-cli")
+        template = self.createHostileCloneTemplate("zero-padded-template")
+        with mock.patch.dict(
+            os.environ,
+            {"GIT_TEMPLATE_DIR": str(template)},
+            clear=False,
+        ):
+            repository = self.cloneCurrentRepository("zero-padded-cli")
         for timestamp in ("00", "0001"):
             with self.subTest(timestamp=timestamp):
                 tag_object = self.createUncheckedTagObject(
@@ -2450,7 +3601,13 @@ class MigrationBaselineTagTests(unittest.TestCase):
         self.assertEqual(
             calls,
             [
-                ["for-each-ref", "--format=%(refname)", "refs/tags"],
+                [
+                    "for-each-ref",
+                    "--count=3",
+                    "--ignore-case",
+                    "--format=%(refname)",
+                    tag_ref,
+                ],
                 ["symbolic-ref", "-q", tag_ref],
                 ["cat-file", "-t", tag_ref],
                 ["rev-parse", f"{tag_ref}^{{}}"],
@@ -2551,7 +3708,13 @@ class MigrationBaselineTagTests(unittest.TestCase):
         validator = load_validator()
         hostile = b"hostile\n\x1b[31mspoof"
         failed = SimpleNamespace(returncode=17, stdout=hostile, stderr=hostile)
-        with mock.patch.object(validator, "_run_git", return_value=failed):
+        with mock.patch.object(
+            validator, "bind_tag_refs", return_value=object()
+        ), mock.patch.object(
+            validator, "verify_binding"
+        ), mock.patch.object(
+            validator, "_run_git", return_value=failed
+        ):
             with self.assertRaises(validator.BaselineValidationError) as caught:
                 validator.validate_baseline_tag(Path("repository"), BASELINE_TAG, SOURCE_COMMIT)
         self.assertEqual(
@@ -2559,6 +3722,40 @@ class MigrationBaselineTagTests(unittest.TestCase):
             "baseline tag refs could not be enumerated",
         )
         self.assertNotIn("hostile", str(caught.exception))
+
+    def test_tag_validation_uses_an_injected_runner_exclusively(self):
+        validator = load_validator()
+        repository, source_commit, _ = self.createRepository("injected-runner")
+        self.runGit(
+            repository,
+            "tag",
+            "-a",
+            BASELINE_TAG,
+            source_commit,
+            "-m",
+            TAG_MESSAGE,
+        )
+        original_runner = validator._run_git
+        calls = []
+
+        def injected(root, arguments):
+            calls.append((Path(root).resolve(), tuple(arguments)))
+            return original_runner(root, arguments)
+
+        with mock.patch.object(
+            validator,
+            "_run_git",
+            side_effect=AssertionError("injected validation must not use module runner"),
+        ):
+            validator.validate_baseline_tag(
+                repository,
+                BASELINE_TAG,
+                source_commit,
+                run_git=injected,
+            )
+
+        self.assertGreaterEqual(len(calls), 7)
+        self.assertTrue(all(root == repository.resolve() for root, _args in calls))
 
     def test_cli_rejects_extra_arguments_with_argparse_usage_status(self):
         result = subprocess.run(
@@ -2653,24 +3850,18 @@ class MigrationBaselineReviewedFileTests(unittest.TestCase):
         input_bytes=None,
         check=True,
     ):
-        repository = Path(repository)
-        repository.mkdir(parents=True, exist_ok=True)
-        command = ["git", *self.GIT_IDENTITY, *arguments]
-        result = subprocess.run(
-            command,
-            cwd=repository,
-            input=input_bytes,
-            capture_output=True,
-            text=input_bytes is None,
-            shell=False,
-            check=False,
+        result = run_fixture_git(
+            repository,
+            *arguments,
+            configuration=self.GIT_IDENTITY,
+            input_bytes=input_bytes,
         )
         if check and result.returncode != 0:
             stdout = result.stdout
             stderr = result.stderr
             self.fail(
                 f"Git fixture command failed ({result.returncode}): "
-                f"{command!r}\nstdout: {stdout!r}\nstderr: {stderr!r}"
+                f"{arguments!r}\nstdout: {stdout!r}\nstderr: {stderr!r}"
             )
         return result
 
@@ -2785,6 +3976,121 @@ class MigrationBaselineReviewedFileTests(unittest.TestCase):
         os.link(hardlink_source, reviewed)
 
         self.assertEqual(self.readReviewed(repository), self.APPROVED_TEXT)
+
+    def test_rejects_linked_and_nonregular_index_metadata(self):
+        repository, _, _ = self.createRepository("linked-index")
+        index = repository / ".git" / "index"
+        external = self.test_root / "external-index"
+        index.rename(external)
+        try:
+            try:
+                index.symlink_to(external)
+            except OSError as error:
+                external.rename(index)
+                self.skipTest(f"file symlink creation is unavailable: {error}")
+            self.assertReviewedInvalid(
+                repository,
+                "reviewed file index metadata is unsafe",
+            )
+        finally:
+            if index.is_symlink():
+                index.unlink()
+            if external.exists():
+                external.rename(index)
+
+        index.rename(external)
+        index.mkdir()
+        try:
+            self.assertReviewedInvalid(
+                repository,
+                "reviewed file index metadata is unsafe",
+            )
+        finally:
+            index.rmdir()
+            external.rename(index)
+
+    def test_accepts_hardlinked_index_metadata(self):
+        repository, _, _ = self.createRepository("hardlinked-index")
+        index = repository / ".git" / "index"
+        external = self.test_root / "hardlinked-index-source"
+        index.rename(external)
+        os.link(external, index)
+        try:
+            self.assertEqual(self.readReviewed(repository), self.APPROVED_TEXT)
+        finally:
+            index.chmod(0o600)
+            index.unlink()
+            external.rename(index)
+
+    def test_rejects_same_identity_index_content_replaced_during_read(self):
+        repository, _, _ = self.createRepository("same-identity-index")
+        index = repository / ".git" / "index"
+        original = index.read_bytes()
+        self.assertGreater(len(original), 32)
+        replacement = bytearray(original)
+        replacement[12:16] = (
+            (int.from_bytes(replacement[12:16], "big") + 1) % (2**32)
+        ).to_bytes(4, "big")
+        replacement[-20:] = hashlib.sha1(replacement[:-20]).digest()
+        self.assertNotEqual(bytes(replacement), original)
+        sibling = self.test_root / "same-identity-index-sibling"
+        os.link(index, sibling)
+        validator = load_validator()
+        real_run_git = validator._run_git
+        mutated = False
+
+        def mutate_then_read(root, arguments, check=False):
+            nonlocal mutated
+            if not mutated:
+                overwrite_hardlink_preserving_bound_identity(
+                    self,
+                    index,
+                    sibling,
+                    bytes(replacement),
+                )
+                mutated = True
+            return real_run_git(root, arguments, check=check)
+
+        try:
+            with mock.patch.object(
+                validator, "_run_git", side_effect=mutate_then_read
+            ), self.assertRaises(validator.BaselineValidationError) as caught:
+                self.readReviewed(repository, validator=validator)
+        finally:
+            sibling.unlink()
+        self.assertTrue(mutated)
+        self.assertEqual(
+            str(caught.exception),
+            "reviewed file index metadata is unsafe",
+        )
+
+    def test_rejects_reparse_index_metadata_before_git_reads(self):
+        repository, _, _ = self.createRepository("reparse-index")
+        index = repository / ".git" / "index"
+        real_status = index.lstat()
+        reparse_status = SimpleNamespace(
+            st_mode=real_status.st_mode,
+            st_file_attributes=getattr(
+                stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400
+            ),
+        )
+        real_lstat = Path.lstat
+
+        def reparse_lstat(path):
+            if path == index:
+                return reparse_status
+            return real_lstat(path)
+
+        validator = load_validator()
+        with mock.patch.object(
+            Path, "lstat", autospec=True, side_effect=reparse_lstat
+        ), mock.patch.object(validator, "_run_git") as run_git:
+            with self.assertRaises(validator.BaselineValidationError) as caught:
+                self.readReviewed(repository, validator=validator)
+        self.assertEqual(
+            str(caught.exception), "reviewed file index metadata is unsafe"
+        )
+        run_git.assert_not_called()
 
     def test_rejects_symlink_and_non_regular_worktree_inputs(self):
         repository, reviewed, _ = self.createRepository("symlink")

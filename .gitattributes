@@ -1,1 +1,4 @@
 /patches/*.patch whitespace=-blank-at-eol
+migration/*.json text eol=lf
+migration/**/*.json text eol=lf
+/docs/migration-asset-inventory.md text eol=lf

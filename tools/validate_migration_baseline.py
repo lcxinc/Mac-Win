@@ -57,11 +57,17 @@ README_FREEZE_STATEMENT = (
 README_DOCUMENT_LINK_STATEMENT = (
     "See [Migration baseline and evidence boundary](docs/migration-baseline.md)."
 )
+README_ASSET_INVENTORY_LINK_STATEMENT = (
+    "See [Migration asset inventory and ownership boundary]"
+    "(docs/migration-asset-inventory.md)."
+)
 APPROVED_README_TEXT = f"""# Mac-Win
 
 {README_FREEZE_STATEMENT}
 
 {README_DOCUMENT_LINK_STATEMENT}
+
+{README_ASSET_INVENTORY_LINK_STATEMENT}
 """
 MIGRATION_DOCUMENT_REQUIRED_STATEMENTS = (
     f"Mac-Win is frozen at `{SOURCE_COMMIT}` for migration evidence.",
@@ -191,7 +197,9 @@ jobs:
         run: |
           set -euo pipefail
           python -B -m unittest discover -s tests -p "test_*.py" -v
-          python tools/validate_migration_baseline.py
+          python -B tools/validate_migration_baseline.py --require-tag
+          python -B tools/generate_migration_asset_inventory.py --check
+          python -B tools/validate_migration_asset_inventory.py
 
   swift-evidence:
     name: Swift evidence (${{ matrix.runner }} / ${{ matrix.architecture }})
@@ -326,7 +334,7 @@ jobs:
           echo >> "$summary_path"
           exit "$swift_status"
 """
-WORKFLOW_SHA256 = "41d65d01b6c0c308c81253de6b80877d98d4d5748604ac4269e0219e8e449947"
+WORKFLOW_SHA256 = "307b0b4dac89cc9e726c3cb34b2164d02afd4051ddfced681d47022c4fd58805"
 TOP_LEVEL_FIELDS = (
     "schemaVersion",
     "repository",
@@ -344,8 +352,11 @@ GIT_ENVIRONMENT_OVERRIDES = (
     "GIT_OBJECT_DIRECTORY",
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
     "GIT_NAMESPACE",
+    "GIT_SHALLOW_FILE",
 )
 GIT_SAFETY_ENVIRONMENT = {
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_CONFIG_NOSYSTEM": "1",
     "GIT_NO_LAZY_FETCH": "1",
     "GIT_TERMINAL_PROMPT": "0",
     "GIT_NO_REPLACE_OBJECTS": "1",
@@ -354,6 +365,47 @@ GIT_SAFETY_ENVIRONMENT = {
 
 class BaselineValidationError(ValueError):
     """Raised when migration baseline input violates the closed contract."""
+
+
+class GitMetadataError(ValueError):
+    """Normalize the lazily loaded metadata helper's stable failures."""
+
+
+def _git_metadata_module():
+    try:
+        from tools import migration_git_metadata
+    except ModuleNotFoundError as error:
+        if error.name != "tools":
+            raise GitMetadataError("Git metadata is unsafe") from error
+        try:
+            import migration_git_metadata
+        except ModuleNotFoundError as fallback_error:
+            raise GitMetadataError("Git metadata is unsafe") from fallback_error
+    return migration_git_metadata
+
+
+def bind_index(repository_root):
+    metadata = _git_metadata_module()
+    try:
+        return metadata.bind_index(repository_root)
+    except metadata.GitMetadataError as error:
+        raise GitMetadataError("Git metadata is unsafe") from error
+
+
+def bind_tag_refs(repository_root, tag_name):
+    metadata = _git_metadata_module()
+    try:
+        return metadata.bind_tag_refs(repository_root, tag_name)
+    except metadata.GitMetadataError as error:
+        raise GitMetadataError("Git metadata is unsafe") from error
+
+
+def verify_binding(binding):
+    metadata = _git_metadata_module()
+    try:
+        metadata.verify_binding(binding)
+    except metadata.GitMetadataError as error:
+        raise GitMetadataError("Git metadata is unsafe") from error
 
 
 def _reject_duplicate_keys(pairs):
@@ -478,11 +530,14 @@ def load_manifest(path=MANIFEST_PATH):
     return manifest
 
 
-def _git_environment():
+def _git_environment(source=None):
     """Return a local-only Git environment independent of caller overrides."""
-    environment = os.environ.copy()
-    for variable in GIT_ENVIRONMENT_OVERRIDES:
-        environment.pop(variable, None)
+    environment = dict(os.environ if source is None else source)
+    blocked = frozenset(GIT_ENVIRONMENT_OVERRIDES)
+    for variable in tuple(environment):
+        upper_variable = variable.upper()
+        if upper_variable in blocked or upper_variable.startswith("GIT_CONFIG"):
+            del environment[variable]
     environment.update(GIT_SAFETY_ENVIRONMENT)
     return environment
 
@@ -490,10 +545,12 @@ def _git_environment():
 def _run_git(repository_root, arguments, check=False):
     """Run Git without a shell at one resolved repository root."""
     try:
+        root = Path(repository_root).resolve(strict=True)
         result = subprocess.run(
-            ["git", *arguments],
-            cwd=Path(repository_root).resolve(),
+            ["git", "-c", f"safe.directory={root}", *arguments],
+            cwd=root,
             env=_git_environment(),
+            stdin=subprocess.DEVNULL,
             shell=False,
             capture_output=True,
             text=False,
@@ -567,13 +624,33 @@ def _validate_tag_tagger_line(raw_line):
         raise BaselineValidationError(diagnostic)
 
 
-def validate_baseline_tag(repository_root, tag_name, source_commit):
+def validate_baseline_tag(repository_root, tag_name, source_commit, run_git=None):
     """Require one local annotated tag directly bound to the source commit."""
     tag_ref = f"refs/tags/{tag_name}"
+    git = _run_git if run_git is None else run_git
+    try:
+        metadata_binding = bind_tag_refs(repository_root, tag_name)
+    except GitMetadataError as error:
+        raise BaselineValidationError("baseline tag ref metadata is unsafe") from error
 
-    listed_refs = _run_git(
-        repository_root,
-        ["for-each-ref", "--format=%(refname)", "refs/tags"],
+    def checked_git(arguments):
+        result = git(repository_root, arguments)
+        try:
+            verify_binding(metadata_binding)
+        except GitMetadataError as error:
+            raise BaselineValidationError(
+                "baseline tag ref metadata is unsafe"
+            ) from error
+        return result
+
+    listed_refs = checked_git(
+        [
+            "for-each-ref",
+            "--count=3",
+            "--ignore-case",
+            "--format=%(refname)",
+            tag_ref,
+        ],
     )
     if listed_refs.returncode != 0:
         raise BaselineValidationError("baseline tag refs could not be enumerated")
@@ -599,19 +676,19 @@ def validate_baseline_tag(repository_root, tag_name, source_commit):
             "baseline tag ref is not stored with exact canonical spelling"
         )
 
-    symbolic_ref = _run_git(repository_root, ["symbolic-ref", "-q", tag_ref])
+    symbolic_ref = checked_git(["symbolic-ref", "-q", tag_ref])
     if symbolic_ref.returncode == 0:
         raise BaselineValidationError("baseline tag ref must not be symbolic")
     if symbolic_ref.returncode != 1:
         raise BaselineValidationError("baseline tag ref could not be inspected")
 
-    object_type = _run_git(repository_root, ["cat-file", "-t", tag_ref])
+    object_type = checked_git(["cat-file", "-t", tag_ref])
     if object_type.returncode != 0 or object_type.stdout.strip() != b"tag":
         raise BaselineValidationError(
             "baseline tag is not a local annotated tag object"
         )
 
-    peeled = _run_git(repository_root, ["rev-parse", f"{tag_ref}^{{}}"])
+    peeled = checked_git(["rev-parse", f"{tag_ref}^{{}}"])
     if (
         peeled.returncode != 0
         or peeled.stdout.strip() != source_commit.encode("ascii")
@@ -620,7 +697,7 @@ def validate_baseline_tag(repository_root, tag_name, source_commit):
             "baseline tag does not peel to the source commit"
         )
 
-    resolved_tag = _run_git(repository_root, ["rev-parse", "--verify", tag_ref])
+    resolved_tag = checked_git(["rev-parse", "--verify", tag_ref])
     encoded_object_id = resolved_tag.stdout.strip()
     if (
         resolved_tag.returncode != 0
@@ -630,7 +707,7 @@ def validate_baseline_tag(repository_root, tag_name, source_commit):
         raise BaselineValidationError("baseline tag object id is invalid")
     object_id = encoded_object_id.decode("ascii")
 
-    object_size = _run_git(repository_root, ["cat-file", "-s", object_id])
+    object_size = checked_git(["cat-file", "-s", object_id])
     encoded_size = object_size.stdout.strip()
     if (
         object_size.returncode != 0
@@ -644,7 +721,7 @@ def validate_baseline_tag(repository_root, tag_name, source_commit):
             f"baseline tag object exceeds {MAX_TAG_OBJECT_BYTES}-byte limit"
         )
 
-    tag_object = _run_git(repository_root, ["cat-file", "tag", object_id])
+    tag_object = checked_git(["cat-file", "tag", object_id])
     if tag_object.returncode != 0:
         raise BaselineValidationError("baseline tag object could not be read")
     if len(tag_object.stdout) != size:
@@ -746,6 +823,10 @@ def validate_readme_document(text):
     if README_DOCUMENT_LINK_STATEMENT not in statements:
         raise BaselineValidationError(
             "README is missing the standalone migration document link"
+        )
+    if README_ASSET_INVENTORY_LINK_STATEMENT not in statements:
+        raise BaselineValidationError(
+            "README is missing the standalone asset inventory document link"
         )
 
 
@@ -970,10 +1051,22 @@ def _read_worktree_text(repository_root, relative_path, maximum_bytes):
 def _index_entry(repository_root, relative_path):
     """Return the mode and non-zero object id of one stage-0 index entry."""
     relative_text = str(relative_path)
+    try:
+        metadata_binding = bind_index(repository_root)
+    except GitMetadataError as error:
+        raise BaselineValidationError(
+            "reviewed file index metadata is unsafe"
+        ) from error
     listed = _run_git(
         repository_root,
         ["ls-files", "--stage", "-z", "--", relative_text],
     )
+    try:
+        verify_binding(metadata_binding)
+    except GitMetadataError as error:
+        raise BaselineValidationError(
+            "reviewed file index metadata is unsafe"
+        ) from error
     if listed.returncode != 0:
         raise BaselineValidationError("reviewed file index could not be read")
 
@@ -1012,6 +1105,12 @@ def _index_entry(repository_root, relative_path):
         repository_root,
         ["ls-files", "--debug", "-z", "--", relative_text],
     )
+    try:
+        verify_binding(metadata_binding)
+    except GitMetadataError as error:
+        raise BaselineValidationError(
+            "reviewed file index metadata is unsafe"
+        ) from error
     expected_prefix = relative_text.encode("utf-8") + b"\0"
     flags = re.findall(rb"(?:^|[\t ])flags: ([0-9a-fA-F]+)(?:\r?\n|$)", debug.stdout)
     if (
