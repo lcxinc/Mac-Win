@@ -531,6 +531,36 @@ def load_validator():
     return module
 
 
+def overwrite_hardlink_preserving_bound_identity(test_case, bound, sibling, raw):
+    """Overwrite one hardlink while preserving every currently bound stat field."""
+    before = bound.lstat()
+    test_case.assertEqual(len(raw), before.st_size)
+    with sibling.open("r+b") as stream:
+        stream.write(raw)
+        stream.truncate()
+    os.utime(
+        sibling,
+        ns=(before.st_atime_ns, before.st_mtime_ns),
+    )
+    after = bound.lstat()
+    test_case.assertEqual(
+        (
+            before.st_dev,
+            before.st_ino,
+            stat.S_IFMT(before.st_mode),
+            before.st_size,
+            before.st_mtime_ns,
+        ),
+        (
+            after.st_dev,
+            after.st_ino,
+            stat.S_IFMT(after.st_mode),
+            after.st_size,
+            after.st_mtime_ns,
+        ),
+    )
+
+
 class MigrationBaselineManifestTests(unittest.TestCase):
     def assertInvalid(self, manifest, diagnostic):
         validator = load_validator()
@@ -2545,12 +2575,14 @@ class MigrationBaselineTagTests(unittest.TestCase):
         *,
         internal_name=BASELINE_TAG,
         message=TAG_MESSAGE,
+        timestamp=0,
     ):
         raw = (
             f"object {source_commit}\n"
             "type commit\n"
             f"tag {internal_name}\n"
-            "tagger Baseline Tests <baseline-tests@example.invalid> 0 +0000\n"
+            "tagger Baseline Tests <baseline-tests@example.invalid> "
+            f"{timestamp} +0000\n"
             "\n"
             f"{message}\n"
         ).encode("utf-8")
@@ -2924,6 +2956,127 @@ class MigrationBaselineTagTests(unittest.TestCase):
             packed_refs.chmod(0o600)
             packed_refs.unlink()
             external_packed.rename(packed_refs)
+
+    def test_rejects_same_identity_loose_tag_content_replaced_during_read(self):
+        repository, source_commit, _ = self.createRepository(
+            "same-identity-loose-tag"
+        )
+        self.runGit(
+            repository,
+            "tag",
+            "-a",
+            BASELINE_TAG,
+            source_commit,
+            "-m",
+            TAG_MESSAGE,
+        )
+        replacement_oid = self.createRawTagObject(
+            repository,
+            source_commit,
+            timestamp=1,
+        )
+        loose_ref = repository / ".git" / "refs" / "tags" / BASELINE_TAG
+        sibling = self.test_root / "same-identity-loose-tag-sibling"
+        os.link(loose_ref, sibling)
+        validator = load_validator()
+        real_run_git = validator._run_git
+        mutated = False
+
+        def mutate_then_read(root, arguments, check=False):
+            nonlocal mutated
+            if not mutated:
+                overwrite_hardlink_preserving_bound_identity(
+                    self,
+                    loose_ref,
+                    sibling,
+                    replacement_oid.encode("ascii") + b"\n",
+                )
+                mutated = True
+            return real_run_git(root, arguments, check=check)
+
+        try:
+            with mock.patch.object(
+                validator, "_run_git", side_effect=mutate_then_read
+            ), self.assertRaises(validator.BaselineValidationError) as caught:
+                validator.validate_baseline_tag(
+                    repository,
+                    BASELINE_TAG,
+                    source_commit,
+                )
+        finally:
+            sibling.unlink()
+        self.assertTrue(mutated)
+        self.assertEqual(
+            str(caught.exception),
+            "baseline tag ref metadata is unsafe",
+        )
+
+    def test_rejects_same_identity_packed_refs_content_replaced_during_read(self):
+        repository, source_commit, _ = self.createRepository(
+            "same-identity-packed-refs"
+        )
+        self.runGit(
+            repository,
+            "tag",
+            "-a",
+            BASELINE_TAG,
+            source_commit,
+            "-m",
+            TAG_MESSAGE,
+        )
+        original_oid = self.runGit(
+            repository,
+            "rev-parse",
+            f"refs/tags/{BASELINE_TAG}",
+        ).stdout.strip()
+        replacement_oid = self.createRawTagObject(
+            repository,
+            source_commit,
+            timestamp=1,
+        ).encode("ascii")
+        self.runGit(repository, "pack-refs", "--all")
+        packed_refs = repository / ".git" / "packed-refs"
+        original_raw = packed_refs.read_bytes()
+        replacement_raw = original_raw.replace(
+            original_oid.encode("ascii"),
+            replacement_oid,
+            1,
+        )
+        self.assertNotEqual(replacement_raw, original_raw)
+        sibling = self.test_root / "same-identity-packed-refs-sibling"
+        os.link(packed_refs, sibling)
+        validator = load_validator()
+        real_run_git = validator._run_git
+        mutated = False
+
+        def mutate_then_read(root, arguments, check=False):
+            nonlocal mutated
+            if not mutated:
+                overwrite_hardlink_preserving_bound_identity(
+                    self,
+                    packed_refs,
+                    sibling,
+                    replacement_raw,
+                )
+                mutated = True
+            return real_run_git(root, arguments, check=check)
+
+        try:
+            with mock.patch.object(
+                validator, "_run_git", side_effect=mutate_then_read
+            ), self.assertRaises(validator.BaselineValidationError) as caught:
+                validator.validate_baseline_tag(
+                    repository,
+                    BASELINE_TAG,
+                    source_commit,
+                )
+        finally:
+            sibling.unlink()
+        self.assertTrue(mutated)
+        self.assertEqual(
+            str(caught.exception),
+            "baseline tag ref metadata is unsafe",
+        )
 
     def test_accepts_tag_metadata_from_linked_worktree_common_directory(self):
         repository, source_commit, _ = self.createRepository("linked-tag-common")
@@ -3868,6 +4021,48 @@ class MigrationBaselineReviewedFileTests(unittest.TestCase):
             index.chmod(0o600)
             index.unlink()
             external.rename(index)
+
+    def test_rejects_same_identity_index_content_replaced_during_read(self):
+        repository, _, _ = self.createRepository("same-identity-index")
+        index = repository / ".git" / "index"
+        original = index.read_bytes()
+        self.assertGreater(len(original), 32)
+        replacement = bytearray(original)
+        replacement[12:16] = (
+            (int.from_bytes(replacement[12:16], "big") + 1) % (2**32)
+        ).to_bytes(4, "big")
+        replacement[-20:] = hashlib.sha1(replacement[:-20]).digest()
+        self.assertNotEqual(bytes(replacement), original)
+        sibling = self.test_root / "same-identity-index-sibling"
+        os.link(index, sibling)
+        validator = load_validator()
+        real_run_git = validator._run_git
+        mutated = False
+
+        def mutate_then_read(root, arguments, check=False):
+            nonlocal mutated
+            if not mutated:
+                overwrite_hardlink_preserving_bound_identity(
+                    self,
+                    index,
+                    sibling,
+                    bytes(replacement),
+                )
+                mutated = True
+            return real_run_git(root, arguments, check=check)
+
+        try:
+            with mock.patch.object(
+                validator, "_run_git", side_effect=mutate_then_read
+            ), self.assertRaises(validator.BaselineValidationError) as caught:
+                self.readReviewed(repository, validator=validator)
+        finally:
+            sibling.unlink()
+        self.assertTrue(mutated)
+        self.assertEqual(
+            str(caught.exception),
+            "reviewed file index metadata is unsafe",
+        )
 
     def test_rejects_reparse_index_metadata_before_git_reads(self):
         repository, _, _ = self.createRepository("reparse-index")

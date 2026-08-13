@@ -1,12 +1,17 @@
 """Bind Git metadata paths without following links or repository overrides."""
 
 from dataclasses import dataclass
+import hashlib
 import os
 from pathlib import Path, PurePosixPath
 import stat
 
 
 MAX_GIT_POINTER_BYTES = 4096
+MAX_GIT_INDEX_BYTES = 128 * 1024 * 1024
+MAX_LOOSE_TAG_REF_BYTES = 4096
+MAX_PACKED_REFS_BYTES = 64 * 1024 * 1024
+CONTENT_HASH_CHUNK_BYTES = 1024 * 1024
 
 
 class GitMetadataError(ValueError):
@@ -27,7 +32,16 @@ def bind_index(repository_root):
     """Bind the actual normal or linked-worktree index as a regular leaf."""
     root = _absolute_path(repository_root)
     git_directory, _common_directory, layout = _discover_layout(root)
-    state = (layout, _snapshot_relative(git_directory, ("index",), "regular", True))
+    state = (
+        layout,
+        _snapshot_relative(
+            git_directory,
+            ("index",),
+            "regular",
+            True,
+            maximum_bytes=MAX_GIT_INDEX_BYTES,
+        ),
+    )
     return GitMetadataBinding("index", root, None, state)
 
 
@@ -43,12 +57,14 @@ def bind_tag_refs(repository_root, tag_name):
             ("refs", "tags", *tag_parts),
             "regular",
             False,
+            maximum_bytes=MAX_LOOSE_TAG_REF_BYTES,
         ),
         _snapshot_relative(
             common_directory,
             ("packed-refs",),
             "regular",
             False,
+            maximum_bytes=MAX_PACKED_REFS_BYTES,
         ),
     )
     return GitMetadataBinding("tag", root, tag_name, state)
@@ -128,8 +144,16 @@ def _snapshot_directory_path(path):
     return tuple(identities)
 
 
-def _snapshot_relative(base, parts, leaf_kind, required):
+def _snapshot_relative(
+    base, parts, leaf_kind, required, *, maximum_bytes=None
+):
     if not parts or leaf_kind not in {"directory", "regular"}:
+        raise GitMetadataError("Git metadata is unsafe")
+    if maximum_bytes is not None and (
+        leaf_kind != "regular"
+        or type(maximum_bytes) is not int
+        or maximum_bytes < 0
+    ):
         raise GitMetadataError("Git metadata is unsafe")
     base_path = Path(base)
     identities = list(_snapshot_directory_path(base_path))
@@ -158,7 +182,57 @@ def _snapshot_relative(base, parts, leaf_kind, required):
             if not stat.S_ISREG(status.st_mode):
                 raise GitMetadataError("Git metadata is unsafe")
             identities.append(_leaf_identity(status))
-    return ("present", tuple(identities))
+    snapshot = ("present", tuple(identities))
+    if leaf_kind == "regular" and maximum_bytes is not None:
+        snapshot += (
+            _digest_regular_leaf(current, identities[-1], maximum_bytes),
+        )
+    return snapshot
+
+
+def _digest_regular_leaf(path, expected_identity, maximum_bytes):
+    """Hash one bounded regular leaf without following its final component."""
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = None
+    try:
+        descriptor = os.open(path, flags)
+        with os.fdopen(descriptor, "rb") as stream:
+            descriptor = None
+            opened = os.fstat(stream.fileno())
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or _is_reparse(opened)
+                or _leaf_identity(opened) != expected_identity
+            ):
+                raise GitMetadataError("Git metadata is unsafe")
+            digest = hashlib.sha256()
+            total = 0
+            while True:
+                chunk = stream.read(CONTENT_HASH_CHUNK_BYTES)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > maximum_bytes:
+                    raise GitMetadataError("Git metadata is unsafe")
+                digest.update(chunk)
+            opened_after = os.fstat(stream.fileno())
+    except GitMetadataError:
+        raise
+    except OSError as error:
+        raise GitMetadataError("Git metadata is unsafe") from error
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    try:
+        final = Path(path).lstat()
+    except OSError as error:
+        raise GitMetadataError("Git metadata is unsafe") from error
+    if (
+        _leaf_identity(opened_after) != expected_identity
+        or _leaf_identity(final) != expected_identity
+    ):
+        raise GitMetadataError("Git metadata is unsafe")
+    return digest.digest()
 
 
 def _read_pointer_file(base, parts):
