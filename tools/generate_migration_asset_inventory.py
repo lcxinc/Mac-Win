@@ -42,6 +42,9 @@ MAX_JSON_INTEGER_DIGITS = 128
 MAX_JSON_INTEGER_MAGNITUDE = (10 ** MAX_JSON_INTEGER_DIGITS) - 1
 MAX_ASSET_BYTES = 1024 * 1024
 MAX_GIT_CONFIG_LIST_BYTES = 64 * 1024
+MAX_OBJECT_DATABASE_LEAVES = 100_000
+MAX_OBJECT_DATABASE_BIND_BYTES = 512 * 1024 * 1024
+OBJECT_DATABASE_HASH_CHUNK_BYTES = 1024 * 1024
 
 OUTPUT_RELATIVE_PATHS = (
     "migration/assets/index.json",
@@ -593,13 +596,23 @@ def _extract_blob_dependency_evidence(source_path, raw):
 def _extract_dependency_evidence(repository_root, records):
     """Read only the already-bound raw blobs and combine their evidence."""
     result = {"externalRefs": [], "developmentDependencies": []}
-    for record in records:
-        evidence = _extract_blob_dependency_evidence(
-            record["sourcePath"],
-            _read_blob(repository_root, record["gitBlobOid"]),
+    object_binding = _bind_primary_object_database(repository_root)
+    try:
+        for record in records:
+            evidence = _extract_blob_dependency_evidence(
+                record["sourcePath"],
+                _read_blob(
+                    repository_root,
+                    record["gitBlobOid"],
+                    object_binding,
+                ),
+            )
+            for field in result:
+                result[field].extend(evidence[field])
+    finally:
+        _verify_primary_object_database_binding(
+            object_binding, verify_content=True
         )
-        for field in result:
-            result[field].extend(evidence[field])
     for field in result:
         result[field].sort(key=_evidence_record_sort_key)
     return result
@@ -981,6 +994,252 @@ def _validate_primary_object_database(repository_root):
         raise InventoryError("inventory Git object database is invalid") from error
 
 
+def _bind_primary_object_database(repository_root):
+    """Bind the safe primary object-store leaf set, identities, and raw bytes."""
+    root = Path(repository_root).resolve()
+    _validate_primary_object_database(root)
+    object_directory = _absolute_git_path(root, "--git-path", "objects")
+    try:
+        identity, content = _object_database_snapshot(
+            object_directory, include_content=True
+        )
+    except (InventoryError, OSError, UnicodeError) as error:
+        raise InventoryError(
+            "inventory Git object database is not self-contained"
+        ) from error
+    return (root, object_directory, identity, content)
+
+
+def _verify_primary_object_database_binding(binding, *, verify_content=False):
+    """Recheck an object-store binding immediately around actual Git reads."""
+    try:
+        root, object_directory, expected_identity, expected_content = binding
+        if Path(root).resolve() != root or not Path(object_directory).is_absolute():
+            raise ValueError("invalid object binding")
+        identity, content = _object_database_snapshot(
+            object_directory, include_content=verify_content
+        )
+        if identity != expected_identity or (
+            verify_content and content != expected_content
+        ):
+            raise ValueError("object binding changed")
+    except (InventoryError, OSError, TypeError, UnicodeError, ValueError) as error:
+        raise InventoryError(
+            "inventory Git object database is not self-contained"
+        ) from error
+
+
+def _object_database_snapshot(object_directory, *, include_content):
+    """Return one bounded deterministic snapshot of actual loose and pack leaves."""
+    object_directory = Path(object_directory)
+    pack_directory = object_directory / "pack"
+    _validate_git_directory_path(object_directory)
+    _validate_git_directory_path(pack_directory)
+    directory_paths = [
+        ("", object_directory),
+        ("pack", pack_directory),
+    ]
+    directory_records = [
+        (name, _object_directory_identity(path.lstat()))
+        for name, path in directory_paths
+    ]
+    leaf_paths = []
+    for fanout in sorted(
+        object_directory.iterdir(), key=lambda path: os.fsencode(path.name)
+    ):
+        if re.fullmatch(r"[0-9a-f]{2}", fanout.name, re.IGNORECASE) is None:
+            continue
+        fanout_status = fanout.lstat()
+        if (
+            not stat.S_ISDIR(fanout_status.st_mode)
+            or stat.S_ISLNK(fanout_status.st_mode)
+            or _is_reparse(fanout_status)
+        ):
+            raise InventoryError(
+                "inventory Git object database is not self-contained"
+            )
+        directory_paths.append((fanout.name, fanout))
+        directory_records.append(
+            (fanout.name, _object_directory_identity(fanout_status))
+        )
+        for leaf in sorted(
+            fanout.iterdir(), key=lambda path: os.fsencode(path.name)
+        ):
+            if (
+                re.fullmatch(
+                    r"(?:[0-9a-f]{38}|[0-9a-f]{62})",
+                    leaf.name,
+                    re.IGNORECASE,
+                )
+                is not None
+            ):
+                leaf_paths.append((f"{fanout.name}/{leaf.name}", leaf))
+
+    for leaf in sorted(
+        pack_directory.iterdir(), key=lambda path: os.fsencode(path.name)
+    ):
+        leaf_paths.append((f"pack/{leaf.name}", leaf))
+
+    if len(leaf_paths) > MAX_OBJECT_DATABASE_LEAVES:
+        raise InventoryError("inventory Git object database is not self-contained")
+
+    total_bytes = 0
+    leaf_records = []
+    content_records = []
+    for relative_path, leaf in leaf_paths:
+        status = leaf.lstat()
+        if (
+            not stat.S_ISREG(status.st_mode)
+            or stat.S_ISLNK(status.st_mode)
+            or _is_reparse(status)
+        ):
+            raise InventoryError(
+                "inventory Git object database is not self-contained"
+            )
+        total_bytes += status.st_size
+        if total_bytes > MAX_OBJECT_DATABASE_BIND_BYTES:
+            raise InventoryError(
+                "inventory Git object database is not self-contained"
+            )
+        identity = _object_leaf_identity(status)
+        leaf_records.append((relative_path, identity))
+        if include_content:
+            content_records.append(
+                (relative_path, _hash_object_database_leaf(leaf, identity))
+            )
+    final_directories = tuple(
+        (name, _object_directory_identity(path.lstat()))
+        for name, path in directory_paths
+    )
+    if final_directories != tuple(directory_records):
+        raise InventoryError("inventory Git object database is not self-contained")
+    return (
+        (tuple(directory_records), tuple(leaf_records), total_bytes),
+        tuple(content_records),
+    )
+
+
+def _object_directory_identity(status):
+    return (
+        *_component_identity(status),
+        getattr(status, "st_mtime_ns", None),
+        getattr(status, "st_ctime_ns", None),
+    )
+
+
+def _object_leaf_identity(status):
+    return (
+        *_leaf_identity(status),
+        getattr(status, "st_nlink", None),
+    )
+
+
+def _hash_object_database_leaf(path, expected_identity):
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = None
+    try:
+        descriptor = os.open(path, flags)
+        with os.fdopen(descriptor, "rb") as stream:
+            descriptor = None
+            opened = os.fstat(stream.fileno())
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or _is_reparse(opened)
+                or _object_leaf_identity(opened) != expected_identity
+            ):
+                raise InventoryError(
+                    "inventory Git object database is not self-contained"
+                )
+            digest = hashlib.sha256()
+            while True:
+                chunk = stream.read(OBJECT_DATABASE_HASH_CHUNK_BYTES)
+                if not chunk:
+                    break
+                digest.update(chunk)
+            opened_after = os.fstat(stream.fileno())
+    except InventoryError:
+        raise
+    except OSError as error:
+        raise InventoryError(
+            "inventory Git object database is not self-contained"
+        ) from error
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    final = path.lstat()
+    if (
+        _object_leaf_identity(opened_after) != expected_identity
+        or _object_leaf_identity(final) != expected_identity
+    ):
+        raise InventoryError("inventory Git object database is not self-contained")
+    return digest.hexdigest()
+
+
+def _run_object_git(binding, *arguments, allowed_returncodes=(0,)):
+    """Run one object-reading Git command within a live object-store binding."""
+    _verify_primary_object_database_binding(binding)
+    try:
+        return _run_git(
+            binding[0], *arguments, allowed_returncodes=allowed_returncodes
+        )
+    finally:
+        _verify_primary_object_database_binding(binding)
+
+
+def _run_object_git_input(
+    binding, raw_input, *arguments, maximum_output_bytes
+):
+    """Run one bounded-input object command within a live store binding."""
+    if type(raw_input) is not bytes or len(raw_input) > 4096:
+        raise InventoryError("inventory Git command failed")
+    if (
+        type(maximum_output_bytes) is not int
+        or maximum_output_bytes < 0
+        or maximum_output_bytes > MAX_ASSET_BYTES + 512
+    ):
+        raise InventoryError("inventory Git command failed")
+    _verify_primary_object_database_binding(binding)
+    process = None
+    try:
+        try:
+            process = subprocess.Popen(
+                _git_command_argv(binding[0], *arguments),
+                cwd=binding[0],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                shell=False,
+                env=_git_environment(),
+            )
+            process.stdin.write(raw_input)
+            process.stdin.close()
+            stdout = process.stdout.read(maximum_output_bytes + 1)
+            if len(stdout) > maximum_output_bytes:
+                process.kill()
+                process.wait()
+                raise InventoryError(
+                    "inventory Git command output exceeds the byte limit"
+                )
+            returncode = process.wait()
+        except OSError as error:
+            raise InventoryError("inventory Git command failed") from error
+        if returncode != 0:
+            raise InventoryError("inventory Git command failed")
+        return subprocess.CompletedProcess(
+            process.args, returncode, stdout, b""
+        )
+    finally:
+        if process is not None:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            if process.stdin is not None and not process.stdin.closed:
+                process.stdin.close()
+            if process.stdout is not None:
+                process.stdout.close()
+        _verify_primary_object_database_binding(binding)
+
+
 def _validate_object_database_leaves(object_directory, pack_directory):
     """Reject linked or nonregular loose-object and pack-directory leaves."""
     for fanout in object_directory.iterdir():
@@ -1074,14 +1333,7 @@ def _git_config_scope_keys(repository_root, scope):
     return tuple(keys)
 
 
-def _tag_git_runner(repository_root, arguments):
-    """Adapt the hardened inventory runner to the audited tag validator API."""
-    return _run_git(
-        repository_root, *arguments, allowed_returncodes=None
-    )
-
-
-def _validate_source_tag(repository_root, source_tag, source_commit):
+def _validate_source_tag(repository_root, source_tag, source_commit, object_binding):
     """Lazily reuse the audited baseline tag validator in package or script mode."""
     try:
         from tools.validate_migration_baseline import (
@@ -1101,43 +1353,56 @@ def _validate_source_tag(repository_root, source_tag, source_commit):
                 "inventory source Git identity is invalid"
             ) from fallback_error
     try:
+        def bound_tag_git_runner(root, arguments):
+            if Path(root).resolve() != object_binding[0]:
+                raise InventoryError("inventory source Git identity is invalid")
+            return _run_object_git(
+                object_binding, *arguments, allowed_returncodes=None
+            )
+
         validate_baseline_tag(
             repository_root,
             source_tag,
             source_commit,
-            run_git=_tag_git_runner,
+            run_git=bound_tag_git_runner,
         )
     except BaselineValidationError as error:
         raise InventoryError("inventory source Git identity is invalid") from error
 
 
-def _verify_source_identity(repository_root, source_commit, source_tag):
+def _verify_source_identity(
+    repository_root, source_commit, source_tag, object_binding
+):
     """Require a local commit, a direct annotated tag, and HEAD ancestry."""
     try:
-        commit_type = _run_git(
-            repository_root, "cat-file", "-t", source_commit
+        commit_type = _run_object_git(
+            object_binding, "cat-file", "-t", source_commit
         ).stdout.strip()
         if commit_type != b"commit":
             raise InventoryError("inventory source Git identity is invalid")
-        _run_git(repository_root, "cat-file", "-e", f"{source_commit}^{{commit}}")
+        _run_object_git(
+            object_binding, "cat-file", "-e", f"{source_commit}^{{commit}}"
+        )
 
-        _run_git(
-            repository_root,
+        _run_object_git(
+            object_binding,
             "merge-base",
             "--is-ancestor",
             source_commit,
             "HEAD",
         )
-        _validate_source_tag(repository_root, source_tag, source_commit)
+        _validate_source_tag(
+            repository_root, source_tag, source_commit, object_binding
+        )
     except (InventoryError, UnicodeError, ValueError) as error:
         raise InventoryError("inventory source Git identity is invalid") from error
 
 
-def _list_governed_tree(repository_root, source_commit):
+def _list_governed_tree(repository_root, source_commit, object_binding):
     """Resolve all governed tree entries once at the frozen commit."""
     try:
-        raw = _run_git(
-            repository_root,
+        raw = _run_object_git(
+            object_binding,
             "ls-tree",
             "-rz",
             "--full-tree",
@@ -1167,39 +1432,54 @@ def _list_governed_tree(repository_root, source_commit):
     return entries
 
 
-def _read_blob(repository_root, oid):
+def _read_blob(repository_root, oid, object_binding=None):
     """Read a bounded raw blob by immutable object ID and verify its length."""
+    owns_binding = object_binding is None
+    if owns_binding:
+        object_binding = _bind_primary_object_database(repository_root)
     try:
-        object_format = _run_git(
-            repository_root, "rev-parse", "--show-object-format=storage"
-        ).stdout.strip()
-        format_contract = {b"sha1": (hashlib.sha1, 40), b"sha256": (hashlib.sha256, 64)}
-        if object_format not in format_contract:
+        format_contract = {40: hashlib.sha1, 64: hashlib.sha256}
+        hash_constructor = format_contract.get(len(oid))
+        if hash_constructor is None or re.fullmatch(r"[0-9a-f]+", oid) is None:
             raise InventoryError("inventory governed Git object is invalid")
-        hash_constructor, oid_length = format_contract[object_format]
-        if len(oid) != oid_length or re.fullmatch(r"[0-9a-f]+", oid) is None:
+        raw = _run_object_git_input(
+            object_binding,
+            oid.encode("ascii") + b"\n",
+            "cat-file",
+            "--batch",
+            maximum_output_bytes=MAX_ASSET_BYTES + 128,
+        ).stdout
+        header, separator, framed_content = raw.partition(b"\n")
+        fields = header.split(b" ")
+        if (
+            not separator
+            or len(fields) != 3
+            or fields[0] != oid.encode("ascii")
+            or fields[1] != b"blob"
+            or not fields[2].isdigit()
+        ):
             raise InventoryError("inventory governed Git object is invalid")
-        if _run_git(repository_root, "cat-file", "-t", oid).stdout.strip() != b"blob":
-            raise InventoryError("inventory governed Git object is invalid")
-        raw_size = _run_git(repository_root, "cat-file", "-s", oid).stdout.strip()
-        if not raw_size or not raw_size.isdigit():
-            raise InventoryError("inventory governed Git object is invalid")
-        size = int(raw_size)
+        size = int(fields[2])
     except InventoryError as error:
+        if str(error) == "inventory Git command output exceeds the byte limit":
+            raise InventoryError(
+                "inventory governed Git object exceeds the byte limit"
+            ) from error
         if str(error) == "inventory governed Git object is invalid":
             raise
         raise InventoryError("inventory governed Git object is invalid") from error
     if size > MAX_ASSET_BYTES:
         raise InventoryError("inventory governed Git object exceeds the byte limit")
-    try:
-        content = _run_git(repository_root, "cat-file", "blob", oid).stdout
-    except InventoryError as error:
-        raise InventoryError("inventory governed Git object is invalid") from error
-    if len(content) != size:
+    if len(framed_content) != size + 1 or not framed_content.endswith(b"\n"):
         raise InventoryError("inventory governed Git object length is invalid")
+    content = framed_content[:-1]
     framed = b"blob " + str(size).encode("ascii") + b"\0" + content
     if hash_constructor(framed).hexdigest() != oid:
         raise InventoryError("inventory governed Git object identity is invalid")
+    if owns_binding:
+        _verify_primary_object_database_binding(
+            object_binding, verify_content=True
+        )
     return content
 
 
@@ -1229,48 +1509,57 @@ def _bind_governed_assets(repository_root, policy, source_commit, source_tag):
         tag_metadata = bind_tag_refs(root, source_tag)
     except GitMetadataError as error:
         raise InventoryError("inventory source Git identity is invalid") from error
-    _validate_primary_object_database(root)
+    object_binding = _bind_primary_object_database(root)
     try:
         verify_binding(tag_metadata)
     except GitMetadataError as error:
         raise InventoryError("inventory source Git identity is invalid") from error
-    _verify_source_identity(root, source_commit, source_tag)
-    expected = _policy_assets(policy)
-    entries = _list_governed_tree(root, source_commit)
+    try:
+        _verify_source_identity(
+            root, source_commit, source_tag, object_binding
+        )
+        expected = _policy_assets(policy)
+        entries = _list_governed_tree(
+            root, source_commit, object_binding
+        )
 
-    actual = {}
-    folded = set()
-    for mode, object_type, oid, path in entries:
-        if mode not in ("100644", "100755"):
-            raise InventoryError("inventory governed Git entry mode is invalid")
-        if object_type != "blob":
-            raise InventoryError("inventory governed Git object is invalid")
-        if path in actual:
+        actual = {}
+        folded = set()
+        for mode, object_type, oid, path in entries:
+            if mode not in ("100644", "100755"):
+                raise InventoryError("inventory governed Git entry mode is invalid")
+            if object_type != "blob":
+                raise InventoryError("inventory governed Git object is invalid")
+            if path in actual:
+                raise InventoryError("inventory governed path coverage is invalid")
+            casefolded = path.casefold()
+            if casefolded in folded:
+                raise InventoryError("inventory governed path coverage is invalid")
+            folded.add(casefolded)
+            actual[path] = (mode, oid)
+
+        if set(actual) != set(expected):
             raise InventoryError("inventory governed path coverage is invalid")
-        casefolded = path.casefold()
-        if casefolded in folded:
-            raise InventoryError("inventory governed path coverage is invalid")
-        folded.add(casefolded)
-        actual[path] = (mode, oid)
 
-    if set(actual) != set(expected):
-        raise InventoryError("inventory governed path coverage is invalid")
-
-    records = []
-    for path in sorted(expected, key=lambda value: value.encode("ascii")):
-        mode, oid = actual[path]
-        content = _read_blob(root, oid)
-        record = {
-            "sourcePath": path,
-            "sourceCommit": source_commit,
-            "gitBlobOid": oid,
-            "sha256": hashlib.sha256(content).hexdigest(),
-            "byteSize": len(content),
-            "gitMode": mode,
-        }
-        record.update(expected[path])
-        records.append(record)
-    return records
+        records = []
+        for path in sorted(expected, key=lambda value: value.encode("ascii")):
+            mode, oid = actual[path]
+            content = _read_blob(root, oid, object_binding)
+            record = {
+                "sourcePath": path,
+                "sourceCommit": source_commit,
+                "gitBlobOid": oid,
+                "sha256": hashlib.sha256(content).hexdigest(),
+                "byteSize": len(content),
+                "gitMode": mode,
+            }
+            record.update(expected[path])
+            records.append(record)
+        return records
+    finally:
+        _verify_primary_object_database_binding(
+            object_binding, verify_content=True
+        )
 
 
 def _validate_output_value(value):

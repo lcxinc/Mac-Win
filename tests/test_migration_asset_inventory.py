@@ -947,7 +947,8 @@ class AssetDependencyTests(unittest.TestCase):
         )
         with mock.patch.object(generator, "_read_blob", return_value=raw) as read_blob:
             evidence = generator._extract_dependency_evidence(ROOT, records)
-        read_blob.assert_called_once_with(ROOT, "1" * 40)
+        self.assertEqual(read_blob.call_count, 1)
+        self.assertEqual(read_blob.call_args.args[:2], (ROOT, "1" * 40))
         generator._require_dependency_policy_match(self.policy, evidence)
 
         mutations = (
@@ -1350,15 +1351,20 @@ class AssetGitBindingTests(unittest.TestCase):
         self.policy = self._policy([self.asset_path])
         self.assert_binding_error("inventory governed Git object exceeds the byte limit")
 
-        real_run_git = generator._run_git
+        real_object_input = generator._run_object_git_input
 
-        def truncated(repository_root, *arguments):
-            result = real_run_git(repository_root, *arguments)
-            if arguments[:2] == ("cat-file", "blob"):
-                return subprocess.CompletedProcess(result.args, 0, b"short", b"")
-            return result
+        def truncated(binding, raw_input, *arguments, **kwargs):
+            result = real_object_input(
+                binding, raw_input, *arguments, **kwargs
+            )
+            header = result.stdout.partition(b"\n")[0]
+            return subprocess.CompletedProcess(
+                result.args, 0, header + b"\nshort\n", b""
+            )
 
-        with mock.patch.object(generator, "_run_git", side_effect=truncated):
+        with mock.patch.object(
+            generator, "_run_object_git_input", side_effect=truncated
+        ):
             with self.assertRaisesRegex(
                 InventoryError, "^inventory governed Git object length is invalid$"
             ):
@@ -1367,20 +1373,16 @@ class AssetGitBindingTests(unittest.TestCase):
     def test_rejects_same_length_blob_replacement_between_size_and_read(self):
         expected_oid = hashlib.sha1(b"blob 4\0good").hexdigest()
 
-        def replaced(_repository_root, *arguments):
-            if arguments == ("rev-parse", "--show-object-format=storage"):
-                stdout = b"sha1\n"
-            elif arguments[:2] == ("cat-file", "-t"):
-                stdout = b"blob\n"
-            elif arguments[:2] == ("cat-file", "-s"):
-                stdout = b"4\n"
-            elif arguments[:2] == ("cat-file", "blob"):
-                stdout = b"evil"
-            else:
-                self.fail(f"unexpected Git arguments: {arguments!r}")
+        def replaced(_binding, raw_input, *arguments, **kwargs):
+            self.assertEqual(raw_input, expected_oid.encode("ascii") + b"\n")
+            self.assertEqual(arguments, ("cat-file", "--batch"))
+            self.assertEqual(kwargs["maximum_output_bytes"], MAX_ASSET_BYTES + 128)
+            stdout = expected_oid.encode("ascii") + b" blob 4\nevil\n"
             return subprocess.CompletedProcess(arguments, 0, stdout, b"")
 
-        with mock.patch.object(generator, "_run_git", side_effect=replaced):
+        with mock.patch.object(
+            generator, "_run_object_git_input", side_effect=replaced
+        ):
             with self.assertRaisesRegex(
                 InventoryError, "^inventory governed Git object identity is invalid$"
             ):
@@ -1857,6 +1859,72 @@ class AssetGitBindingTests(unittest.TestCase):
                 leaf.chmod(0o600)
                 leaf.unlink()
                 external.rename(leaf)
+
+    def test_object_read_rejects_loose_leaf_replaced_after_static_preflight(self):
+        object_id = self._fixture_git(
+            "rev-parse", f"{self.source_commit}:{self.asset_path}"
+        ).stdout.strip()
+        loose_object = (
+            self.repository / ".git" / "objects" / object_id[:2] / object_id[2:]
+        )
+        generator._validate_primary_object_database(self.repository)
+        external = (
+            self.repository.parent
+            / f"post-preflight-loose-{self.repository.name}"
+        )
+        loose_object.rename(external)
+        try:
+            try:
+                loose_object.symlink_to(external)
+            except OSError as error:
+                external.rename(loose_object)
+                self.skipTest(f"file symlink creation is unavailable: {error}")
+            with self.assertRaisesRegex(
+                InventoryError,
+                "^inventory Git object database is not self-contained$",
+            ):
+                _read_blob(self.repository, object_id)
+        finally:
+            if loose_object.is_symlink():
+                loose_object.unlink()
+            if external.exists():
+                external.rename(loose_object)
+
+    def test_object_read_rejects_pack_leaves_replaced_after_static_preflight(self):
+        object_id = self._fixture_git(
+            "rev-parse", f"{self.source_commit}:{self.asset_path}"
+        ).stdout.strip()
+        self._fixture_git("gc", "--prune=now")
+        pack_directory = self.repository / ".git" / "objects" / "pack"
+        leaves = tuple(pack_directory.iterdir())
+        self.assertTrue(any(path.suffix.casefold() == ".pack" for path in leaves))
+        self.assertTrue(any(path.suffix.casefold() == ".idx" for path in leaves))
+        generator._validate_primary_object_database(self.repository)
+        displaced = []
+        try:
+            for leaf in leaves:
+                external = (
+                    self.repository.parent
+                    / f"post-preflight-{self.repository.name}-{leaf.name}"
+                )
+                leaf.rename(external)
+                try:
+                    leaf.symlink_to(external)
+                except OSError as error:
+                    external.rename(leaf)
+                    self.skipTest(f"file symlink creation is unavailable: {error}")
+                displaced.append((leaf, external))
+            with self.assertRaisesRegex(
+                InventoryError,
+                "^inventory Git object database is not self-contained$",
+            ):
+                _read_blob(self.repository, object_id)
+        finally:
+            for leaf, external in displaced:
+                if leaf.is_symlink():
+                    leaf.unlink()
+                if external.exists():
+                    external.rename(leaf)
 
     def test_inventory_index_reader_rejects_external_index_symlink(self):
         validator = load_inventory_validator()
@@ -3222,7 +3290,8 @@ class AssetSideEffectTests(unittest.TestCase):
             self.assertIs(kwargs.get("shell"), False)
             command = arguments[7]
             self.assertIn(command, self._APPROVED_GIT_COMMANDS)
-            if command == "config" and "--file" in arguments:
+            bounded_batch = arguments[7:] == ["cat-file", "--batch"]
+            if (command == "config" and "--file" in arguments) or bounded_batch:
                 self.assertIs(kwargs.get("stdin"), subprocess.PIPE)
             else:
                 self.assertIs(kwargs.get("stdin"), subprocess.DEVNULL)
@@ -3236,7 +3305,10 @@ class AssetSideEffectTests(unittest.TestCase):
             self.assertIn(f"core.hooksPath={os.devnull}", arguments)
             self.assertEqual(Path(kwargs.get("cwd")), ROOT)
             self.assertIs(kwargs.get("stdout"), subprocess.PIPE)
-            self.assertIs(kwargs.get("stderr"), subprocess.PIPE)
+            if bounded_batch:
+                self.assertIs(kwargs.get("stderr"), subprocess.DEVNULL)
+            else:
+                self.assertIs(kwargs.get("stderr"), subprocess.PIPE)
             observed_git.append((command, tuple(arguments)))
             return real_subprocess_popen(arguments, *args, **kwargs)
 
